@@ -1,0 +1,346 @@
+"""ts4k formatters — pipe-delimited, JSON, and XML output.
+
+Three formats optimised for different consumers:
+
+* **pipe** (default for listings): most token-compact for LLMs.
+* **json**: for programmatic / tool use.
+* **xml**: fastest LLM parsing, attribute-heavy.
+
+Target: 60%+ byte savings vs raw JSON pretty-print for listings.
+"""
+
+from __future__ import annotations
+
+import json
+from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def format_listing(messages: list[dict], fmt: str = "pipe") -> str:
+    """Format a list of message-header dicts.
+
+    Each dict should have at least: ``source``, ``from``, ``subject``,
+    ``date``, ``id``.  ``body`` is used only for size estimation.
+
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    """
+    fmt = _resolve_fmt(fmt)
+
+    if fmt == "pipe":
+        return _listing_pipe(messages)
+    elif fmt == "json":
+        return _listing_json(messages)
+    elif fmt == "xml":
+        return _listing_xml(messages)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
+def format_message(message: dict, fmt: str = "pipe") -> str:
+    """Format a single message with body.
+
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    """
+    fmt = _resolve_fmt(fmt)
+
+    if fmt == "pipe":
+        return _message_pipe(message)
+    elif fmt == "json":
+        return _message_json(message)
+    elif fmt == "xml":
+        return _message_xml(message)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
+def format_thread(thread: dict, fmt: str = "pipe") -> str:
+    """Format a thread with messages.
+
+    *thread* must have ``thread_id``, ``subject``, ``message_count``,
+    ``messages`` (list of message dicts with ``from``, ``date``, ``body``).
+
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    """
+    fmt = _resolve_fmt(fmt)
+
+    if fmt == "pipe":
+        return _thread_pipe(thread)
+    elif fmt == "json":
+        return _thread_json(thread)
+    elif fmt == "xml":
+        return _thread_xml(thread)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
+def estimate_size(text: str) -> str:
+    """Human-readable size estimate from text length in bytes.
+
+    Returns e.g. ``'0b'``, ``'500b'``, ``'2kb'``, ``'1mb'``.
+    """
+    if not text:
+        return "0b"
+
+    n = len(text.encode("utf-8"))
+
+    if n < 1000:
+        return f"{n}b"
+    elif n < 1_000_000:
+        kb = round(n / 1024)
+        return f"{kb}kb" if kb > 0 else "1kb"
+    else:
+        mb = round(n / (1024 * 1024))
+        return f"{mb}mb" if mb > 0 else "1mb"
+
+
+# ---------------------------------------------------------------------------
+# Format alias resolution
+# ---------------------------------------------------------------------------
+
+
+_FMT_ALIASES: dict[str, str] = {
+    "p": "pipe",
+    "pipe": "pipe",
+    "j": "json",
+    "json": "json",
+    "x": "xml",
+    "xml": "xml",
+}
+
+
+def _resolve_fmt(fmt: str) -> str:
+    """Resolve a format alias to a canonical name."""
+    resolved = _FMT_ALIASES.get(fmt.lower().strip())
+    if resolved is None:
+        raise ValueError(
+            f"Unknown format {fmt!r}. Choose from: pipe (p), json (j), xml (x)"
+        )
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# Helpers — extract common fields with safe defaults
+# ---------------------------------------------------------------------------
+
+
+def _source(msg: dict) -> str:
+    """Extract source prefix from message dict.
+
+    Tries ``source`` key first, then infers from ``id`` prefix (e.g. ``g:``).
+    """
+    if "source" in msg:
+        return msg["source"]
+    msg_id = msg.get("id", "")
+    if ":" in msg_id:
+        return msg_id.split(":")[0]
+    return ""
+
+
+def _size(msg: dict) -> str:
+    """Estimate size from body or return pre-computed size."""
+    if "size" in msg:
+        return msg["size"]
+    return estimate_size(msg.get("body", ""))
+
+
+# ---------------------------------------------------------------------------
+# Pipe-delimited formatters
+# ---------------------------------------------------------------------------
+
+
+def _listing_pipe(messages: list[dict]) -> str:
+    """Pipe-delimited listing — most compact format.
+
+    ::
+
+        SOURCE|FROM|SUBJECT|DATE|ID|SIZE
+        g|alice@acme.com|Meeting tomorrow|2026-02-20T09:15:00Z|g:abc123|2kb
+    """
+    lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE"]
+    for msg in messages:
+        lines.append(
+            f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
+            f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}"
+        )
+    return "\n".join(lines)
+
+
+def _message_pipe(message: dict) -> str:
+    """Pipe-delimited single message with body.
+
+    Header line then blank line then body.
+    """
+    header = (
+        f"{_source(message)}|{message.get('from', '')}|{message.get('subject', '')}"
+        f"|{message.get('date', '')}|{message.get('id', '')}|{_size(message)}"
+    )
+    body = message.get("body", "")
+    parts = [header]
+    if body:
+        parts.append("")
+        parts.append(body)
+    return "\n".join(parts)
+
+
+def _thread_pipe(thread: dict) -> str:
+    """Pipe-delimited thread.
+
+    Thread header, then each message separated by a ``---`` divider.
+    """
+    lines = [
+        f"THREAD|{thread.get('thread_id', '')}|{thread.get('subject', '')}"
+        f"|{thread.get('message_count', 0)} msgs"
+    ]
+
+    for msg in thread.get("messages", []):
+        lines.append("---")
+        lines.append(
+            f"{msg.get('from', '')}|{msg.get('date', '')}"
+        )
+        body = msg.get("body", "")
+        if body:
+            lines.append(body)
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# JSON formatters
+# ---------------------------------------------------------------------------
+
+
+def _listing_json(messages: list[dict]) -> str:
+    """Compact JSON array — no pretty-printing."""
+    items = []
+    for msg in messages:
+        items.append({
+            "source": _source(msg),
+            "from": msg.get("from", ""),
+            "subject": msg.get("subject", ""),
+            "date": msg.get("date", ""),
+            "id": msg.get("id", ""),
+            "size": _size(msg),
+        })
+    return json.dumps(items, separators=(",", ":"))
+
+
+def _message_json(message: dict) -> str:
+    """Compact JSON for a single message with body."""
+    obj: dict = {
+        "source": _source(message),
+        "from": message.get("from", ""),
+        "subject": message.get("subject", ""),
+        "date": message.get("date", ""),
+        "id": message.get("id", ""),
+        "size": _size(message),
+        "body": message.get("body", ""),
+    }
+    if message.get("to"):
+        obj["to"] = message["to"]
+    if message.get("cc"):
+        obj["cc"] = message["cc"]
+    if message.get("attachments"):
+        obj["attachments"] = message["attachments"]
+    return json.dumps(obj, separators=(",", ":"))
+
+
+def _thread_json(thread: dict) -> str:
+    """Compact JSON for a thread."""
+    obj = {
+        "thread_id": thread.get("thread_id", ""),
+        "subject": thread.get("subject", ""),
+        "message_count": thread.get("message_count", 0),
+        "messages": [],
+    }
+    for msg in thread.get("messages", []):
+        m: dict = {
+            "from": msg.get("from", ""),
+            "date": msg.get("date", ""),
+            "body": msg.get("body", ""),
+        }
+        if msg.get("subject"):
+            m["subject"] = msg["subject"]
+        obj["messages"].append(m)
+    return json.dumps(obj, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# XML formatters
+# ---------------------------------------------------------------------------
+
+
+def _listing_xml(messages: list[dict]) -> str:
+    """XML listing — attributes for headers, self-closing tags.
+
+    ::
+
+        <msgs>
+        <m id="g:abc" from="alice@acme.com" subject="Meeting" date="..." size="2kb"/>
+        </msgs>
+    """
+    lines = ["<msgs>"]
+    for msg in messages:
+        attrs = (
+            f' id={xml_quoteattr(msg.get("id", ""))}'
+            f' from={xml_quoteattr(msg.get("from", ""))}'
+            f' subject={xml_quoteattr(msg.get("subject", ""))}'
+            f' date={xml_quoteattr(msg.get("date", ""))}'
+            f' size={xml_quoteattr(_size(msg))}'
+        )
+        lines.append(f"<m{attrs}/>")
+    lines.append("</msgs>")
+    return "\n".join(lines)
+
+
+def _message_xml(message: dict) -> str:
+    """XML single message — attributes for headers, body as element content.
+
+    ::
+
+        <e id="g:abc" from="alice@acme.com" subject="Meeting" date="2026-02-19">
+        Body text here.
+        </e>
+    """
+    attrs = (
+        f' id={xml_quoteattr(message.get("id", ""))}'
+        f' from={xml_quoteattr(message.get("from", ""))}'
+        f' subject={xml_quoteattr(message.get("subject", ""))}'
+        f' date={xml_quoteattr(message.get("date", ""))}'
+        f' size={xml_quoteattr(_size(message))}'
+    )
+    body = xml_escape(message.get("body", ""))
+    return f"<e{attrs}>\n{body}\n</e>"
+
+
+def _thread_xml(thread: dict) -> str:
+    """XML thread — wrapping element with nested messages.
+
+    ::
+
+        <thread id="g:abc" subject="Meeting" count="3">
+        <m from="alice@acme.com" date="...">
+        Body text here.
+        </m>
+        </thread>
+    """
+    t_attrs = (
+        f' id={xml_quoteattr(thread.get("thread_id", ""))}'
+        f' subject={xml_quoteattr(thread.get("subject", ""))}'
+        f' count={xml_quoteattr(str(thread.get("message_count", 0)))}'
+    )
+    lines = [f"<thread{t_attrs}>"]
+    for msg in thread.get("messages", []):
+        m_attrs = (
+            f' from={xml_quoteattr(msg.get("from", ""))}'
+            f' date={xml_quoteattr(msg.get("date", ""))}'
+        )
+        body = xml_escape(msg.get("body", ""))
+        lines.append(f"<m{m_attrs}>")
+        lines.append(body)
+        lines.append("</m>")
+    lines.append("</thread>")
+    return "\n".join(lines)
