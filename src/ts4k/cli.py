@@ -32,6 +32,7 @@ import sys
 from typing import Any
 
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.format import format_listing, format_message, format_thread
 from ts4k.core.normalize import normalize, normalize_headers
@@ -51,7 +52,7 @@ def _ensure_sources() -> dict[str, dict[str, Any]]:
     return sources.list_all()
 
 
-def _make_adapter(prefix: str, cfg: dict[str, Any]) -> GmailAdapter | WhatsAppAdapter | None:
+def _make_adapter(prefix: str, cfg: dict[str, Any]) -> GmailAdapter | WhatsAppAdapter | O365Adapter | None:
     """Create an adapter instance from a source config entry."""
     provider = cfg.get("provider", "").lower()
 
@@ -75,6 +76,42 @@ def _make_adapter(prefix: str, cfg: dict[str, Any]) -> GmailAdapter | WhatsAppAd
         cmd = cfg.get("server_command", ["uv", "run", "main.py"])
         return WhatsAppAdapter(
             WhatsAppAdapterConfig(server_command=cmd, server_cwd=cwd),
+            prefix=prefix,
+        )
+
+    if provider == "o365":
+        # Server command: single string or list from config, else default
+        raw_cmd = cfg.get("server_command")
+        if isinstance(raw_cmd, str):
+            server_command = [raw_cmd]
+        elif isinstance(raw_cmd, list):
+            server_command = raw_cmd
+        else:
+            server_command = ["npx", "-y", "@softeria/ms-365-mcp-server"]
+
+        # Server args: skip defaults if using a custom command (e.g. start.bat
+        # that already embeds --preset and --org-mode)
+        server_args = cfg.get("server_args", []) if raw_cmd else ["--preset", "mail", "--org-mode"]
+
+        # Build server_env from source config credentials
+        server_env: dict[str, str] | None = None
+        client_id = cfg.get("client_id")
+        tenant_id = cfg.get("tenant_id")
+        if client_id or tenant_id:
+            server_env = {}
+            if client_id:
+                server_env["MS365_MCP_CLIENT_ID"] = client_id
+            if tenant_id:
+                server_env["MS365_MCP_TENANT_ID"] = tenant_id
+
+        return O365Adapter(
+            O365AdapterConfig(
+                server_command=server_command,
+                server_args=server_args,
+                mailbox=cfg.get("mailbox"),
+                server_cwd=cfg.get("mcp_cwd"),
+                server_env=server_env,
+            ),
             prefix=prefix,
         )
 
@@ -102,7 +139,7 @@ def _resolve_prefixes(args: argparse.Namespace) -> list[str]:
         return [source]
 
     # Provider name match (e.g. "gmail" → all gmail prefixes)
-    provider_map = {"wa": "whatsapp"}
+    provider_map = {"wa": "whatsapp", "outlook": "o365", "office": "o365", "365": "o365"}
     provider = provider_map.get(source, source)
     matches = [
         p for p, c in all_cfg.items()
@@ -481,7 +518,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     if all_cfg:
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
-            detail = cfg.get("email") or cfg.get("mcp_cwd") or ""
+            detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
             wm_ts = wm.get(prefix, "")
             wm_str = f"  wm:{wm_ts}" if wm_ts else ""
             print(f"  {prefix}: {provider} ({detail}){wm_str}")
@@ -557,11 +594,13 @@ def _cmd_status(args: argparse.Namespace) -> None:
     if all_cfg:
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
-            detail = cfg.get("email") or cfg.get("mcp_cwd") or ""
+            detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
             ok = True
             if provider == "whatsapp":
                 cwd = cfg.get("mcp_cwd", "")
                 ok = bool(cwd) and os.path.isdir(cwd)
+            elif provider == "o365":
+                ok = bool(cfg.get("mailbox") or cfg.get("client_id"))
             status = "ok" if ok else "not found"
             wm_ts = wm.get(prefix, "")
             wm_str = f"  wm: {wm_ts}" if wm_ts else ""
@@ -605,7 +644,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
             print()
             print("  By source:")
             for src, data in sorted(by_source.items()):
-                label = {"g": "Gmail", "w": "WhatsApp"}.get(src, src)
+                label = {"g": "Gmail", "w": "WhatsApp", "o": "O365"}.get(src, src)
                 src_in = data.get("bytes_in", 0)
                 src_pct = round((1 - data.get("bytes_out", 0) / src_in) * 100, 1) if src_in else 0
                 print(f"    {label}: {data.get('messages', 0)} msgs, "
@@ -660,15 +699,85 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             return
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
-            detail = cfg.get("email") or cfg.get("mcp_cwd") or ""
+            detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
             print(f"  {prefix}: {provider} ({detail})")
             for k, v in sorted(cfg.items()):
-                if k not in ("provider", "email", "mcp_cwd"):
+                if k not in ("provider", "email", "mailbox", "mcp_cwd"):
                     print(f"    {k}: {v}")
+
+    elif action == "discover":
+        asyncio.run(_cmd_discover_o365(args))
 
     else:
         # Default: list
         _cmd_sources(argparse.Namespace(action="list", prefix=None, provider=None, params=None))
+
+
+async def _cmd_discover_o365(args: argparse.Namespace) -> None:
+    """Discover O365 mailboxes for the authenticated user."""
+    all_cfg = _ensure_sources()
+
+    # Find an existing O365 source to borrow credentials from, or use defaults
+    server_env: dict[str, str] | None = None
+    for cfg in all_cfg.values():
+        if cfg.get("provider", "").lower() == "o365":
+            client_id = cfg.get("client_id")
+            tenant_id = cfg.get("tenant_id")
+            if client_id or tenant_id:
+                server_env = {}
+                if client_id:
+                    server_env["MS365_MCP_CLIENT_ID"] = client_id
+                if tenant_id:
+                    server_env["MS365_MCP_TENANT_ID"] = tenant_id
+                break
+
+    adapter = O365Adapter(O365AdapterConfig(server_env=server_env), prefix="_discover")
+
+    print("Discovering O365 mailboxes for authenticated user...")
+    try:
+        async with adapter:
+            result = await adapter.discover_mailboxes()
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    primary = result.get("primary", "")
+    aliases = result.get("aliases", [])
+    display_name = result.get("display_name", "")
+
+    if not primary:
+        print("  No mailbox found.", file=sys.stderr)
+        return
+
+    print(f"  User:     {display_name}")
+    print(f"  Primary:  {primary}")
+    if aliases:
+        print(f"  Aliases:  {', '.join(aliases)}")
+    else:
+        print("  Aliases:  (none)")
+
+    # Suggest source prefixes
+    all_emails = [primary] + aliases
+    existing_mailboxes = {
+        cfg.get("mailbox", "").lower()
+        for cfg in all_cfg.values()
+        if cfg.get("provider", "").lower() == "o365"
+    }
+    used_prefixes = set(all_cfg.keys())
+
+    print()
+    print("Add as sources? (Each gets its own prefix)")
+
+    # Auto-generate prefixes: oa, ob, oc, ...
+    next_suffix = ord("a")
+    for email in all_emails:
+        while True:
+            candidate = f"o{chr(next_suffix)}"
+            next_suffix += 1
+            if candidate not in used_prefixes:
+                break
+        already = "  [already configured]" if email.lower() in existing_mailboxes else ""
+        print(f"  {candidate} → {email}{already}")
 
 
 def _cmd_filter(args: argparse.Namespace) -> None:
@@ -806,13 +915,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
         sr_add = sr_sub.add_parser("add", help="Add a source")
         sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-        sr_add.add_argument("provider", help="Provider: gmail, whatsapp")
+        sr_add.add_argument("provider", help="Provider: gmail, whatsapp, o365")
         sr_add.add_argument("params", nargs="*", help="Key=value pairs (e.g. email=x@y.com mcp_url=...)")
 
         sr_rm = sr_sub.add_parser("rm", help="Remove a source")
         sr_rm.add_argument("prefix", help="Source prefix to remove")
 
         sr_sub.add_parser("list", help="List all configured sources")
+
+        sr_sub.add_parser("discover", help="Discover O365 mailboxes for authenticated user")
 
         sr.set_defaults(func=_cmd_sources)
 
