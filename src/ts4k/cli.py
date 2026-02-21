@@ -2,16 +2,20 @@
 
 Usage::
 
-    ts4k wn                              # what's new since last check
+    ts4k wn                              # what's new across all sources
+    ts4k wn --source gmail               # what's new in Gmail only
     ts4k wn --since 2d                   # what's new in the last 2 days
     ts4k l -q "from:alice" -n 10         # list 10 messages matching query
-    ts4k g g:18f6a2b3c4e5f6a7            # read a single message
-    ts4k t g:18f6a2b3c4e5f6a8            # read a thread
+    ts4k g g:18f6a2b3c4e5f6a7            # read a Gmail message
+    ts4k g w:3EB05C4245618036            # read a WhatsApp message
+    ts4k t g:18f6a2b3c4e5f6a8            # read a Gmail thread
+    ts4k t w:34620225091@s.whatsapp.net  # read a WhatsApp chat
     ts4k h                               # show status + help
 
 Environment variables:
     TS4K_GMAIL_EMAIL       Google email address (required for Gmail)
-    TS4K_GMAIL_MCP_URL     URL for upstream MCP server (default: http://localhost:51429/mcp)
+    TS4K_GMAIL_MCP_URL     URL for Gmail MCP server (default: http://localhost:51429/mcp)
+    TS4K_WA_MCP_CWD        WhatsApp MCP server directory
     TS4K_CONFIG_DIR        Config directory (default: ~/.config/ts4k)
 """
 
@@ -22,15 +26,18 @@ import asyncio
 import logging
 import os
 import sys
+from typing import Any
 
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.format import format_listing, format_message, format_thread
 from ts4k.core.normalize import normalize, normalize_headers
 from ts4k.state import watermarks
 
 logger = logging.getLogger("ts4k")
 
-_DEFAULT_MCP_URL = "http://localhost:51429/mcp"
+_DEFAULT_GMAIL_MCP_URL = "http://localhost:51429/mcp"
+_DEFAULT_WA_MCP_CWD = "~/whatsapp-mcp/server"
 
 
 # ---------------------------------------------------------------------------
@@ -38,21 +45,17 @@ _DEFAULT_MCP_URL = "http://localhost:51429/mcp"
 # ---------------------------------------------------------------------------
 
 
-def _resolve_gmail_config(args: argparse.Namespace) -> GmailAdapterConfig:
-    """Build a GmailAdapterConfig from CLI args + env vars."""
+def _resolve_gmail_config(args: argparse.Namespace) -> GmailAdapterConfig | None:
+    """Build a GmailAdapterConfig, or None if not configured."""
     email = getattr(args, "email", None) or os.environ.get("TS4K_GMAIL_EMAIL")
     if not email:
-        print(
-            "Error: Gmail email required. Use --email or set TS4K_GMAIL_EMAIL.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        return None
 
     transport = getattr(args, "transport", None) or "streamable-http"
     server_url = (
         getattr(args, "url", None)
         or os.environ.get("TS4K_GMAIL_MCP_URL")
-        or _DEFAULT_MCP_URL
+        or _DEFAULT_GMAIL_MCP_URL
     )
 
     return GmailAdapterConfig(
@@ -60,6 +63,48 @@ def _resolve_gmail_config(args: argparse.Namespace) -> GmailAdapterConfig:
         transport=transport,
         server_url=server_url,
     )
+
+
+def _resolve_wa_config(args: argparse.Namespace) -> WhatsAppAdapterConfig | None:
+    """Build a WhatsAppAdapterConfig, or None if not configured."""
+    cwd = os.environ.get("TS4K_WA_MCP_CWD", _DEFAULT_WA_MCP_CWD)
+    if not os.path.isdir(cwd):
+        return None
+    return WhatsAppAdapterConfig(server_cwd=cwd)
+
+
+def _resolve_sources(args: argparse.Namespace) -> list[str]:
+    """Determine which sources to query based on --source flag."""
+    source = getattr(args, "source", None) or "all"
+    source = source.lower()
+    if source in ("gmail", "g"):
+        return ["gmail"]
+    if source in ("whatsapp", "wa", "w"):
+        return ["whatsapp"]
+    if source == "all":
+        return ["gmail", "whatsapp"]
+    return [source]
+
+
+def _source_from_id(prefixed_id: str) -> str:
+    """Infer source from a prefixed ID like 'g:xxx' or 'w:xxx'."""
+    if prefixed_id.startswith("g:"):
+        return "gmail"
+    if prefixed_id.startswith("w:"):
+        return "whatsapp"
+    return "gmail"  # default
+
+
+def _require_gmail_config(args: argparse.Namespace) -> GmailAdapterConfig:
+    """Like _resolve_gmail_config but exits on failure."""
+    config = _resolve_gmail_config(args)
+    if config is None:
+        print(
+            "Error: Gmail email required. Use --email or set TS4K_GMAIL_EMAIL.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -98,20 +143,12 @@ def _normalize_thread(thread: dict) -> dict:
     return result
 
 
-def _since_to_query(since: str | None) -> str:
-    """Convert a --since value to a Gmail search query fragment.
-
-    Accepts:
-      - None → uses watermark, falls back to 1d
-      - "2d", "7d", "30d" → newer_than:Xd
-      - ISO timestamp → after:epoch
-      - Gmail query fragment → passed through
-    """
+def _since_to_gmail_query(since: str | None) -> str:
+    """Convert a --since value to a Gmail search query fragment."""
     if since is None:
         wm = watermarks.get("g")
         if wm:
-            # Convert ISO to epoch for Gmail's after: operator
-            from datetime import datetime, timezone
+            from datetime import datetime
             try:
                 dt = datetime.fromisoformat(wm.replace("Z", "+00:00"))
                 return f"after:{int(dt.timestamp())}"
@@ -119,20 +156,92 @@ def _since_to_query(since: str | None) -> str:
                 return "newer_than:1d"
         return "newer_than:1d"
 
-    # Short form: "2d", "7d", etc.
     if since.endswith("d") and since[:-1].isdigit():
         return f"newer_than:{since}"
 
-    # Try as ISO timestamp
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
         dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         return f"after:{int(dt.timestamp())}"
     except ValueError:
         pass
 
-    # Pass through as-is (Gmail query fragment)
     return since
+
+
+def _since_to_iso(since: str | None, source: str) -> str | None:
+    """Convert a --since value to an ISO timestamp for adapters that take ISO."""
+    if since is None:
+        return watermarks.get(source[0])  # "g" or "w"
+
+    if since.endswith("d") and since[:-1].isdigit():
+        from datetime import datetime, timedelta, timezone
+        days = int(since[:-1])
+        dt = datetime.now(timezone.utc) - timedelta(days=days)
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return since
+
+
+# ---------------------------------------------------------------------------
+# Parallel adapter helpers
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_gmail_whatsnew(
+    args: argparse.Namespace, since: str | None, count: int
+) -> list[dict]:
+    """Fetch new Gmail messages. Returns normalized message dicts."""
+    config = _resolve_gmail_config(args)
+    if config is None:
+        return []
+
+    query = _since_to_gmail_query(since)
+    try:
+        async with GmailAdapter(config) as adapter:
+            listing = await adapter.list_messages(query=query, count=count)
+            if not listing:
+                return []
+
+            messages = []
+            for entry in listing[:count]:
+                try:
+                    msg = await adapter.read_message(entry["id"])
+                    msg = _normalize_message(msg)
+                    msg.setdefault("source", "g")
+                    messages.append(msg)
+                except Exception as exc:
+                    logger.warning("Gmail fetch %s: %s", entry["id"], exc)
+            return messages
+    except Exception as exc:
+        logger.warning("Gmail adapter failed: %s", exc)
+        return []
+
+
+async def _fetch_wa_whatsnew(
+    args: argparse.Namespace, since: str | None, count: int
+) -> list[dict]:
+    """Fetch new WhatsApp messages. Returns normalized message dicts."""
+    config = _resolve_wa_config(args)
+    if config is None:
+        return []
+
+    iso_since = _since_to_iso(since, "whatsapp")
+    try:
+        async with WhatsAppAdapter(config) as adapter:
+            listing = await adapter.whatsnew(since=iso_since)
+            if not listing:
+                return []
+
+            messages = []
+            for entry in listing[:count]:
+                msg = _normalize_message(entry)
+                msg.setdefault("source", "w")
+                messages.append(msg)
+            return messages
+    except Exception as exc:
+        logger.warning("WhatsApp adapter failed: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -142,98 +251,140 @@ def _since_to_query(since: str | None) -> str:
 
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
     """Handle the whatsnew / wn command."""
-    config = _resolve_gmail_config(args)
     fmt = getattr(args, "format", "pipe") or "pipe"
     count = getattr(args, "count", 20) or 20
     since = getattr(args, "since", None)
+    sources = _resolve_sources(args)
 
-    query = _since_to_query(since)
+    # Build fetch tasks per source
+    tasks: list[asyncio.Task] = []
+    source_names: list[str] = []
 
-    async with GmailAdapter(config) as adapter:
-        listing = await adapter.list_messages(query=query, count=count)
+    if "gmail" in sources:
+        tasks.append(asyncio.create_task(_fetch_gmail_whatsnew(args, since, count)))
+        source_names.append("gmail")
 
-        if not listing:
-            print("No new messages.", file=sys.stderr)
-            return
+    if "whatsapp" in sources:
+        tasks.append(asyncio.create_task(_fetch_wa_whatsnew(args, since, count)))
+        source_names.append("whatsapp")
 
-        listing = listing[:count]
+    # Run in parallel
+    results = await asyncio.gather(*tasks)
 
-        messages = []
-        for entry in listing:
-            try:
-                msg = await adapter.read_message(entry["id"])
-                msg = _normalize_message(msg)
-                messages.append(msg)
-            except Exception as exc:
-                logger.warning("Failed to fetch %s: %s", entry["id"], exc)
+    # Merge and sort by date descending
+    all_messages: list[dict] = []
+    for msgs in results:
+        all_messages.extend(msgs)
 
-        if not messages:
-            print("No messages could be fetched.", file=sys.stderr)
-            return
+    all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
+    all_messages = all_messages[:count]
 
-        print(format_listing(messages, fmt=fmt))
+    if not all_messages:
+        print("No new messages.", file=sys.stderr)
+        return
 
-        # Update watermark to newest message date — using wn IS the side effect
-        newest = max(
-            (m.get("date", "") for m in messages),
-            default=None,
-        )
-        if newest:
-            watermarks.update("g", newest)
+    print(format_listing(all_messages, fmt=fmt))
+
+    # Update watermarks per source
+    for source_name, msgs in zip(source_names, results):
+        if msgs:
+            prefix = "g" if source_name == "gmail" else "w"
+            newest = max(m.get("date", "") for m in msgs)
+            if newest:
+                watermarks.update(prefix, newest)
 
 
 async def _cmd_get(args: argparse.Namespace) -> None:
     """Handle the get / g command."""
-    config = _resolve_gmail_config(args)
     fmt = getattr(args, "format", "pipe") or "pipe"
     msg_id = args.id
+    source = _source_from_id(msg_id)
 
-    async with GmailAdapter(config) as adapter:
-        msg = await adapter.read_message(msg_id)
-        msg = _normalize_message(msg)
-        print(format_message(msg, fmt=fmt))
+    if source == "whatsapp":
+        config = _resolve_wa_config(args)
+        if config is None:
+            print("Error: WhatsApp MCP not configured.", file=sys.stderr)
+            sys.exit(1)
+        async with WhatsAppAdapter(config) as adapter:
+            msg = await adapter.read_message(msg_id)
+            msg = _normalize_message(msg)
+            print(format_message(msg, fmt=fmt))
+    else:
+        config = _require_gmail_config(args)
+        async with GmailAdapter(config) as adapter:
+            msg = await adapter.read_message(msg_id)
+            msg = _normalize_message(msg)
+            print(format_message(msg, fmt=fmt))
 
 
 async def _cmd_thread(args: argparse.Namespace) -> None:
     """Handle the thread / t command."""
-    config = _resolve_gmail_config(args)
     fmt = getattr(args, "format", "pipe") or "pipe"
     thread_id = args.id
+    source = _source_from_id(thread_id)
 
-    async with GmailAdapter(config) as adapter:
-        thread = await adapter.read_thread(thread_id)
-        thread = _normalize_thread(thread)
-        print(format_thread(thread, fmt=fmt))
+    if source == "whatsapp":
+        config = _resolve_wa_config(args)
+        if config is None:
+            print("Error: WhatsApp MCP not configured.", file=sys.stderr)
+            sys.exit(1)
+        async with WhatsAppAdapter(config) as adapter:
+            thread = await adapter.read_thread(thread_id)
+            thread = _normalize_thread(thread)
+            print(format_thread(thread, fmt=fmt))
+    else:
+        config = _require_gmail_config(args)
+        async with GmailAdapter(config) as adapter:
+            thread = await adapter.read_thread(thread_id)
+            thread = _normalize_thread(thread)
+            print(format_thread(thread, fmt=fmt))
 
 
 async def _cmd_list(args: argparse.Namespace) -> None:
     """Handle the list / l command."""
-    config = _resolve_gmail_config(args)
     fmt = getattr(args, "format", "pipe") or "pipe"
     count = getattr(args, "count", 20) or 20
     query = getattr(args, "query", None)
+    sources = _resolve_sources(args)
 
-    async with GmailAdapter(config) as adapter:
-        listing = await adapter.list_messages(query=query, count=count)
+    all_messages: list[dict] = []
 
-        if not listing:
-            print("No messages found.", file=sys.stderr)
-            return
-
-        messages = []
-        for entry in listing:
+    if "gmail" in sources:
+        config = _resolve_gmail_config(args)
+        if config:
             try:
-                msg = await adapter.read_message(entry["id"])
-                msg = _normalize_message(msg)
-                messages.append(msg)
+                async with GmailAdapter(config) as adapter:
+                    listing = await adapter.list_messages(query=query, count=count)
+                    for entry in (listing or []):
+                        try:
+                            msg = await adapter.read_message(entry["id"])
+                            msg = _normalize_message(msg)
+                            msg.setdefault("source", "g")
+                            all_messages.append(msg)
+                        except Exception as exc:
+                            logger.warning("Gmail fetch %s: %s", entry["id"], exc)
             except Exception as exc:
-                logger.warning("Failed to fetch %s: %s", entry["id"], exc)
+                logger.warning("Gmail adapter failed: %s", exc)
 
-        if not messages:
-            print("No messages could be fetched.", file=sys.stderr)
-            return
+    if "whatsapp" in sources:
+        config = _resolve_wa_config(args)
+        if config:
+            try:
+                async with WhatsAppAdapter(config) as adapter:
+                    listing = await adapter.list_messages(query=query, count=count)
+                    for entry in (listing or []):
+                        msg = _normalize_message(entry)
+                        msg.setdefault("source", "w")
+                        all_messages.append(msg)
+            except Exception as exc:
+                logger.warning("WhatsApp adapter failed: %s", exc)
 
-        print(format_listing(messages, fmt=fmt))
+    if not all_messages:
+        print("No messages found.", file=sys.stderr)
+        return
+
+    all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
+    print(format_listing(all_messages[:count], fmt=fmt))
 
 
 def _cmd_help(args: argparse.Namespace) -> None:
@@ -241,24 +392,27 @@ def _cmd_help(args: argparse.Namespace) -> None:
     wm = watermarks.all()
     config_dir = os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")
     email = os.environ.get("TS4K_GMAIL_EMAIL", "(not set)")
-    url = os.environ.get("TS4K_GMAIL_MCP_URL", _DEFAULT_MCP_URL)
+    gmail_url = os.environ.get("TS4K_GMAIL_MCP_URL", _DEFAULT_GMAIL_MCP_URL)
+    wa_cwd = os.environ.get("TS4K_WA_MCP_CWD", _DEFAULT_WA_MCP_CWD)
+    wa_ok = os.path.isdir(wa_cwd)
 
     print("ts4k — Token Saver 4000")
     print()
     print("Commands:")
-    print("  wn [--since 2d]           What's new (updates watermark)")
-    print("  l [-q QUERY] [-n COUNT]   List messages")
-    print("  g MSG_ID                  Read a single message")
-    print("  t THREAD_ID              Read a thread")
-    print("  h                         This help + status")
+    print("  wn [--since 2d] [--source gmail|wa|all]   What's new (updates watermark)")
+    print("  l [-q QUERY] [-n COUNT] [--source ...]    List messages")
+    print("  g MSG_ID                                  Read a message (g: or w: prefix)")
+    print("  t THREAD_ID                               Read a thread/chat")
+    print("  h                                         This help + status")
     print()
-    print("Status:")
-    print(f"  Email:  {email}")
-    print(f"  MCP:    {url}")
-    print(f"  Config: {config_dir}")
+    print("Sources:")
+    print(f"  Gmail:    {email} -> {gmail_url}")
+    print(f"  WhatsApp: {'ok' if wa_ok else 'not found'} ({wa_cwd})")
+    print(f"  Config:   {config_dir}")
     if wm:
         for src, ts in sorted(wm.items()):
-            print(f"  Watermark [{src}]: {ts}")
+            label = {"g": "Gmail", "w": "WhatsApp"}.get(src, src)
+            print(f"  Watermark [{label}]: {ts}")
     else:
         print("  Watermarks: (none — run wn to set)")
     print()
@@ -267,17 +421,12 @@ def _cmd_help(args: argparse.Namespace) -> None:
 
 async def _cmd_skill(args: argparse.Namespace) -> None:
     """Handle the skill command — machine-readable output for Claude Code."""
-    # Skill mode is a thin wrapper: runs the specified subcommand
-    # with pipe format and returns the result.  This is the entry point
-    # that a Claude Code skill stub calls.
     subcmd = getattr(args, "subcmd", None)
     if not subcmd:
         print("Usage: ts4k skill <wn|l|g|t> [args...]", file=sys.stderr)
         sys.exit(1)
 
-    # Re-parse remaining args as the subcommand
     argv = [subcmd] + (getattr(args, "skill_args", None) or [])
-    # Force pipe format for skill mode
     argv.extend(["-f", "pipe"])
     parser = _build_parser()
     sub_args = parser.parse_args(argv)
@@ -295,12 +444,12 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add args shared across commands that hit the MCP server."""
+    """Add args shared across commands that hit MCP servers."""
     parser.add_argument("--email", help="Google email (or set TS4K_GMAIL_EMAIL)")
-    parser.add_argument("--url", help=f"MCP server URL (default: {_DEFAULT_MCP_URL})")
+    parser.add_argument("--url", help=f"Gmail MCP URL (default: {_DEFAULT_GMAIL_MCP_URL})")
     parser.add_argument(
         "--transport", default="streamable-http",
-        help="MCP transport: stdio or streamable-http (default: streamable-http)",
+        help="Gmail MCP transport (default: streamable-http)",
     )
     parser.add_argument(
         "-f", "--format", default="pipe",
@@ -327,28 +476,30 @@ def _build_parser() -> argparse.ArgumentParser:
         wn = subparsers.add_parser(cmd_name, help="Show new messages (updates watermark)")
         wn.add_argument("--since", help="Time range: 2d, 7d, ISO timestamp, or Gmail query")
         wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+        wn.add_argument("--source", "-s", default="all", help="Source: gmail, whatsapp, all (default: all)")
         _add_common_args(wn)
         wn.set_defaults(func=_cmd_whatsnew)
 
     # --- get / g ---
     for cmd_name in ("get", "g"):
         get = subparsers.add_parser(cmd_name, help="Read a single message")
-        get.add_argument("id", help="Message ID (e.g. g:abc123)")
+        get.add_argument("id", help="Message ID (e.g. g:abc123 or w:3EB05C)")
         _add_common_args(get)
         get.set_defaults(func=_cmd_get)
 
     # --- thread / t ---
     for cmd_name in ("thread", "t"):
-        th = subparsers.add_parser(cmd_name, help="Read a thread")
-        th.add_argument("id", help="Thread ID (e.g. g:abc123)")
+        th = subparsers.add_parser(cmd_name, help="Read a thread or chat")
+        th.add_argument("id", help="Thread/chat ID (e.g. g:abc123 or w:jid@s.whatsapp.net)")
         _add_common_args(th)
         th.set_defaults(func=_cmd_thread)
 
     # --- list / l ---
     for cmd_name in ("list", "l"):
         ls = subparsers.add_parser(cmd_name, help="List messages matching a query")
-        ls.add_argument("--query", "-q", help="Gmail search query")
+        ls.add_argument("--query", "-q", help="Search query")
         ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+        ls.add_argument("--source", "-s", default="all", help="Source: gmail, whatsapp, all (default: all)")
         _add_common_args(ls)
         ls.set_defaults(func=_cmd_list)
 
@@ -373,7 +524,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     """CLI entry point.  Called by the ``ts4k`` console script."""
-    # Ensure UTF-8 output on Windows
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -392,7 +542,6 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    # help/h is sync, everything else is async
     if args.func is _cmd_help:
         args.func(args)
         return
