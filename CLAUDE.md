@@ -8,7 +8,9 @@ ts4k (Token Saver 4000) is a Python CLI + MCP server that gives LLM agents token
 
 ## Project Plan
 
-Read `docs/plan-v1.md` for the full architecture, design principles, output format specs, and phased implementation roadmap. That document is the source of truth for what ts4k should become.
+Read `docs/rip/ts4k-rip.md` for the RIP (Rapid Implementation Plan) — the consolidated architecture, design principles, prototype strategy, and phased implementation roadmap. Phase working docs are in `docs/rip/phase-*.md`. The original design doc is `docs/plan-v1.md`.
+
+The RIP is the source of truth for what ts4k should become.
 
 ## Architecture at a Glance
 
@@ -16,11 +18,11 @@ Read `docs/plan-v1.md` for the full architecture, design principles, output form
 - **Normalize → Filter → Format** pipeline processes every message before output.
 - **Output formats**: pipe-delimited for listings, mini XML for message bodies. Optimized for LLM token efficiency.
 - **State**: JSON files (watermarks, contact identity map, filter config). Git-friendly, human-readable.
-- **Two modes**: CLI (`ts4k whatsnew`) and MCP server (same commands as MCP tools).
+- **Three modes**: CLI (`ts4k whatsnew`), MCP server, and Skill (thin Claude Code stub calling `ts4k skill`).
 
 ## Tech Stack
 
-- Python (3.11+)
+- Python (3.12+ per ADR-1)
 - Official Python MCP SDK for server mode
 - html2text / beautifulsoup4 for HTML processing
 - JSON state files in `~/.config/ts4k/`
@@ -37,10 +39,12 @@ Read `docs/plan-v1.md` for the full architecture, design principles, output form
 
 ## Implementation Phases
 
-1. **Phase 1**: Gmail adapter + core (whatsnew, list, read, thread, normalization, watermarks, CLI)
-2. **Phase 2**: MCP server mode, history command, filter config, contacts, status
-3. **Phase 3**: WhatsApp + Telegram adapters, cross-platform merge, contact identity map
-4. **Phase 4**: Send/draft passthrough, thread noise reduction, search, pagination, perf
+0. **Phase 0**: Prototype validation — Normalizer, MCP bridge, full loop, bulk probe, container
+1. **Phase 1**: Gmail MVP — Core pipeline, Gmail adapter, CLI (wn/g/t/l/h/skill), watermarks, output formats
+2. **Phase 2**: WhatsApp + Contacts — WhatsApp adapter, parallel calls, contacts, status, stats, filters
+3. **Phase 3**: O365 + MCP Server — O365 adapter, MCP server mode, 3-platform whatsnew
+4. **Phase 4**: Overview + Bulk — Overview drill-down, background tasks, cache, resumable batch
+5. **Phase 5**: Send + Docker + Release — Send/draft, Docker template, PyPI, docs, public release
 
 ## Repository Layout (planned)
 
