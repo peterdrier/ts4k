@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 ts4k = "ts4k.cli:main"
+ts4k-mcp = "ts4k.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ts4k"]
