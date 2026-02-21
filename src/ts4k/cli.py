@@ -32,7 +32,8 @@ from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.format import format_listing, format_message, format_thread
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import contacts, watermarks
+from ts4k.core.filter import apply_filters
+from ts4k.state import contacts, filters, watermarks
 
 logger = logging.getLogger("ts4k")
 
@@ -183,6 +184,13 @@ def _since_to_iso(since: str | None, source: str) -> str | None:
     return since
 
 
+def _maybe_filter(messages: list[dict], args: argparse.Namespace) -> list[dict]:
+    """Apply skip filters if --filter / -F was passed."""
+    if getattr(args, "filter", False):
+        return apply_filters(messages, filters.get_config())
+    return messages
+
+
 # ---------------------------------------------------------------------------
 # Parallel adapter helpers
 # ---------------------------------------------------------------------------
@@ -278,6 +286,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
     all_messages = all_messages[:count]
+    all_messages = _maybe_filter(all_messages, args)
 
     if not all_messages:
         print("No new messages.", file=sys.stderr)
@@ -285,7 +294,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
 
     print(format_listing(all_messages, fmt=fmt))
 
-    # Update watermarks per source
+    # Update watermarks per source (always, even when filtering)
     for source_name, msgs in zip(source_names, results):
         if msgs:
             prefix = "g" if source_name == "gmail" else "w"
@@ -384,7 +393,13 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         return
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
-    print(format_listing(all_messages[:count], fmt=fmt))
+    all_messages = _maybe_filter(all_messages[:count], args)
+
+    if not all_messages:
+        print("No messages found.", file=sys.stderr)
+        return
+
+    print(format_listing(all_messages, fmt=fmt))
 
 
 def _cmd_help(args: argparse.Namespace) -> None:
@@ -407,7 +422,14 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  c unlink ALIAS [ID...]                    Unlink identifiers or remove contact")
     print("  c find TERM                               Search contacts")
     print("  c list                                    List all contacts")
+    print("  f show                                    Show filter config")
+    print("  f add-sender|rm-sender ADDR               Manage sender skip list")
+    print("  f add-domain|rm-domain DOMAIN             Manage domain skip list")
+    print("  f add-pattern|rm-pattern REGEX            Manage pattern skip list")
+    print("  f skip-groups true|false                  Toggle group chat filter")
     print("  h                                         This help + status")
+    print()
+    print("Flags: -F applies filters (off by default), -f p|j|x sets format")
     print()
     print("Sources:")
     print(f"  Gmail:    {email} -> {gmail_url}")
@@ -419,8 +441,6 @@ def _cmd_help(args: argparse.Namespace) -> None:
             print(f"  Watermark [{label}]: {ts}")
     else:
         print("  Watermarks: (none — run wn to set)")
-    print()
-    print("Formats: -f p(ipe) | j(son) | x(ml)")
 
 
 def _cmd_contacts(args: argparse.Namespace) -> None:
@@ -476,6 +496,52 @@ def _cmd_contacts(args: argparse.Namespace) -> None:
             print(f"{alias}: {' | '.join(idents)}")
 
 
+def _cmd_filter(args: argparse.Namespace) -> None:
+    """Handle the filter / f command."""
+    action = getattr(args, "action", None)
+
+    if action == "add-sender":
+        result = filters.add_sender(args.value)
+        print(f"skip_senders: {', '.join(result)}")
+    elif action == "rm-sender":
+        result = filters.remove_sender(args.value)
+        print(f"skip_senders: {', '.join(result) or '(empty)'}")
+    elif action == "add-domain":
+        result = filters.add_domain(args.value)
+        print(f"skip_domains: {', '.join(result)}")
+    elif action == "rm-domain":
+        result = filters.remove_domain(args.value)
+        print(f"skip_domains: {', '.join(result) or '(empty)'}")
+    elif action == "add-pattern":
+        result = filters.add_pattern(args.value)
+        print(f"skip_patterns: {', '.join(result)}")
+    elif action == "rm-pattern":
+        result = filters.remove_pattern(args.value)
+        print(f"skip_patterns: {', '.join(result) or '(empty)'}")
+    elif action == "skip-groups":
+        val = args.value.lower() in ("true", "yes", "on", "1")
+        result = filters.set_skip_groups(val)
+        print(f"skip_groups: {result}")
+    elif action == "reset":
+        filters.reset()
+        print("Filters reset to defaults.")
+    elif action == "show":
+        config = filters.get_config()
+        print(f"skip_senders:  {', '.join(config['skip_senders']) or '(none)'}")
+        print(f"skip_domains:  {', '.join(config['skip_domains']) or '(none)'}")
+        print(f"skip_groups:   {config['skip_groups']}")
+        print(f"skip_patterns: {', '.join(config['skip_patterns']) or '(none)'}")
+    else:
+        # Default: show
+        config = filters.get_config()
+        print(f"skip_senders:  {', '.join(config['skip_senders']) or '(none)'}")
+        print(f"skip_domains:  {', '.join(config['skip_domains']) or '(none)'}")
+        print(f"skip_groups:   {config['skip_groups']}")
+        print(f"skip_patterns: {', '.join(config['skip_patterns']) or '(none)'}")
+        print()
+        print("Use -F flag on wn/l to apply. Filters are OFF by default.")
+
+
 async def _cmd_skill(args: argparse.Namespace) -> None:
     """Handle the skill command — machine-readable output for Claude Code."""
     subcmd = getattr(args, "subcmd", None)
@@ -511,6 +577,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-f", "--format", default="pipe",
         help="Output format: pipe, json, xml (or p, j, x)",
+    )
+    parser.add_argument(
+        "-F", "--filter", action="store_true", default=False,
+        help="Apply skip filters (off by default — unfiltered for triage)",
     )
 
 
@@ -580,6 +650,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
         ct.set_defaults(func=_cmd_contacts)
 
+    # --- filter / f ---
+    for cmd_name in ("filter", "f"):
+        fl = subparsers.add_parser(cmd_name, help="Manage skip filters (off by default)")
+        fl_sub = fl.add_subparsers(dest="action")
+
+        for action_name, help_text in [
+            ("add-sender", "Add sender to skip list"),
+            ("rm-sender", "Remove sender from skip list"),
+            ("add-domain", "Add domain to skip list"),
+            ("rm-domain", "Remove domain from skip list"),
+            ("add-pattern", "Add regex pattern to skip"),
+            ("rm-pattern", "Remove pattern from skip list"),
+            ("skip-groups", "Set group chat skip (true/false)"),
+        ]:
+            sub = fl_sub.add_parser(action_name, help=help_text)
+            sub.add_argument("value", help="Value to add/remove/set")
+
+        fl_sub.add_parser("show", help="Show current filter config")
+        fl_sub.add_parser("reset", help="Reset filters to defaults")
+
+        fl.set_defaults(func=_cmd_filter)
+
     # --- help / h ---
     for cmd_name in ("help", "h"):
         hp = subparsers.add_parser(cmd_name, help="Show status and quick reference")
@@ -619,7 +711,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func in (_cmd_help, _cmd_contacts):
+    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter):
         args.func(args)
         return
 
