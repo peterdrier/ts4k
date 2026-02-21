@@ -173,8 +173,13 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
 
         print(format_listing(messages, fmt=fmt))
 
-        # Update watermark to now — using wn IS the side effect
-        watermarks.update("g")
+        # Update watermark to newest message date — using wn IS the side effect
+        newest = max(
+            (m.get("date", "") for m in messages),
+            default=None,
+        )
+        if newest:
+            watermarks.update("g", newest)
 
 
 async def _cmd_get(args: argparse.Namespace) -> None:
