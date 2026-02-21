@@ -32,7 +32,7 @@ from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.format import format_listing, format_message, format_thread
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import watermarks
+from ts4k.state import contacts, watermarks
 
 logger = logging.getLogger("ts4k")
 
@@ -403,6 +403,10 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  l [-q QUERY] [-n COUNT] [--source ...]    List messages")
     print("  g MSG_ID                                  Read a message (g: or w: prefix)")
     print("  t THREAD_ID                               Read a thread/chat")
+    print("  c link ALIAS ID [ID...]                   Link identifiers to a contact")
+    print("  c unlink ALIAS [ID...]                    Unlink identifiers or remove contact")
+    print("  c find TERM                               Search contacts")
+    print("  c list                                    List all contacts")
     print("  h                                         This help + status")
     print()
     print("Sources:")
@@ -417,6 +421,59 @@ def _cmd_help(args: argparse.Namespace) -> None:
         print("  Watermarks: (none — run wn to set)")
     print()
     print("Formats: -f p(ipe) | j(son) | x(ml)")
+
+
+def _cmd_contacts(args: argparse.Namespace) -> None:
+    """Handle the contacts / c command."""
+    action = getattr(args, "action", None)
+
+    if action == "link":
+        alias = args.alias
+        idents = args.identifiers
+        if not idents:
+            print("Error: at least one identifier required.", file=sys.stderr)
+            sys.exit(1)
+        result = contacts.link(alias, *idents)
+        print(f"{alias}: {' | '.join(result)}")
+
+    elif action == "unlink":
+        alias = args.alias
+        idents = args.identifiers
+        if idents:
+            result = contacts.unlink(alias, *idents)
+            if result is None:
+                print(f"{alias}: (removed)")
+            else:
+                print(f"{alias}: {' | '.join(result)}")
+        else:
+            contacts.unlink(alias)
+            print(f"{alias}: (removed)")
+
+    elif action == "find":
+        term = args.term
+        results = contacts.find(term)
+        if not results:
+            print("No matches.", file=sys.stderr)
+            return
+        for alias, idents in sorted(results.items()):
+            print(f"{alias}: {' | '.join(idents)}")
+
+    elif action == "list":
+        all_contacts = contacts.list_all()
+        if not all_contacts:
+            print("No contacts.", file=sys.stderr)
+            return
+        for alias, idents in sorted(all_contacts.items()):
+            print(f"{alias}: {' | '.join(idents)}")
+
+    else:
+        # Default: same as list
+        all_contacts = contacts.list_all()
+        if not all_contacts:
+            print("No contacts. Use 'ts4k c link <alias> <id> [<id>...]' to add.", file=sys.stderr)
+            return
+        for alias, idents in sorted(all_contacts.items()):
+            print(f"{alias}: {' | '.join(idents)}")
 
 
 async def _cmd_skill(args: argparse.Namespace) -> None:
@@ -503,6 +560,26 @@ def _build_parser() -> argparse.ArgumentParser:
         _add_common_args(ls)
         ls.set_defaults(func=_cmd_list)
 
+    # --- contacts / c ---
+    for cmd_name in ("contacts", "c"):
+        ct = subparsers.add_parser(cmd_name, help="Cross-platform contact identity map")
+        ct_sub = ct.add_subparsers(dest="action")
+
+        ct_link = ct_sub.add_parser("link", help="Link identifiers to an alias")
+        ct_link.add_argument("alias", help="Contact alias (e.g. sarah)")
+        ct_link.add_argument("identifiers", nargs="+", help="Platform IDs (e.g. g:sarah@gmail.com w:123@wa)")
+
+        ct_unlink = ct_sub.add_parser("unlink", help="Unlink identifiers or remove alias")
+        ct_unlink.add_argument("alias", help="Contact alias")
+        ct_unlink.add_argument("identifiers", nargs="*", help="IDs to remove (omit to delete alias)")
+
+        ct_sub.add_parser("list", help="List all contacts")
+
+        ct_find = ct_sub.add_parser("find", help="Search contacts")
+        ct_find.add_argument("term", help="Search term (matches alias or identifier)")
+
+        ct.set_defaults(func=_cmd_contacts)
+
     # --- help / h ---
     for cmd_name in ("help", "h"):
         hp = subparsers.add_parser(cmd_name, help="Show status and quick reference")
@@ -542,7 +619,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func is _cmd_help:
+    if args.func in (_cmd_help, _cmd_contacts):
         args.func(args)
         return
 
