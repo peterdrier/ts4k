@@ -77,15 +77,16 @@ def format_thread(thread: dict, fmt: str = "pipe") -> str:
         raise ValueError(f"Unknown format: {fmt!r}")
 
 
-def estimate_size(text: str) -> str:
-    """Human-readable size estimate from text length in bytes.
+def estimate_size(text_or_bytes: str | int) -> str:
+    """Human-readable size estimate.
 
+    Accepts a string (measures UTF-8 byte length) or an int (byte count).
     Returns e.g. ``'0b'``, ``'500b'``, ``'2kb'``, ``'1mb'``.
     """
-    if not text:
+    if not text_or_bytes:
         return "0b"
 
-    n = len(text.encode("utf-8"))
+    n = text_or_bytes if isinstance(text_or_bytes, int) else len(text_or_bytes.encode("utf-8"))
 
     if n < 1000:
         return f"{n}b"
