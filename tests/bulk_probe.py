@@ -25,7 +25,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.core.format import estimate_size
+from ts4k.core.format import estimate_size, format_listing
 from ts4k.adapters.gmail import parse_search_response, parse_message_response
 
 
@@ -91,10 +91,17 @@ async def run(
             t_search = time.monotonic()
             search_elapsed = t_search - t_start
 
+            # Measure listing output
+            listing_out = format_listing(all_entries, "pipe")
+            listing_bytes = len(listing_out.encode())
+            listing_saving = 1.0 - (listing_bytes / search_bytes_total) if search_bytes_total else 0
+
             print(f"\n--- Search complete ---")
             print(f"Pages:      {page_num}")
             print(f"Messages:   {len(all_entries)}")
-            print(f"Search bytes: {search_bytes_total:,}")
+            print(f"Raw search:   {search_bytes_total:>10,} bytes ({estimate_size(search_bytes_total)})")
+            print(f"Pipe listing: {listing_bytes:>10,} bytes ({estimate_size(listing_bytes)})")
+            print(f"Listing saving: {listing_saving:.1%}")
             print(f"Time:       {search_elapsed:.1f}s")
             if page_num > 0:
                 print(f"Avg/page:   {search_elapsed / page_num:.2f}s")
