@@ -33,7 +33,7 @@ from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.format import format_listing, format_message, format_thread
 from ts4k.core.normalize import normalize, normalize_headers
 from ts4k.core.filter import apply_filters
-from ts4k.state import contacts, filters, watermarks
+from ts4k.state import contacts, filters, stats, watermarks
 
 logger = logging.getLogger("ts4k")
 
@@ -191,6 +191,39 @@ def _maybe_filter(messages: list[dict], args: argparse.Namespace) -> list[dict]:
     return messages
 
 
+def _raw_bytes(messages: list[dict]) -> int:
+    """Estimate raw bytes from message dicts (pre-format size)."""
+    import json as _json
+    return sum(len(_json.dumps(m).encode("utf-8")) for m in messages)
+
+
+def _record_stats(
+    command: str, messages: list[dict], output: str,
+) -> None:
+    """Record stats for a batch of messages grouped by source."""
+    out_bytes = len(output.encode("utf-8"))
+    # Group messages by source for per-source tracking
+    by_source: dict[str, list[dict]] = {}
+    for msg in messages:
+        src = msg.get("source", "") or ""
+        if not src and "id" in msg:
+            mid = msg["id"]
+            src = mid.split(":")[0] if ":" in mid else ""
+        by_source.setdefault(src, []).append(msg)
+
+    for source, msgs in by_source.items():
+        raw = _raw_bytes(msgs)
+        # Apportion output bytes by proportion of messages
+        proportion = len(msgs) / len(messages) if messages else 0
+        stats.record(
+            command=command,
+            source=source or "?",
+            bytes_in=raw,
+            bytes_out=round(out_bytes * proportion),
+            messages=len(msgs),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Parallel adapter helpers
 # ---------------------------------------------------------------------------
@@ -292,7 +325,9 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
         print("No new messages.", file=sys.stderr)
         return
 
-    print(format_listing(all_messages, fmt=fmt))
+    output = format_listing(all_messages, fmt=fmt)
+    print(output)
+    _record_stats("wn", all_messages, output)
 
     # Update watermarks per source (always, even when filtering)
     for source_name, msgs in zip(source_names, results):
@@ -317,13 +352,17 @@ async def _cmd_get(args: argparse.Namespace) -> None:
         async with WhatsAppAdapter(config) as adapter:
             msg = await adapter.read_message(msg_id)
             msg = _normalize_message(msg)
-            print(format_message(msg, fmt=fmt))
+            output = format_message(msg, fmt=fmt)
+            print(output)
+            _record_stats("g", [msg], output)
     else:
         config = _require_gmail_config(args)
         async with GmailAdapter(config) as adapter:
             msg = await adapter.read_message(msg_id)
             msg = _normalize_message(msg)
-            print(format_message(msg, fmt=fmt))
+            output = format_message(msg, fmt=fmt)
+            print(output)
+            _record_stats("g", [msg], output)
 
 
 async def _cmd_thread(args: argparse.Namespace) -> None:
@@ -340,13 +379,17 @@ async def _cmd_thread(args: argparse.Namespace) -> None:
         async with WhatsAppAdapter(config) as adapter:
             thread = await adapter.read_thread(thread_id)
             thread = _normalize_thread(thread)
-            print(format_thread(thread, fmt=fmt))
+            output = format_thread(thread, fmt=fmt)
+            print(output)
+            _record_stats("t", thread.get("messages", []), output)
     else:
         config = _require_gmail_config(args)
         async with GmailAdapter(config) as adapter:
             thread = await adapter.read_thread(thread_id)
             thread = _normalize_thread(thread)
-            print(format_thread(thread, fmt=fmt))
+            output = format_thread(thread, fmt=fmt)
+            print(output)
+            _record_stats("t", thread.get("messages", []), output)
 
 
 async def _cmd_list(args: argparse.Namespace) -> None:
@@ -399,7 +442,9 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         print("No messages found.", file=sys.stderr)
         return
 
-    print(format_listing(all_messages, fmt=fmt))
+    output = format_listing(all_messages, fmt=fmt)
+    print(output)
+    _record_stats("l", all_messages, output)
 
 
 def _cmd_help(args: argparse.Namespace) -> None:
@@ -427,7 +472,8 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  f add-domain|rm-domain DOMAIN             Manage domain skip list")
     print("  f add-pattern|rm-pattern REGEX            Manage pattern skip list")
     print("  f skip-groups true|false                  Toggle group chat filter")
-    print("  h                                         This help + status")
+    print("  st                                        Status, stats, efficiency")
+    print("  h                                         This help")
     print()
     print("Flags: -F applies filters (off by default), -f p|j|x sets format")
     print()
@@ -494,6 +540,89 @@ def _cmd_contacts(args: argparse.Namespace) -> None:
             return
         for alias, idents in sorted(all_contacts.items()):
             print(f"{alias}: {' | '.join(idents)}")
+
+
+def _cmd_status(args: argparse.Namespace) -> None:
+    """Handle the status / st command — operational state summary."""
+    from ts4k.core.format import estimate_size
+
+    config_dir = os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")
+    email = os.environ.get("TS4K_GMAIL_EMAIL", "(not set)")
+    gmail_url = os.environ.get("TS4K_GMAIL_MCP_URL", _DEFAULT_GMAIL_MCP_URL)
+    wa_cwd = os.environ.get("TS4K_WA_MCP_CWD", _DEFAULT_WA_MCP_CWD)
+    wa_ok = os.path.isdir(wa_cwd)
+
+    # Adapters
+    print("Adapters:")
+    print(f"  Gmail:    {email} -> {gmail_url}")
+    print(f"  WhatsApp: {'ok' if wa_ok else 'not found'} ({wa_cwd})")
+
+    # Watermarks
+    wm = watermarks.all()
+    print()
+    print("Watermarks:")
+    if wm:
+        for src, ts in sorted(wm.items()):
+            label = {"g": "Gmail", "w": "WhatsApp"}.get(src, src)
+            print(f"  {label}: {ts}")
+    else:
+        print("  (none)")
+
+    # Contacts
+    all_contacts = contacts.list_all()
+    total_idents = sum(len(ids) for ids in all_contacts.values())
+    print()
+    print(f"Contacts: {len(all_contacts)} aliases, {total_idents} identifiers")
+
+    # Filters
+    fconfig = filters.get_config()
+    active_rules = (
+        len(fconfig.get("skip_senders", []))
+        + len(fconfig.get("skip_domains", []))
+        + len(fconfig.get("skip_patterns", []))
+        + (1 if fconfig.get("skip_groups") else 0)
+    )
+    print(f"Filters:  {active_rules} active rules (use -F to apply)")
+
+    # Stats
+    st = stats.get_all()
+    total_in = st.get("total_bytes_in", 0)
+    total_out = st.get("total_bytes_out", 0)
+    total_msgs = st.get("total_messages", 0)
+    pct = stats.savings_pct()
+
+    print()
+    print("Stats:")
+    if total_msgs > 0:
+        print(f"  Messages processed: {total_msgs}")
+        print(f"  Bytes in:  {estimate_size(total_in)} ({total_in:,})")
+        print(f"  Bytes out: {estimate_size(total_out)} ({total_out:,})")
+        print(f"  Savings:   {pct}%")
+
+        by_source = st.get("by_source", {})
+        if by_source:
+            print()
+            print("  By source:")
+            for src, data in sorted(by_source.items()):
+                label = {"g": "Gmail", "w": "WhatsApp"}.get(src, src)
+                src_in = data.get("bytes_in", 0)
+                src_pct = round((1 - data.get("bytes_out", 0) / src_in) * 100, 1) if src_in else 0
+                print(f"    {label}: {data.get('messages', 0)} msgs, "
+                      f"{estimate_size(src_in)} in, {src_pct}% savings")
+
+        by_cmd = st.get("by_command", {})
+        if by_cmd:
+            print()
+            print("  By command:")
+            for cmd, data in sorted(by_cmd.items()):
+                print(f"    {cmd}: {data.get('calls', 0)} calls, "
+                      f"{estimate_size(data.get('bytes_in', 0))} in -> "
+                      f"{estimate_size(data.get('bytes_out', 0))} out")
+    else:
+        print("  (no data yet — run some commands first)")
+
+    print()
+    print(f"Config: {config_dir}")
 
 
 def _cmd_filter(args: argparse.Namespace) -> None:
@@ -672,6 +801,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
         fl.set_defaults(func=_cmd_filter)
 
+    # --- status / st ---
+    for cmd_name in ("status", "st"):
+        st = subparsers.add_parser(cmd_name, help="Operational status, stats, efficiency")
+        st.set_defaults(func=_cmd_status)
+
     # --- help / h ---
     for cmd_name in ("help", "h"):
         hp = subparsers.add_parser(cmd_name, help="Show status and quick reference")
@@ -711,7 +845,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter):
+    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status):
         args.func(args)
         return
 
