@@ -276,8 +276,9 @@ def _parse_thread_message_block(text: str, prefix: str, index: int) -> dict:
 class GmailAdapter(BaseAdapter):
     """Gmail adapter that bridges to google_workspace_mcp via MCP client."""
 
-    def __init__(self, config: GmailAdapterConfig) -> None:
+    def __init__(self, config: GmailAdapterConfig, prefix: str = "g") -> None:
         self._config = config
+        self._prefix = prefix
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
 
@@ -285,7 +286,7 @@ class GmailAdapter(BaseAdapter):
 
     @property
     def source_prefix(self) -> str:
-        return "g"
+        return self._prefix
 
     async def connect(self) -> None:
         """Open the MCP client session to the upstream server."""

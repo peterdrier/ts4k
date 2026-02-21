@@ -3,19 +3,22 @@
 Usage::
 
     ts4k wn                              # what's new across all sources
-    ts4k wn --source gmail               # what's new in Gmail only
+    ts4k wn --source g                   # what's new from source "g" only
+    ts4k wn --source gmail               # what's new from all Gmail sources
     ts4k wn --since 2d                   # what's new in the last 2 days
     ts4k l -q "from:alice" -n 10         # list 10 messages matching query
     ts4k g g:18f6a2b3c4e5f6a7            # read a Gmail message
     ts4k g w:3EB05C4245618036            # read a WhatsApp message
     ts4k t g:18f6a2b3c4e5f6a8            # read a Gmail thread
     ts4k t w:34620225091@s.whatsapp.net  # read a WhatsApp chat
-    ts4k h                               # show status + help
+    ts4k src list                        # show configured sources
+    ts4k src add g gmail email=x@y.com   # add a source
+    ts4k h                               # help + quick reference
+
+Sources are configured in ~/.config/ts4k/sources.json.  Each source has a
+user-chosen prefix (e.g. "g", "gn", "w") that namespaces all its message IDs.
 
 Environment variables:
-    TS4K_GMAIL_EMAIL       Google email address (required for Gmail)
-    TS4K_GMAIL_MCP_URL     URL for Gmail MCP server (default: http://localhost:51429/mcp)
-    TS4K_WA_MCP_CWD        WhatsApp MCP server directory
     TS4K_CONFIG_DIR        Config directory (default: ~/.config/ts4k)
 """
 
@@ -33,79 +36,98 @@ from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.format import format_listing, format_message, format_thread
 from ts4k.core.normalize import normalize, normalize_headers
 from ts4k.core.filter import apply_filters
-from ts4k.state import contacts, filters, stats, watermarks
+from ts4k.state import contacts, filters, sources, stats, watermarks
 
 logger = logging.getLogger("ts4k")
 
-_DEFAULT_GMAIL_MCP_URL = "http://localhost:51429/mcp"
-_DEFAULT_WA_MCP_CWD = "~/whatsapp-mcp/server"
-
 
 # ---------------------------------------------------------------------------
-# Config resolution
+# Source config resolution
 # ---------------------------------------------------------------------------
 
 
-def _resolve_gmail_config(args: argparse.Namespace) -> GmailAdapterConfig | None:
-    """Build a GmailAdapterConfig, or None if not configured."""
-    email = getattr(args, "email", None) or os.environ.get("TS4K_GMAIL_EMAIL")
-    if not email:
-        return None
-
-    transport = getattr(args, "transport", None) or "streamable-http"
-    server_url = (
-        getattr(args, "url", None)
-        or os.environ.get("TS4K_GMAIL_MCP_URL")
-        or _DEFAULT_GMAIL_MCP_URL
-    )
-
-    return GmailAdapterConfig(
-        user_email=email,
-        transport=transport,
-        server_url=server_url,
-    )
+def _ensure_sources() -> dict[str, dict[str, Any]]:
+    """Load source config from sources.json."""
+    return sources.list_all()
 
 
-def _resolve_wa_config(args: argparse.Namespace) -> WhatsAppAdapterConfig | None:
-    """Build a WhatsAppAdapterConfig, or None if not configured."""
-    cwd = os.environ.get("TS4K_WA_MCP_CWD", _DEFAULT_WA_MCP_CWD)
-    if not os.path.isdir(cwd):
-        return None
-    return WhatsAppAdapterConfig(server_cwd=cwd)
+def _make_adapter(prefix: str, cfg: dict[str, Any]) -> GmailAdapter | WhatsAppAdapter | None:
+    """Create an adapter instance from a source config entry."""
+    provider = cfg.get("provider", "").lower()
+
+    if provider == "gmail":
+        email = cfg.get("email")
+        if not email:
+            return None
+        return GmailAdapter(
+            GmailAdapterConfig(
+                user_email=email,
+                transport=cfg.get("transport", "streamable-http"),
+                server_url=cfg.get("mcp_url", "http://localhost:51429/mcp"),
+            ),
+            prefix=prefix,
+        )
+
+    if provider == "whatsapp":
+        cwd = cfg.get("mcp_cwd", "")
+        if not cwd or not os.path.isdir(cwd):
+            return None
+        cmd = cfg.get("server_command", ["uv", "run", "main.py"])
+        return WhatsAppAdapter(
+            WhatsAppAdapterConfig(server_command=cmd, server_cwd=cwd),
+            prefix=prefix,
+        )
+
+    logger.warning("Unknown provider %r for source %r", provider, prefix)
+    return None
 
 
-def _resolve_sources(args: argparse.Namespace) -> list[str]:
-    """Determine which sources to query based on --source flag."""
+def _resolve_prefixes(args: argparse.Namespace) -> list[str]:
+    """Determine which source prefixes to query based on --source flag.
+
+    Accepts:
+    - A specific prefix: ``--source g``, ``--source gn``
+    - A provider name: ``--source gmail`` (all gmail sources)
+    - ``all`` (default): every configured source
+    """
     source = getattr(args, "source", None) or "all"
-    source = source.lower()
-    if source in ("gmail", "g"):
-        return ["gmail"]
-    if source in ("whatsapp", "wa", "w"):
-        return ["whatsapp"]
+    source = source.lower().strip()
+    all_cfg = _ensure_sources()
+
     if source == "all":
-        return ["gmail", "whatsapp"]
+        return list(all_cfg.keys())
+
+    # Exact prefix match
+    if source in all_cfg:
+        return [source]
+
+    # Provider name match (e.g. "gmail" → all gmail prefixes)
+    provider_map = {"wa": "whatsapp"}
+    provider = provider_map.get(source, source)
+    matches = [
+        p for p, c in all_cfg.items()
+        if c.get("provider", "").lower() == provider
+    ]
+    if matches:
+        return matches
+
+    # Unknown — return as-is, will fail gracefully downstream
     return [source]
 
 
-def _source_from_id(prefixed_id: str) -> str:
-    """Infer source from a prefixed ID like 'g:xxx' or 'w:xxx'."""
-    if prefixed_id.startswith("g:"):
-        return "gmail"
-    if prefixed_id.startswith("w:"):
-        return "whatsapp"
-    return "gmail"  # default
+def _prefix_from_id(prefixed_id: str, all_cfg: dict[str, dict[str, Any]]) -> str:
+    """Extract source prefix from a prefixed ID like 'g:xxx' or 'gn:xxx'.
 
-
-def _require_gmail_config(args: argparse.Namespace) -> GmailAdapterConfig:
-    """Like _resolve_gmail_config but exits on failure."""
-    config = _resolve_gmail_config(args)
-    if config is None:
-        print(
-            "Error: Gmail email required. Use --email or set TS4K_GMAIL_EMAIL.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return config
+    Tries longest-matching configured prefix first.
+    """
+    # Sort prefixes by length descending so "gn:" matches before "g:"
+    for prefix in sorted(all_cfg.keys(), key=len, reverse=True):
+        if prefixed_id.startswith(f"{prefix}:"):
+            return prefix
+    # Fallback: take everything before first ':'
+    if ":" in prefixed_id:
+        return prefixed_id.split(":")[0]
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +166,10 @@ def _normalize_thread(thread: dict) -> dict:
     return result
 
 
-def _since_to_gmail_query(since: str | None) -> str:
+def _since_to_gmail_query(since: str | None, prefix: str = "g") -> str:
     """Convert a --since value to a Gmail search query fragment."""
     if since is None:
-        wm = watermarks.get("g")
+        wm = watermarks.get(prefix)
         if wm:
             from datetime import datetime
             try:
@@ -170,10 +192,10 @@ def _since_to_gmail_query(since: str | None) -> str:
     return since
 
 
-def _since_to_iso(since: str | None, source: str) -> str | None:
+def _since_to_iso(since: str | None, prefix: str) -> str | None:
     """Convert a --since value to an ISO timestamp for adapters that take ISO."""
     if since is None:
-        return watermarks.get(source[0])  # "g" or "w"
+        return watermarks.get(prefix)
 
     if since.endswith("d") and since[:-1].isdigit():
         from datetime import datetime, timedelta, timezone
@@ -229,59 +251,47 @@ def _record_stats(
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_gmail_whatsnew(
-    args: argparse.Namespace, since: str | None, count: int
+async def _fetch_whatsnew_for_source(
+    prefix: str, cfg: dict[str, Any], since: str | None, count: int
 ) -> list[dict]:
-    """Fetch new Gmail messages. Returns normalized message dicts."""
-    config = _resolve_gmail_config(args)
-    if config is None:
+    """Fetch new messages from a single source. Returns normalized dicts."""
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
         return []
 
-    query = _since_to_gmail_query(since)
+    provider = cfg.get("provider", "").lower()
     try:
-        async with GmailAdapter(config) as adapter:
-            listing = await adapter.list_messages(query=query, count=count)
-            if not listing:
-                return []
+        async with adapter:
+            if provider == "gmail":
+                query = _since_to_gmail_query(since, prefix)
+                listing = await adapter.list_messages(query=query, count=count)
+                if not listing:
+                    return []
+                messages = []
+                for entry in listing[:count]:
+                    try:
+                        msg = await adapter.read_message(entry["id"])
+                        msg = _normalize_message(msg)
+                        msg.setdefault("source", prefix)
+                        messages.append(msg)
+                    except Exception as exc:
+                        logger.warning("[%s] fetch %s: %s", prefix, entry["id"], exc)
+                return messages
 
-            messages = []
-            for entry in listing[:count]:
-                try:
-                    msg = await adapter.read_message(entry["id"])
-                    msg = _normalize_message(msg)
-                    msg.setdefault("source", "g")
+            else:  # whatsapp and others that use ISO timestamps
+                iso_since = _since_to_iso(since, prefix)
+                listing = await adapter.whatsnew(since=iso_since)
+                if not listing:
+                    return []
+                messages = []
+                for entry in listing[:count]:
+                    msg = _normalize_message(entry)
+                    msg.setdefault("source", prefix)
                     messages.append(msg)
-                except Exception as exc:
-                    logger.warning("Gmail fetch %s: %s", entry["id"], exc)
-            return messages
+                return messages
+
     except Exception as exc:
-        logger.warning("Gmail adapter failed: %s", exc)
-        return []
-
-
-async def _fetch_wa_whatsnew(
-    args: argparse.Namespace, since: str | None, count: int
-) -> list[dict]:
-    """Fetch new WhatsApp messages. Returns normalized message dicts."""
-    config = _resolve_wa_config(args)
-    if config is None:
-        return []
-
-    iso_since = _since_to_iso(since, "whatsapp")
-    try:
-        async with WhatsAppAdapter(config) as adapter:
-            listing = await adapter.whatsnew(since=iso_since)
-            if not listing:
-                return []
-
-            messages = []
-            for entry in listing[:count]:
-                msg = _normalize_message(entry)
-                msg.setdefault("source", "w")
-                messages.append(msg)
-            return messages
-    except Exception as exc:
-        logger.warning("WhatsApp adapter failed: %s", exc)
+        logger.warning("[%s] adapter failed: %s", prefix, exc)
         return []
 
 
@@ -295,19 +305,24 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
     fmt = getattr(args, "format", "pipe") or "pipe"
     count = getattr(args, "count", 20) or 20
     since = getattr(args, "since", None)
-    sources = _resolve_sources(args)
+    active_prefixes = _resolve_prefixes(args)
+    all_cfg = _ensure_sources()
 
-    # Build fetch tasks per source
+    # Build fetch tasks per source — all in parallel
     tasks: list[asyncio.Task] = []
-    source_names: list[str] = []
+    task_prefixes: list[str] = []
 
-    if "gmail" in sources:
-        tasks.append(asyncio.create_task(_fetch_gmail_whatsnew(args, since, count)))
-        source_names.append("gmail")
+    for prefix in active_prefixes:
+        cfg = all_cfg.get(prefix)
+        if cfg:
+            tasks.append(asyncio.create_task(
+                _fetch_whatsnew_for_source(prefix, cfg, since, count)
+            ))
+            task_prefixes.append(prefix)
 
-    if "whatsapp" in sources:
-        tasks.append(asyncio.create_task(_fetch_wa_whatsnew(args, since, count)))
-        source_names.append("whatsapp")
+    if not tasks:
+        print("No sources configured. Run: ts4k src add <prefix> <provider> ...", file=sys.stderr)
+        return
 
     # Run in parallel
     results = await asyncio.gather(*tasks)
@@ -330,9 +345,8 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
     _record_stats("wn", all_messages, output)
 
     # Update watermarks per source (always, even when filtering)
-    for source_name, msgs in zip(source_names, results):
+    for prefix, msgs in zip(task_prefixes, results):
         if msgs:
-            prefix = "g" if source_name == "gmail" else "w"
             newest = max(m.get("date", "") for m in msgs)
             if newest:
                 watermarks.update(prefix, newest)
@@ -342,54 +356,50 @@ async def _cmd_get(args: argparse.Namespace) -> None:
     """Handle the get / g command."""
     fmt = getattr(args, "format", "pipe") or "pipe"
     msg_id = args.id
-    source = _source_from_id(msg_id)
+    all_cfg = _ensure_sources()
+    prefix = _prefix_from_id(msg_id, all_cfg)
+    cfg = all_cfg.get(prefix)
 
-    if source == "whatsapp":
-        config = _resolve_wa_config(args)
-        if config is None:
-            print("Error: WhatsApp MCP not configured.", file=sys.stderr)
-            sys.exit(1)
-        async with WhatsAppAdapter(config) as adapter:
-            msg = await adapter.read_message(msg_id)
-            msg = _normalize_message(msg)
-            output = format_message(msg, fmt=fmt)
-            print(output)
-            _record_stats("g", [msg], output)
-    else:
-        config = _require_gmail_config(args)
-        async with GmailAdapter(config) as adapter:
-            msg = await adapter.read_message(msg_id)
-            msg = _normalize_message(msg)
-            output = format_message(msg, fmt=fmt)
-            print(output)
-            _record_stats("g", [msg], output)
+    if not cfg:
+        print(f"Error: no source configured for prefix {prefix!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        print(f"Error: source {prefix!r} not available.", file=sys.stderr)
+        sys.exit(1)
+
+    async with adapter:
+        msg = await adapter.read_message(msg_id)
+        msg = _normalize_message(msg)
+        output = format_message(msg, fmt=fmt)
+        print(output)
+        _record_stats("g", [msg], output)
 
 
 async def _cmd_thread(args: argparse.Namespace) -> None:
     """Handle the thread / t command."""
     fmt = getattr(args, "format", "pipe") or "pipe"
     thread_id = args.id
-    source = _source_from_id(thread_id)
+    all_cfg = _ensure_sources()
+    prefix = _prefix_from_id(thread_id, all_cfg)
+    cfg = all_cfg.get(prefix)
 
-    if source == "whatsapp":
-        config = _resolve_wa_config(args)
-        if config is None:
-            print("Error: WhatsApp MCP not configured.", file=sys.stderr)
-            sys.exit(1)
-        async with WhatsAppAdapter(config) as adapter:
-            thread = await adapter.read_thread(thread_id)
-            thread = _normalize_thread(thread)
-            output = format_thread(thread, fmt=fmt)
-            print(output)
-            _record_stats("t", thread.get("messages", []), output)
-    else:
-        config = _require_gmail_config(args)
-        async with GmailAdapter(config) as adapter:
-            thread = await adapter.read_thread(thread_id)
-            thread = _normalize_thread(thread)
-            output = format_thread(thread, fmt=fmt)
-            print(output)
-            _record_stats("t", thread.get("messages", []), output)
+    if not cfg:
+        print(f"Error: no source configured for prefix {prefix!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        print(f"Error: source {prefix!r} not available.", file=sys.stderr)
+        sys.exit(1)
+
+    async with adapter:
+        thread = await adapter.read_thread(thread_id)
+        thread = _normalize_thread(thread)
+        output = format_thread(thread, fmt=fmt)
+        print(output)
+        _record_stats("t", thread.get("messages", []), output)
 
 
 async def _cmd_list(args: argparse.Namespace) -> None:
@@ -397,39 +407,38 @@ async def _cmd_list(args: argparse.Namespace) -> None:
     fmt = getattr(args, "format", "pipe") or "pipe"
     count = getattr(args, "count", 20) or 20
     query = getattr(args, "query", None)
-    sources = _resolve_sources(args)
+    active_prefixes = _resolve_prefixes(args)
+    all_cfg = _ensure_sources()
 
     all_messages: list[dict] = []
 
-    if "gmail" in sources:
-        config = _resolve_gmail_config(args)
-        if config:
-            try:
-                async with GmailAdapter(config) as adapter:
-                    listing = await adapter.list_messages(query=query, count=count)
-                    for entry in (listing or []):
+    for prefix in active_prefixes:
+        cfg = all_cfg.get(prefix)
+        if not cfg:
+            continue
+        adapter = _make_adapter(prefix, cfg)
+        if adapter is None:
+            continue
+
+        provider = cfg.get("provider", "").lower()
+        try:
+            async with adapter:
+                listing = await adapter.list_messages(query=query, count=count)
+                for entry in (listing or []):
+                    if provider == "gmail":
                         try:
                             msg = await adapter.read_message(entry["id"])
                             msg = _normalize_message(msg)
-                            msg.setdefault("source", "g")
+                            msg.setdefault("source", prefix)
                             all_messages.append(msg)
                         except Exception as exc:
-                            logger.warning("Gmail fetch %s: %s", entry["id"], exc)
-            except Exception as exc:
-                logger.warning("Gmail adapter failed: %s", exc)
-
-    if "whatsapp" in sources:
-        config = _resolve_wa_config(args)
-        if config:
-            try:
-                async with WhatsAppAdapter(config) as adapter:
-                    listing = await adapter.list_messages(query=query, count=count)
-                    for entry in (listing or []):
+                            logger.warning("[%s] fetch %s: %s", prefix, entry["id"], exc)
+                    else:
                         msg = _normalize_message(entry)
-                        msg.setdefault("source", "w")
+                        msg.setdefault("source", prefix)
                         all_messages.append(msg)
-            except Exception as exc:
-                logger.warning("WhatsApp adapter failed: %s", exc)
+        except Exception as exc:
+            logger.warning("[%s] adapter failed: %s", prefix, exc)
 
     if not all_messages:
         print("No messages found.", file=sys.stderr)
@@ -449,44 +458,37 @@ async def _cmd_list(args: argparse.Namespace) -> None:
 
 def _cmd_help(args: argparse.Namespace) -> None:
     """Handle the help / h command — show status and quick reference."""
-    wm = watermarks.all()
     config_dir = os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")
-    email = os.environ.get("TS4K_GMAIL_EMAIL", "(not set)")
-    gmail_url = os.environ.get("TS4K_GMAIL_MCP_URL", _DEFAULT_GMAIL_MCP_URL)
-    wa_cwd = os.environ.get("TS4K_WA_MCP_CWD", _DEFAULT_WA_MCP_CWD)
-    wa_ok = os.path.isdir(wa_cwd)
+    all_cfg = _ensure_sources()
+    wm = watermarks.all()
 
     print("ts4k — Token Saver 4000")
     print()
     print("Commands:")
-    print("  wn [--since 2d] [--source gmail|wa|all]   What's new (updates watermark)")
+    print("  wn [--since 2d] [--source PREFIX|all]     What's new (updates watermark)")
     print("  l [-q QUERY] [-n COUNT] [--source ...]    List messages")
-    print("  g MSG_ID                                  Read a message (g: or w: prefix)")
+    print("  g MSG_ID                                  Read a message (prefix:id)")
     print("  t THREAD_ID                               Read a thread/chat")
-    print("  c link ALIAS ID [ID...]                   Link identifiers to a contact")
-    print("  c unlink ALIAS [ID...]                    Unlink identifiers or remove contact")
-    print("  c find TERM                               Search contacts")
-    print("  c list                                    List all contacts")
-    print("  f show                                    Show filter config")
-    print("  f add-sender|rm-sender ADDR               Manage sender skip list")
-    print("  f add-domain|rm-domain DOMAIN             Manage domain skip list")
-    print("  f add-pattern|rm-pattern REGEX            Manage pattern skip list")
-    print("  f skip-groups true|false                  Toggle group chat filter")
+    print("  src list|add|rm                           Manage sources")
+    print("  c link|unlink|find|list                   Manage contacts")
+    print("  f show|add-*|rm-*|reset                   Manage filters")
     print("  st                                        Status, stats, efficiency")
     print("  h                                         This help")
     print()
     print("Flags: -F applies filters (off by default), -f p|j|x sets format")
     print()
     print("Sources:")
-    print(f"  Gmail:    {email} -> {gmail_url}")
-    print(f"  WhatsApp: {'ok' if wa_ok else 'not found'} ({wa_cwd})")
-    print(f"  Config:   {config_dir}")
-    if wm:
-        for src, ts in sorted(wm.items()):
-            label = {"g": "Gmail", "w": "WhatsApp"}.get(src, src)
-            print(f"  Watermark [{label}]: {ts}")
+    if all_cfg:
+        for prefix, cfg in sorted(all_cfg.items()):
+            provider = cfg.get("provider", "?")
+            detail = cfg.get("email") or cfg.get("mcp_cwd") or ""
+            wm_ts = wm.get(prefix, "")
+            wm_str = f"  wm:{wm_ts}" if wm_ts else ""
+            print(f"  {prefix}: {provider} ({detail}){wm_str}")
     else:
-        print("  Watermarks: (none — run wn to set)")
+        print("  (none — run: ts4k src add <prefix> <provider> ...)")
+    print()
+    print(f"Config: {config_dir}")
 
 
 def _cmd_contacts(args: argparse.Namespace) -> None:
@@ -547,26 +549,25 @@ def _cmd_status(args: argparse.Namespace) -> None:
     from ts4k.core.format import estimate_size
 
     config_dir = os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")
-    email = os.environ.get("TS4K_GMAIL_EMAIL", "(not set)")
-    gmail_url = os.environ.get("TS4K_GMAIL_MCP_URL", _DEFAULT_GMAIL_MCP_URL)
-    wa_cwd = os.environ.get("TS4K_WA_MCP_CWD", _DEFAULT_WA_MCP_CWD)
-    wa_ok = os.path.isdir(wa_cwd)
-
-    # Adapters
-    print("Adapters:")
-    print(f"  Gmail:    {email} -> {gmail_url}")
-    print(f"  WhatsApp: {'ok' if wa_ok else 'not found'} ({wa_cwd})")
-
-    # Watermarks
+    all_cfg = _ensure_sources()
     wm = watermarks.all()
-    print()
-    print("Watermarks:")
-    if wm:
-        for src, ts in sorted(wm.items()):
-            label = {"g": "Gmail", "w": "WhatsApp"}.get(src, src)
-            print(f"  {label}: {ts}")
+
+    # Sources
+    print("Sources:")
+    if all_cfg:
+        for prefix, cfg in sorted(all_cfg.items()):
+            provider = cfg.get("provider", "?")
+            detail = cfg.get("email") or cfg.get("mcp_cwd") or ""
+            ok = True
+            if provider == "whatsapp":
+                cwd = cfg.get("mcp_cwd", "")
+                ok = bool(cwd) and os.path.isdir(cwd)
+            status = "ok" if ok else "not found"
+            wm_ts = wm.get(prefix, "")
+            wm_str = f"  wm: {wm_ts}" if wm_ts else ""
+            print(f"  {prefix}: {provider} [{status}] ({detail}){wm_str}")
     else:
-        print("  (none)")
+        print("  (none — run: ts4k src add <prefix> <provider> ...)")
 
     # Contacts
     all_contacts = contacts.list_all()
@@ -623,6 +624,51 @@ def _cmd_status(args: argparse.Namespace) -> None:
 
     print()
     print(f"Config: {config_dir}")
+
+
+def _cmd_sources(args: argparse.Namespace) -> None:
+    """Handle the src command — manage source config."""
+    action = getattr(args, "action", None)
+
+    if action == "add":
+        prefix = args.prefix
+        provider = args.provider.lower()
+        # Parse key=value pairs from extra args
+        kwargs: dict[str, Any] = {}
+        for kv in (args.params or []):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                kwargs[k.strip()] = v.strip()
+
+        entry = sources.add(prefix, provider=provider, **kwargs)
+        print(f"Added source {prefix!r}:")
+        for k, v in sorted(entry.items()):
+            print(f"  {k}: {v}")
+
+    elif action == "rm":
+        prefix = args.prefix
+        if sources.remove(prefix):
+            print(f"Removed source {prefix!r}.")
+        else:
+            print(f"Source {prefix!r} not found.", file=sys.stderr)
+
+    elif action == "list":
+        all_cfg = sources.list_all()
+        if not all_cfg:
+            print("No sources configured.", file=sys.stderr)
+            print("Add one:  ts4k src add g gmail email=you@gmail.com")
+            return
+        for prefix, cfg in sorted(all_cfg.items()):
+            provider = cfg.get("provider", "?")
+            detail = cfg.get("email") or cfg.get("mcp_cwd") or ""
+            print(f"  {prefix}: {provider} ({detail})")
+            for k, v in sorted(cfg.items()):
+                if k not in ("provider", "email", "mcp_cwd"):
+                    print(f"    {k}: {v}")
+
+    else:
+        # Default: list
+        _cmd_sources(argparse.Namespace(action="list", prefix=None, provider=None, params=None))
 
 
 def _cmd_filter(args: argparse.Namespace) -> None:
@@ -696,13 +742,7 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add args shared across commands that hit MCP servers."""
-    parser.add_argument("--email", help="Google email (or set TS4K_GMAIL_EMAIL)")
-    parser.add_argument("--url", help=f"Gmail MCP URL (default: {_DEFAULT_GMAIL_MCP_URL})")
-    parser.add_argument(
-        "--transport", default="streamable-http",
-        help="Gmail MCP transport (default: streamable-http)",
-    )
+    """Add args shared across commands."""
     parser.add_argument(
         "-f", "--format", default="pipe",
         help="Output format: pipe, json, xml (or p, j, x)",
@@ -732,7 +772,7 @@ def _build_parser() -> argparse.ArgumentParser:
         wn = subparsers.add_parser(cmd_name, help="Show new messages (updates watermark)")
         wn.add_argument("--since", help="Time range: 2d, 7d, ISO timestamp, or Gmail query")
         wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-        wn.add_argument("--source", "-s", default="all", help="Source: gmail, whatsapp, all (default: all)")
+        wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
         _add_common_args(wn)
         wn.set_defaults(func=_cmd_whatsnew)
 
@@ -755,9 +795,26 @@ def _build_parser() -> argparse.ArgumentParser:
         ls = subparsers.add_parser(cmd_name, help="List messages matching a query")
         ls.add_argument("--query", "-q", help="Search query")
         ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-        ls.add_argument("--source", "-s", default="all", help="Source: gmail, whatsapp, all (default: all)")
+        ls.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
         _add_common_args(ls)
         ls.set_defaults(func=_cmd_list)
+
+    # --- sources / src ---
+    for cmd_name in ("sources", "src"):
+        sr = subparsers.add_parser(cmd_name, help="Manage source config")
+        sr_sub = sr.add_subparsers(dest="action")
+
+        sr_add = sr_sub.add_parser("add", help="Add a source")
+        sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
+        sr_add.add_argument("provider", help="Provider: gmail, whatsapp")
+        sr_add.add_argument("params", nargs="*", help="Key=value pairs (e.g. email=x@y.com mcp_url=...)")
+
+        sr_rm = sr_sub.add_parser("rm", help="Remove a source")
+        sr_rm.add_argument("prefix", help="Source prefix to remove")
+
+        sr_sub.add_parser("list", help="List all configured sources")
+
+        sr.set_defaults(func=_cmd_sources)
 
     # --- contacts / c ---
     for cmd_name in ("contacts", "c"):
@@ -845,7 +902,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status):
+    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources):
         args.func(args)
         return
 

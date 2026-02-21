@@ -16,15 +16,18 @@ class BaseAdapter(ABC):
     platform APIs directly.  Each adapter translates between the upstream
     tool's native response format and the normalised dicts that the
     ts4k pipeline (normalize -> filter -> format) expects.
+
+    The *source_prefix* is set at construction time — it's the user-chosen
+    prefix from the source config (e.g. ``'g'``, ``'gn'``, ``'w'``).
     """
 
     @property
     @abstractmethod
     def source_prefix(self) -> str:
-        """Short platform tag used to namespace IDs (e.g. ``'g'`` for Gmail).
+        """Short tag used to namespace IDs (e.g. ``'g'``, ``'gn'``, ``'w'``).
 
         All IDs returned by this adapter are prefixed with
-        ``<source_prefix>:`` so they remain unique across platforms.
+        ``<source_prefix>:`` so they remain unique across sources.
         """
 
     @abstractmethod

@@ -163,14 +163,15 @@ def parse_message_context_response(text: str, prefix: str) -> dict:
 class WhatsAppAdapter(BaseAdapter):
     """WhatsApp adapter that bridges to whatsapp-mcp via stdio MCP client."""
 
-    def __init__(self, config: WhatsAppAdapterConfig) -> None:
+    def __init__(self, config: WhatsAppAdapterConfig, prefix: str = "w") -> None:
         self._config = config
+        self._prefix = prefix
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
 
     @property
     def source_prefix(self) -> str:
-        return "w"
+        return self._prefix
 
     async def connect(self) -> None:
         if self._session is not None:
