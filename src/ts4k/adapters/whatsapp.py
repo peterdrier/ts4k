@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,61 +47,39 @@ class WhatsAppAdapterConfig:
 # Response parsers
 # ---------------------------------------------------------------------------
 
-# list_messages returns pre-formatted strings like:
-# [2026-02-21 19:12:15+01:00] Chat: Daniel Tenner From: Me: hello
-# This parser is temporary — upstream issue #1 will switch to structured data.
-_MSG_LINE_RE = re.compile(
-    r"^\[(?P<timestamp>[^\]]+)\]\s+"
-    r"(?:Chat:\s+(?P<chat_name>.+?)\s+)?"
-    r"From:\s+(?P<sender>.+?):\s+"
-    r"(?:\[(?P<media_type>[^\]]+)\s+-\s+Message ID:\s+(?P<media_msg_id>\S+)\s+-\s+Chat JID:\s+(?P<media_chat_jid>\S+)\]\s*)?"
-    r"(?P<content>.*)"
-)
+def _wa_msg_to_dict(msg: dict, prefix: str) -> dict:
+    """Convert a structured message dict from upstream to ts4k format."""
+    ts_raw = msg.get("timestamp", "")
+    # Ensure ISO 8601 T separator
+    ts_iso = ts_raw.replace(" ", "T", 1) if ts_raw and "T" not in ts_raw else ts_raw
+
+    sender_name = msg.get("sender_name") or msg.get("sender_jid") or ""
+    is_from_me = msg.get("is_from_me", False)
+
+    result: dict[str, Any] = {
+        "id": f"{prefix}:{msg.get('id', '')}",
+        "source": prefix,
+        "from": sender_name,
+        "subject": msg.get("chat_name") or "",
+        "date": ts_iso,
+        "body": msg.get("content") or "",
+        "is_from_me": is_from_me,
+    }
+
+    if msg.get("chat_name"):
+        result["chat_name"] = msg["chat_name"]
+    if msg.get("chat_jid"):
+        result["chat_jid"] = msg["chat_jid"]
+    if msg.get("media_type"):
+        result["media_type"] = msg["media_type"]
+
+    return result
 
 
 def parse_list_messages_response(text: str, prefix: str) -> list[dict]:
-    """Parse the formatted string output from whatsapp-mcp list_messages.
-
-    Temporary parser until upstream returns structured dicts (issue #1).
-    """
-    results: list[dict] = []
-    for line in text.strip().splitlines():
-        line = line.strip()
-        if not line or line == "No messages to display.":
-            continue
-
-        m = _MSG_LINE_RE.match(line)
-        if not m:
-            logger.debug("Unparseable WA message line: %s", line[:80])
-            continue
-
-        ts_raw = m.group("timestamp").strip()
-        # Normalize timestamp: "2026-02-21 19:12:15+01:00" → ISO with T
-        ts_iso = ts_raw.replace(" ", "T", 1) if "T" not in ts_raw else ts_raw
-
-        sender = m.group("sender").strip()
-        is_from_me = sender == "Me"
-
-        result: dict[str, Any] = {
-            "id": f"{prefix}:{m.group('media_msg_id') or ''}",
-            "source": prefix,
-            "from": sender,
-            "subject": m.group("chat_name") or "",
-            "date": ts_iso,
-            "body": m.group("content") or "",
-            "is_from_me": is_from_me,
-        }
-
-        if m.group("chat_name"):
-            result["chat_name"] = m.group("chat_name")
-        if m.group("media_type"):
-            result["media_type"] = m.group("media_type")
-        if m.group("media_chat_jid"):
-            result["chat_jid"] = m.group("media_chat_jid")
-
-        results.append(result)
-
-    return results
+    """Parse structured JSON dicts from whatsapp-mcp list_messages."""
+    items = _parse_ndjson(text)
+    return [_wa_msg_to_dict(msg, prefix) for msg in items]
 
 
 def _parse_ndjson(text: str) -> list[dict]:
@@ -156,34 +133,19 @@ def parse_list_chats_response(text: str, prefix: str) -> list[dict]:
 
 def parse_message_context_response(text: str, prefix: str) -> dict:
     """Parse the JSON response from get_message_context."""
-    # get_message_context returns a single MessageContext dataclass
     items = _parse_ndjson(text)
     if not items:
         logger.warning("Failed to parse message_context response")
         return {}
     data = items[0]
 
-    def _msg_dict(msg: dict) -> dict:
-        ts_raw = msg.get("timestamp", "")
-        ts_iso = ts_raw.replace(" ", "T", 1) if ts_raw and "T" not in ts_raw else ts_raw
-        sender = msg.get("sender", "")
-        is_from_me = msg.get("is_from_me", False)
-        return {
-            "id": f"{prefix}:{msg.get('id', '')}",
-            "source": prefix,
-            "from": "Me" if is_from_me else msg.get("chat_name") or sender,
-            "date": ts_iso,
-            "body": msg.get("content", ""),
-            "is_from_me": is_from_me,
-        }
-
     target = data.get("message", {})
     before = data.get("before", [])
     after = data.get("after", [])
 
-    messages = [_msg_dict(m) for m in reversed(before)]
-    messages.append(_msg_dict(target))
-    messages.extend(_msg_dict(m) for m in after)
+    messages = [_wa_msg_to_dict(m, prefix) for m in reversed(before)]
+    messages.append(_wa_msg_to_dict(target, prefix))
+    messages.extend(_wa_msg_to_dict(m, prefix) for m in after)
 
     return {
         "thread_id": f"{prefix}:{target.get('chat_jid', '')}",
