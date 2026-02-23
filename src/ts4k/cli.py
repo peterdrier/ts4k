@@ -107,6 +107,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  src list|add|rm                           Manage sources")
     print("  c link|unlink|find|list                   Manage contacts")
     print("  f show|add-*|rm-*|reset                   Manage filters")
+    print("  o [--source P] [--contact C] [--period P]  Overview of cached messages")
     print("  preload --source g [--query Q]             Paginate history into cache")
     print("  cache stats|clear                         Manage message cache")
     print("  st                                        Status, stats, efficiency")
@@ -280,6 +281,17 @@ async def _cmd_preload(args: argparse.Namespace) -> None:
         throttle=getattr(args, "throttle", 0.2) or 0.2,
     )
     print(result)
+
+
+def _cmd_overview(args: argparse.Namespace) -> None:
+    output = commands.overview(
+        source=getattr(args, "source", None),
+        contact=getattr(args, "contact", None),
+        period=getattr(args, "period", None),
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        top_n=getattr(args, "top", 10) or 10,
+    )
+    print(output)
 
 
 def _cmd_cache(args: argparse.Namespace) -> None:
@@ -462,6 +474,16 @@ def _build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--cancel", metavar="JOB_ID", help="Cancel a preload job")
     pl.set_defaults(func=_cmd_preload)
 
+    # --- overview / o ---
+    for cmd_name in ("overview", "o"):
+        ov = subparsers.add_parser(cmd_name, help="Hierarchical overview of cached messages")
+        ov.add_argument("--source", "-s", help="Drill down into a specific source prefix")
+        ov.add_argument("--contact", "-c", help="Drill down into a specific contact")
+        ov.add_argument("--period", "-p", help="Filter by period: YYYY, YYYY-QN, YYYY-MM, or YYYY-MM..YYYY-MM")
+        ov.add_argument("--top", "-n", type=int, default=10, help="Number of top senders/threads (default: 10)")
+        _add_common_args(ov)
+        ov.set_defaults(func=_cmd_overview)
+
     # --- cache ---
     ca = subparsers.add_parser("cache", help="Manage message cache")
     ca_sub = ca.add_subparsers(dest="action")
@@ -515,7 +537,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources, _cmd_cache):
+    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources, _cmd_cache, _cmd_overview):
         args.func(args)
         return
 

@@ -77,6 +77,25 @@ def format_thread(thread: dict, fmt: str = "pipe") -> str:
         raise ValueError(f"Unknown format: {fmt!r}")
 
 
+def format_overview(data: dict, fmt: str = "pipe") -> str:
+    """Format an overview data dict.
+
+    *data* must have a ``level`` key (``'top'``, ``'source'``, ``'contact'``).
+
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    """
+    fmt = _resolve_fmt(fmt)
+
+    if fmt == "pipe":
+        return _overview_pipe(data)
+    elif fmt == "json":
+        return _overview_json(data)
+    elif fmt == "xml":
+        return _overview_xml(data)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
 def estimate_size(text_or_bytes: str | int) -> str:
     """Human-readable size estimate.
 
@@ -344,4 +363,149 @@ def _thread_xml(thread: dict) -> str:
         lines.append(body)
         lines.append("</m>")
     lines.append("</thread>")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Overview formatters
+# ---------------------------------------------------------------------------
+
+
+def _overview_pipe(data: dict) -> str:
+    """Pipe-delimited overview output."""
+    level = data.get("level", "top")
+    lines: list[str] = []
+
+    if level == "top":
+        total = data.get("total", 0)
+        src_count = data.get("source_count", 0)
+        lines.append(f"Overview: {src_count} sources, {total} messages cached")
+        for src in data.get("sources", []):
+            top = ", ".join(
+                f"{s['name']}({s['count']})" for s in src.get("top_senders", [])
+            )
+            date_range = ""
+            if src.get("date_start"):
+                date_range = f"{src['date_start']}..{src['date_end']}"
+            lines.append(
+                f"{src['prefix']}|{src['label']}|{src['count']} msgs"
+                f"|{date_range}|top: {top}"
+            )
+        lines.append("---")
+        lines.append("Drill: ts4k o --source <prefix> | ts4k o --contact <name>")
+
+    elif level == "source":
+        prefix = data.get("prefix", "")
+        label = data.get("label", prefix)
+        total = data.get("total", 0)
+        date_range = ""
+        if data.get("date_start"):
+            date_range = f", {data['date_start']}..{data['date_end']}"
+        lines.append(f"Overview: {prefix} ({label}), {total} messages{date_range}")
+
+        lines.append("TOP_SENDERS:")
+        for s in data.get("top_senders", []):
+            lines.append(f"{s['name']}|{s['count']} msgs")
+
+        top_threads = data.get("top_threads", [])
+        if top_threads:
+            lines.append("TOP_THREADS:")
+            for t in top_threads:
+                lines.append(f"{t.get('subject', '')}|{t['count']} msgs|{t.get('id', '')}")
+
+        lines.append("---")
+        lines.append("Drill: ts4k o --contact <name> | ts4k g <msg_id>")
+
+    elif level == "contact":
+        contact = data.get("contact", "")
+        total = data.get("total", 0)
+        src_count = data.get("source_count", 0)
+        lines.append(f"Overview: {contact}, {total} messages across {src_count} sources")
+
+        for src in data.get("sources", []):
+            date_range = ""
+            if src.get("date_start"):
+                date_range = f"|{src['date_start']}..{src['date_end']}"
+            lines.append(
+                f"{src['prefix']}|{src['label']}|{src['count']} msgs{date_range}"
+            )
+
+        periods = data.get("periods", [])
+        if periods:
+            lines.append("PERIODS:")
+            for p in periods:
+                lines.append(f"{p['period']}|{p['count']}")
+
+        lines.append("---")
+        lines.append(f"Drill: ts4k o --contact {contact} --period <period>")
+
+    return "\n".join(lines)
+
+
+def _overview_json(data: dict) -> str:
+    """Compact JSON overview."""
+    return json.dumps(data, separators=(",", ":"))
+
+
+def _overview_xml(data: dict) -> str:
+    """XML overview — attribute-heavy."""
+    level = data.get("level", "top")
+    lines: list[str] = []
+
+    if level == "top":
+        lines.append(
+            f'<overview level="top" total="{data.get("total", 0)}"'
+            f' sources="{data.get("source_count", 0)}">'
+        )
+        for src in data.get("sources", []):
+            date_range = src.get("date_start", "") + ".." + src.get("date_end", "")
+            attrs = (
+                f' prefix={xml_quoteattr(src["prefix"])}'
+                f' label={xml_quoteattr(src["label"])}'
+                f' count="{src["count"]}"'
+                f' range={xml_quoteattr(date_range)}'
+            )
+            senders = " ".join(
+                f"{s['name']}({s['count']})" for s in src.get("top_senders", [])
+            )
+            lines.append(f"<src{attrs} top={xml_quoteattr(senders)}/>")
+        lines.append("</overview>")
+
+    elif level == "source":
+        lines.append(
+            f'<overview level="source"'
+            f' prefix={xml_quoteattr(data.get("prefix", ""))}'
+            f' label={xml_quoteattr(data.get("label", ""))}'
+            f' total="{data.get("total", 0)}">'
+        )
+        for s in data.get("top_senders", []):
+            lines.append(
+                f'<sender name={xml_quoteattr(s["name"])} count="{s["count"]}"/>'
+            )
+        for t in data.get("top_threads", []):
+            lines.append(
+                f'<thread subject={xml_quoteattr(t.get("subject", ""))}'
+                f' count="{t["count"]}"'
+                f' id={xml_quoteattr(t.get("id", ""))}/>',
+            )
+        lines.append("</overview>")
+
+    elif level == "contact":
+        lines.append(
+            f'<overview level="contact"'
+            f' name={xml_quoteattr(data.get("contact", ""))}'
+            f' total="{data.get("total", 0)}">'
+        )
+        for src in data.get("sources", []):
+            lines.append(
+                f'<src prefix={xml_quoteattr(src["prefix"])}'
+                f' label={xml_quoteattr(src["label"])}'
+                f' count="{src["count"]}"/>'
+            )
+        for p in data.get("periods", []):
+            lines.append(
+                f'<period name={xml_quoteattr(p["period"])} count="{p["count"]}"/>'
+            )
+        lines.append("</overview>")
+
     return "\n".join(lines)

@@ -22,6 +22,7 @@ from ts4k.core.format import (
     estimate_size,
     format_listing,
     format_message,
+    format_overview,
     format_thread,
 )
 from ts4k.core.normalize import normalize, normalize_headers
@@ -900,6 +901,295 @@ def manage_preload(action: str, job_id: str | None = None) -> str:
         return f"Job {job_id} cancelled."
 
     return f"Unknown preload action: {action!r}"
+
+
+_SOURCE_LABELS = {"g": "gmail", "o": "o365", "w": "whatsapp"}
+
+
+def _parse_period(period: str) -> tuple[str, str]:
+    """Parse a period string into ``(start_iso, end_iso)`` date strings.
+
+    Supported formats:
+    - ``"2025"`` → full year
+    - ``"2025-Q1"`` .. ``"2025-Q4"`` → quarter
+    - ``"2025-03"`` → single month
+    - ``"2025-01..2025-06"`` → explicit range
+
+    Returns ISO date strings suitable for ``<`` comparison (exclusive end).
+    """
+    period = period.strip()
+
+    # Explicit range: "2025-01..2025-06"
+    if ".." in period:
+        parts = period.split("..", 1)
+        start = parts[0].strip()
+        end = parts[1].strip()
+        # Compute exclusive end: next month after end
+        return start, _next_month(end)
+
+    # Quarter: "2025-Q1" .. "2025-Q4"
+    upper = period.upper()
+    if len(upper) == 7 and upper[4] == "-" and upper[5] == "Q" and upper[6] in "1234":
+        year = upper[:4]
+        q = int(upper[6])
+        start_month = (q - 1) * 3 + 1
+        end_month = start_month + 3
+        if end_month > 12:
+            return f"{year}-{start_month:02d}", f"{int(year) + 1}-01"
+        return f"{year}-{start_month:02d}", f"{year}-{end_month:02d}"
+
+    # Year: "2025"
+    if len(period) == 4 and period.isdigit():
+        return f"{period}-01", f"{int(period) + 1}-01"
+
+    # Month: "2025-03"
+    if len(period) == 7 and period[4] == "-" and period[5:].isdigit():
+        return period, _next_month(period)
+
+    # Fallback: treat as start, no end
+    return period, "9999-99"
+
+
+def _next_month(ym: str) -> str:
+    """Given ``'YYYY-MM'``, return the next month as ``'YYYY-MM'``."""
+    try:
+        year = int(ym[:4])
+        month = int(ym[5:7])
+    except (ValueError, IndexError):
+        return "9999-99"
+    month += 1
+    if month > 12:
+        month = 1
+        year += 1
+    return f"{year}-{month:02d}"
+
+
+def _resolve_sender(from_field: str) -> str:
+    """Collapse a from-field to a contact alias if linked, otherwise raw."""
+    # Direct match (e.g. from_field is already "g:alice@x.com")
+    alias = contacts.resolve(from_field)
+    if alias:
+        return alias
+    # Try stripping source prefix (e.g. "g:alice@x.com" → "alice@x.com")
+    if ":" in from_field:
+        raw = from_field.split(":", 1)[1]
+        alias = contacts.resolve(raw)
+        if alias:
+            return alias
+    else:
+        # Try adding common prefixes (from field is "alice@x.com", contacts store "g:alice@x.com")
+        for prefix in _SOURCE_LABELS:
+            alias = contacts.resolve(f"{prefix}:{from_field}")
+            if alias:
+                return alias
+    return from_field
+
+
+def _filter_by_contact(
+    headers: list[dict], contact: str
+) -> list[dict]:
+    """Expand contact → identifiers, filter headers by from-field match."""
+    idents = contacts.query(contact.lower().strip())
+    if not idents:
+        matches = contacts.find(contact.lower().strip())
+        if matches:
+            idents = next(iter(matches.values()))
+
+    if not idents:
+        # Fallback: substring match on from field
+        term = contact.lower()
+        return [h for h in headers if term in h.get("from", "").lower()]
+
+    # Build a set of raw identifiers (strip source prefix)
+    raw_set: set[str] = set()
+    for ident in idents:
+        raw_set.add(ident.lower())
+        if ":" in ident:
+            raw_set.add(ident.split(":", 1)[1].lower())
+
+    return [
+        h for h in headers
+        if h.get("from", "").lower() in raw_set
+        or any(r in h.get("from", "").lower() for r in raw_set)
+    ]
+
+
+def _build_top_view(headers: list[dict], top_n: int) -> dict:
+    """Build the top-level overview: group by source, count senders."""
+    by_source: dict[str, list[dict]] = {}
+    for h in headers:
+        src = h.get("source", "?")
+        by_source.setdefault(src, []).append(h)
+
+    sources_list = []
+    for src in sorted(by_source.keys()):
+        msgs = by_source[src]
+        dates = [m.get("date", "") for m in msgs if m.get("date")]
+        sender_counts: dict[str, int] = {}
+        for m in msgs:
+            sender = _resolve_sender(m.get("from", ""))
+            sender_counts[sender] = sender_counts.get(sender, 0) + 1
+        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        sources_list.append({
+            "prefix": src,
+            "label": _SOURCE_LABELS.get(src, src),
+            "count": len(msgs),
+            "date_start": min(dates)[:7] if dates else "",
+            "date_end": max(dates)[:7] if dates else "",
+            "top_senders": [{"name": n, "count": c} for n, c in top_senders[:5]],
+        })
+
+    return {
+        "level": "top",
+        "total": len(headers),
+        "source_count": len(by_source),
+        "sources": sources_list,
+    }
+
+
+def _build_source_view(
+    headers: list[dict], source: str, top_n: int
+) -> dict:
+    """Top senders + top threads for a single source."""
+    filtered = [h for h in headers if h.get("source") == source]
+    dates = [m.get("date", "") for m in filtered if m.get("date")]
+
+    # Top senders
+    sender_counts: dict[str, int] = {}
+    for m in filtered:
+        sender = _resolve_sender(m.get("from", ""))
+        sender_counts[sender] = sender_counts.get(sender, 0) + 1
+    top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+    # Top threads (only when enough entries have thread_id)
+    thread_counts: dict[str, dict] = {}
+    for m in filtered:
+        tid = m.get("thread_id")
+        if tid:
+            if tid not in thread_counts:
+                thread_counts[tid] = {
+                    "id": tid,
+                    "subject": m.get("subject", ""),
+                    "count": 0,
+                }
+            thread_counts[tid]["count"] += 1
+
+    top_threads = []
+    if len(thread_counts) >= 3:
+        top_threads = sorted(
+            thread_counts.values(), key=lambda x: x["count"], reverse=True
+        )[:top_n]
+
+    return {
+        "level": "source",
+        "prefix": source,
+        "label": _SOURCE_LABELS.get(source, source),
+        "total": len(filtered),
+        "date_start": min(dates)[:7] if dates else "",
+        "date_end": max(dates)[:7] if dates else "",
+        "top_senders": [{"name": n, "count": c} for n, c in top_senders],
+        "top_threads": top_threads,
+    }
+
+
+def _build_period_breakdown(headers: list[dict]) -> list[dict]:
+    """Group headers into quarterly buckets."""
+    buckets: dict[str, int] = {}
+    for h in headers:
+        d = h.get("date", "")
+        if len(d) >= 7:
+            year = d[:4]
+            try:
+                month = int(d[5:7])
+            except ValueError:
+                continue
+            quarter = (month - 1) // 3 + 1
+            key = f"{year}-Q{quarter}"
+            buckets[key] = buckets.get(key, 0) + 1
+
+    return [{"period": k, "count": v} for k, v in sorted(buckets.items())]
+
+
+def _build_contact_view(
+    headers: list[dict], contact: str, top_n: int
+) -> dict:
+    """By-source + by-period breakdown for a contact."""
+    by_source: dict[str, list[dict]] = {}
+    for h in headers:
+        src = h.get("source", "?")
+        by_source.setdefault(src, []).append(h)
+
+    sources_list = []
+    for src in sorted(by_source.keys()):
+        msgs = by_source[src]
+        dates = [m.get("date", "") for m in msgs if m.get("date")]
+        sources_list.append({
+            "prefix": src,
+            "label": _SOURCE_LABELS.get(src, src),
+            "count": len(msgs),
+            "date_start": min(dates)[:7] if dates else "",
+            "date_end": max(dates)[:7] if dates else "",
+        })
+
+    periods = _build_period_breakdown(headers)
+
+    return {
+        "level": "contact",
+        "contact": contact,
+        "total": len(headers),
+        "source_count": len(by_source),
+        "sources": sources_list,
+        "periods": periods,
+    }
+
+
+def overview(
+    source: str | None = None,
+    contact: str | None = None,
+    period: str | None = None,
+    fmt: str = "pipe",
+    top_n: int = 10,
+) -> str:
+    """Hierarchical overview of cached messages. Cache-only, no adapter calls.
+
+    Three view levels based on arguments:
+    - Top-level (no flags): group by source → count, date range, top senders
+    - Source drill-down (--source g): top senders, top threads
+    - Contact drill-down (--contact alice): messages across sources, quarterly breakdown
+    """
+    # Load all cached headers
+    headers = cache.list_headers(source=source if source and not contact else None)
+
+    # Period filter
+    if period:
+        start, end = _parse_period(period)
+        headers = [
+            h for h in headers
+            if h.get("date", "") >= start and h.get("date", "") < end
+        ]
+
+    # Contact filter
+    if contact:
+        headers = _filter_by_contact(headers, contact)
+        if source:
+            headers = [h for h in headers if h.get("source") == source]
+
+    if not headers:
+        if contact:
+            return f"No cached messages for contact {contact!r}."
+        if source:
+            return f"No cached messages for source {source!r}."
+        return "Cache is empty. Run: ts4k preload --source <prefix>"
+
+    # Build the appropriate view
+    if contact:
+        data = _build_contact_view(headers, contact, top_n)
+    elif source:
+        data = _build_source_view(headers, source, top_n)
+    else:
+        data = _build_top_view(headers, top_n)
+
+    return format_overview(data, fmt=fmt)
 
 
 def manage_cache(

@@ -1,6 +1,6 @@
 """Tests for the ts4k MCP server (server.py).
 
-Verifies that all 10 tools are registered with correct names and parameter
+Verifies that all 11 tools are registered with correct names and parameter
 schemas, and that context scoping patches the right module paths.
 """
 
@@ -26,6 +26,7 @@ EXPECTED_TOOLS = {
     "ts4k_filter",
     "ts4k_preload",
     "ts4k_preload_status",
+    "ts4k_overview",
 }
 
 
@@ -37,13 +38,13 @@ class TestToolRegistration:
         return set(manager._tools.keys())
 
     def test_all_tools_registered(self):
-        """All 10 expected tools are registered."""
+        """All 11 expected tools are registered."""
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_ten_tools(self):
+    def test_exactly_eleven_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 10
+        assert len(self._get_tool_names()) == 11
 
     def test_whatsnew_params(self):
         """ts4k_whatsnew has expected parameters."""
@@ -108,6 +109,17 @@ class TestToolRegistration:
         assert "max_pages" in props
         assert "fetch_bodies" in props
         assert "resume_job" in props
+
+    def test_overview_params(self):
+        """ts4k_overview has source, contact, period, fmt, top_n."""
+        tool = mcp._tool_manager._tools["ts4k_overview"]
+        schema = tool.parameters
+        props = schema.get("properties", {})
+        assert "source" in props
+        assert "contact" in props
+        assert "period" in props
+        assert "fmt" in props
+        assert "top_n" in props
 
     def test_preload_status_no_params(self):
         """ts4k_preload_status takes no parameters."""

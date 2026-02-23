@@ -202,6 +202,33 @@ def ts4k_preload_status() -> str:
 
 
 @mcp.tool()
+def ts4k_overview(
+    source: str | None = None,
+    contact: str | None = None,
+    period: str | None = None,
+    fmt: str = "pipe",
+    top_n: int = 10,
+) -> str:
+    """Hierarchical overview of cached messages. Cache-only, instant.
+
+    Three view levels:
+    - Top-level (no args): sources summary with message counts and top senders.
+    - Source drill-down (source="g"): top senders and top threads for one source.
+    - Contact drill-down (contact="alice"): cross-source breakdown with quarterly periods.
+
+    Args:
+        source: Source prefix to drill into (e.g. "g", "o").
+        contact: Contact alias or name to drill into.
+        period: Filter by period — "2025", "2025-Q1", "2025-03", or "2025-01..2025-06".
+        fmt: Output format — "pipe" (default), "json", or "xml".
+        top_n: Number of top senders/threads to show (default 10).
+    """
+    return commands.overview(
+        source=source, contact=contact, period=period, fmt=fmt, top_n=top_n
+    )
+
+
+@mcp.tool()
 def ts4k_filter(action: str = "show", value: str | None = None) -> str:
     """Manage message skip filters.
 
