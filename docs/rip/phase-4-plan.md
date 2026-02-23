@@ -34,6 +34,20 @@ Cache is **explicit and user-initiated** (RIP anti-goal: "not an automatic crawl
 
 Index stays fast even with 50k entries (~5-10MB). Bodies are loaded on demand.
 
+### Design Decisions (from Phase 4a design review)
+
+**WhatsApp: excluded from caching.** The WhatsApp adapter reads from a local SQLite DB via whatsapp-mcp — data is already local and instant to re-read. Caching would just duplicate it. Only adapters that make network round-trips (Gmail, O365) participate in the cache. Caching is opt-in per adapter.
+
+**Cache stores normalized data, not raw upstream responses.** By the time a message reaches the formatting step, it's already been through the full normalize pipeline (HTML strip, reply chain dedup, signature removal, header normalization). We cache this normalized dict — it's smaller and immediately usable. The trade-off is that if the normalizer improves, cached data is stale. We handle this with schema versioning (see below).
+
+**Schema versioning for invalidation.** The cache index carries a `schema_version` in its metadata. When normalize logic, ID generation, or cache format changes, the version is bumped. Entries written under an older schema version are treated as cache misses — the message is re-fetched from the upstream adapter, re-normalized, and the cache entry is overwritten. This avoids serving stale normalized output after pipeline improvements.
+
+**Cleanup strategy:**
+- `cache clear` — purge all cached data (or `--source g` for one source)
+- `cache clear --stale` — purge only entries below the current schema version
+- `cache stats` — total entries, disk size, breakdown by source, oldest/newest entry, count of stale entries
+- Age-based eviction is deferred (not needed for 4a; disk is cheap, explicit commands suffice)
+
 ### Files
 
 | File | Action |

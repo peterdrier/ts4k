@@ -1,6 +1,6 @@
 """Tests for the ts4k MCP server (server.py).
 
-Verifies that all 7 tools are registered with correct names and parameter
+Verifies that all 8 tools are registered with correct names and parameter
 schemas, and that context scoping patches the right module paths.
 """
 
@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "ts4k_list",
     "ts4k_status",
     "ts4k_contacts",
+    "ts4k_cache",
     "ts4k_filter",
 }
 
@@ -34,13 +35,13 @@ class TestToolRegistration:
         return set(manager._tools.keys())
 
     def test_all_tools_registered(self):
-        """All 7 expected tools are registered."""
+        """All 8 expected tools are registered."""
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_seven_tools(self):
+    def test_exactly_eight_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 7
+        assert len(self._get_tool_names()) == 8
 
     def test_whatsnew_params(self):
         """ts4k_whatsnew has expected parameters."""

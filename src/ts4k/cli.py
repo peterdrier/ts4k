@@ -107,6 +107,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  src list|add|rm                           Manage sources")
     print("  c link|unlink|find|list                   Manage contacts")
     print("  f show|add-*|rm-*|reset                   Manage filters")
+    print("  cache stats|clear                         Manage message cache")
     print("  st                                        Status, stats, efficiency")
     print("  h                                         This help")
     print()
@@ -248,6 +249,13 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
                 break
         already = "  [already configured]" if email.lower() in existing_mailboxes else ""
         print(f"  {candidate} → {email}{already}")
+
+
+def _cmd_cache(args: argparse.Namespace) -> None:
+    action = getattr(args, "action", None)
+    source = getattr(args, "source", None)
+    stale_only = getattr(args, "stale", False)
+    print(commands.manage_cache(action=action, source=source, stale_only=stale_only))
 
 
 def _cmd_filter(args: argparse.Namespace) -> None:
@@ -408,6 +416,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
         fl.set_defaults(func=_cmd_filter)
 
+    # --- cache ---
+    ca = subparsers.add_parser("cache", help="Manage message cache")
+    ca_sub = ca.add_subparsers(dest="action")
+    ca_sub.add_parser("stats", help="Show cache statistics")
+    ca_clear = ca_sub.add_parser("clear", help="Clear cached messages")
+    ca_clear.add_argument("--source", "-s", help="Clear only this source (e.g. g, o)")
+    ca_clear.add_argument("--stale", action="store_true", help="Only clear stale (old schema) entries")
+    ca.set_defaults(func=_cmd_cache)
+
     # --- status / st ---
     for cmd_name in ("status", "st"):
         st = subparsers.add_parser(cmd_name, help="Operational status, stats, efficiency")
@@ -452,7 +469,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources):
+    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources, _cmd_cache):
         args.func(args)
         return
 

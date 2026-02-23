@@ -25,7 +25,7 @@ from ts4k.core.format import (
     format_thread,
 )
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import contacts, filters, sources, stats, watermarks
+from ts4k.state import cache, contacts, filters, sources, stats, watermarks
 
 logger = logging.getLogger("ts4k")
 
@@ -290,6 +290,7 @@ async def _fetch_whatsnew_for_source(
                         msg = await adapter.read_message(entry["id"])
                         msg = _normalize_message(msg)
                         msg.setdefault("source", prefix)
+                        cache.store_message(msg.get("id", entry["id"]), msg)
                         messages.append(msg)
                     except Exception as exc:
                         logger.warning("[%s] fetch %s: %s", prefix, entry["id"], exc)
@@ -304,6 +305,7 @@ async def _fetch_whatsnew_for_source(
                 for entry in listing[:count]:
                     msg = _normalize_message(entry)
                     msg.setdefault("source", prefix)
+                    cache.store_message(msg.get("id", ""), msg)
                     messages.append(msg)
                 return messages
 
@@ -374,6 +376,13 @@ async def whatsnew(
 
 async def get_message(msg_id: str, fmt: str = "pipe") -> CommandResult:
     """Read a single message by prefixed ID."""
+    # Read-through: check cache first
+    cached = cache.get_message(msg_id)
+    if cached and cached.get("body"):
+        output = format_message(cached, fmt=fmt)
+        _record_stats("g", [cached], output)
+        return CommandResult(output=output, messages_processed=1)
+
     all_cfg = _ensure_sources()
     prefix = _prefix_from_id(msg_id, all_cfg)
     cfg = all_cfg.get(prefix)
@@ -388,6 +397,7 @@ async def get_message(msg_id: str, fmt: str = "pipe") -> CommandResult:
     async with adapter:
         msg = await adapter.read_message(msg_id)
         msg = _normalize_message(msg)
+        cache.store_message(msg_id, msg)
         output = format_message(msg, fmt=fmt)
         _record_stats("g", [msg], output)
 
@@ -410,6 +420,10 @@ async def get_thread(thread_id: str, fmt: str = "pipe") -> CommandResult:
     async with adapter:
         thread = await adapter.read_thread(thread_id)
         thread = _normalize_thread(thread)
+        for msg in thread.get("messages", []):
+            mid = msg.get("id")
+            if mid:
+                cache.store_message(mid, msg)
         output = format_thread(thread, fmt=fmt)
         _record_stats("t", thread.get("messages", []), output)
 
@@ -447,12 +461,14 @@ async def list_messages(
                             msg = await adapter.read_message(entry["id"])
                             msg = _normalize_message(msg)
                             msg.setdefault("source", prefix)
+                            cache.store_message(msg.get("id", entry["id"]), msg)
                             all_messages.append(msg)
                         except Exception as exc:
                             logger.warning("[%s] fetch %s: %s", prefix, entry["id"], exc)
                     else:
                         msg = _normalize_message(entry)
                         msg.setdefault("source", prefix)
+                        cache.store_message(msg.get("id", ""), msg)
                         all_messages.append(msg)
         except Exception as exc:
             logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -560,6 +576,16 @@ def get_status() -> str:
     else:
         lines.append("  (no data yet — run some commands first)")
 
+    # Cache
+    cs = cache.stats()
+    lines.append("")
+    lines.append(f"Cache: {cs['total']} messages, {cs['bodies']} bodies")
+    if cs["total"]:
+        for src, n in sorted(cs["by_source"].items()):
+            label = {"g": "Gmail", "o": "O365"}.get(src, src)
+            lines.append(f"  {label}: {n}")
+        lines.append(f"  Disk: {estimate_size(cs['index_bytes'] + cs['bodies_bytes'])}")
+
     lines.append("")
     lines.append(f"Config: {config_dir}")
 
@@ -648,3 +674,36 @@ def manage_filters(action: str | None = None, value: str | None = None) -> str:
             f"skip_patterns: {', '.join(config['skip_patterns']) or '(none)'}",
         ]
         return "\n".join(lines)
+
+
+def manage_cache(
+    action: str | None = None,
+    source: str | None = None,
+    stale_only: bool = False,
+) -> str:
+    """Manage message cache. Returns output string."""
+    if action == "clear":
+        removed = cache.clear(source=source, stale_only=stale_only)
+        scope = f"source {source}" if source else "all sources"
+        qualifier = " stale" if stale_only else ""
+        return f"Cleared {removed}{qualifier} cached messages ({scope})."
+
+    # Default: stats
+    s = cache.stats()
+    lines = [f"Cache: {s['total']} messages, {s['bodies']} bodies"]
+    if s["stale"]:
+        lines[0] += f" ({s['stale']} stale)"
+
+    if s["by_source"]:
+        for src, n in sorted(s["by_source"].items()):
+            label = {"g": "Gmail", "o": "O365"}.get(src, src)
+            lines.append(f"  {label}: {n} messages")
+
+    lines.append(f"  Index: {estimate_size(s['index_bytes'])}")
+    lines.append(f"  Bodies: {estimate_size(s['bodies_bytes'])}")
+
+    if s["oldest"]:
+        lines.append(f"  Range: {s['oldest'][:10]} .. {s['newest'][:10]}")
+
+    lines.append(f"  Schema: v{s['schema_version']}")
+    return "\n".join(lines)

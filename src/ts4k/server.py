@@ -152,6 +152,18 @@ def ts4k_contacts(
 
 
 @mcp.tool()
+def ts4k_cache(action: str = "stats", source: str | None = None, stale_only: bool = False) -> str:
+    """Manage the message cache.
+
+    Args:
+        action: "stats" (show cache info) or "clear" (purge cached messages).
+        source: For clear, limit to this source prefix (e.g. "g", "o"). Default: all.
+        stale_only: For clear, only remove entries from an older schema version.
+    """
+    return commands.manage_cache(action=action, source=source, stale_only=stale_only)
+
+
+@mcp.tool()
 def ts4k_filter(action: str = "show", value: str | None = None) -> str:
     """Manage message skip filters.
 
