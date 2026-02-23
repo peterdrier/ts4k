@@ -17,7 +17,19 @@ from ts4k.core.format import format_listing, format_message, estimate_size
 from ts4k.adapters.gmail import parse_search_response, parse_message_response
 
 
-async def run(email: str, server_url: str, count: int):
+async def run(email: str, server_url: str, count: int, use_tokens: bool):
+    # Set up token counter if requested
+    tok_fn = None
+    if use_tokens:
+        from token_counter import count_tokens
+        # Quick smoke test
+        test = count_tokens("hello")
+        if test is None:
+            print("WARNING: Token counting unavailable (no ANTHROPIC_API_KEY or API error). Falling back to bytes only.\n")
+        else:
+            tok_fn = count_tokens
+            print(f"Token counting enabled (smoke test: 'hello' = {test} tokens)\n")
+
     async with streamablehttp_client(server_url) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -41,6 +53,9 @@ async def run(email: str, server_url: str, count: int):
             # Step 2: fetch each message and normalize
             raw_total = 0
             norm_total = 0
+            raw_tokens_total = 0
+            norm_tokens_total = 0
+            token_counted = 0
             pipe_listing_data = []
             per_msg_stats = []
 
@@ -75,18 +90,38 @@ async def run(email: str, server_url: str, count: int):
                     norm_total += fmt_bytes
 
                     saving = 1.0 - (fmt_bytes / msg_bytes) if msg_bytes > 0 else 0
-                    per_msg_stats.append({
+
+                    stat = {
                         "id": raw_id[:12],
                         "from": parsed.get("from", "?")[:30],
                         "subject": parsed.get("subject", "?")[:40],
                         "raw": msg_bytes,
                         "norm": fmt_bytes,
                         "saving": saving,
-                    })
+                    }
 
+                    # Token counting
+                    raw_tok = None
+                    norm_tok = None
+                    if tok_fn:
+                        raw_tok = tok_fn(msg_text)
+                        norm_tok = tok_fn(formatted)
+                        if raw_tok is not None and norm_tok is not None:
+                            raw_tokens_total += raw_tok
+                            norm_tokens_total += norm_tok
+                            token_counted += 1
+                            stat["raw_tok"] = raw_tok
+                            stat["norm_tok"] = norm_tok
+                            stat["tok_saving"] = 1.0 - (norm_tok / raw_tok) if raw_tok > 0 else 0
+
+                    per_msg_stats.append(stat)
                     pipe_listing_data.append(norm_msg)
 
-                    status = f"[{i+1}/{len(entries)}] {saving:.0%} saved  {msg_bytes:>6,}b -> {fmt_bytes:>5,}b  {parsed.get('from','')[:25]}"
+                    status = f"[{i+1}/{len(entries)}] {saving:.0%} saved  {msg_bytes:>6,}b -> {fmt_bytes:>5,}b"
+                    if raw_tok is not None and norm_tok is not None:
+                        tok_sav = 1.0 - (norm_tok / raw_tok) if raw_tok > 0 else 0
+                        status += f"  {raw_tok:>5,}t -> {norm_tok:>4,}t ({tok_sav:.0%})"
+                    status += f"  {parsed.get('from','')[:25]}"
                     print(status)
 
                 except Exception as e:
@@ -100,13 +135,40 @@ async def run(email: str, server_url: str, count: int):
             print(f"Raw MCP total:       {raw_total:>10,} bytes")
             print(f"Normalized total:    {norm_total:>10,} bytes")
             overall = 1.0 - (norm_total / raw_total) if raw_total > 0 else 0
-            print(f"Overall saving:      {overall:.1%}")
+            print(f"Byte saving:         {overall:.1%}")
+
+            if token_counted > 0:
+                tok_overall = 1.0 - (norm_tokens_total / raw_tokens_total) if raw_tokens_total > 0 else 0
+                print(f"\nRaw tokens total:    {raw_tokens_total:>10,}")
+                print(f"Normalized tokens:   {norm_tokens_total:>10,}")
+                print(f"Token saving:        {tok_overall:.1%}")
+                delta = tok_overall - overall
+                print(f"Byte vs token delta: {delta:+.1%}  ({'tokens save more' if delta > 0 else 'bytes save more'})")
+                print(f"Token-counted msgs:  {token_counted}/{len(per_msg_stats)}")
+
+                # Cost estimate using real tokens
+                if len(per_msg_stats) > 0:
+                    raw_tok_per_msg = raw_tokens_total / token_counted
+                    norm_tok_per_msg = norm_tokens_total / token_counted
+                    print(f"\nAvg raw tok/msg:     {raw_tok_per_msg:,.0f}")
+                    print(f"Avg norm tok/msg:    {norm_tok_per_msg:,.0f}")
+                    print(f"At $3/MTok input:    ~{1_000_000 / raw_tok_per_msg:,.0f} msgs/$1 (raw)")
+                    print(f"At $3/MTok input:    ~{1_000_000 / norm_tok_per_msg:,.0f} msgs/$1 (normalized)")
 
             savings = [s["saving"] for s in per_msg_stats]
             if savings:
-                print(f"Per-message min:     {min(savings):.1%}")
-                print(f"Per-message max:     {max(savings):.1%}")
-                print(f"Per-message median:  {sorted(savings)[len(savings)//2]:.1%}")
+                print(f"\nPer-message byte savings:")
+                print(f"  Min:     {min(savings):.1%}")
+                print(f"  Max:     {max(savings):.1%}")
+                print(f"  Median:  {sorted(savings)[len(savings)//2]:.1%}")
+
+            if token_counted > 0:
+                tok_savings = [s["tok_saving"] for s in per_msg_stats if "tok_saving" in s]
+                if tok_savings:
+                    print(f"Per-message token savings:")
+                    print(f"  Min:     {min(tok_savings):.1%}")
+                    print(f"  Max:     {max(tok_savings):.1%}")
+                    print(f"  Median:  {sorted(tok_savings)[len(tok_savings)//2]:.1%}")
 
             # Listing format comparison
             listing_out = format_listing(pipe_listing_data, "pipe")
@@ -119,12 +181,20 @@ async def run(email: str, server_url: str, count: int):
             # Top 5 biggest savings
             print("\nTop 5 biggest savings:")
             for s in sorted(per_msg_stats, key=lambda x: x["saving"], reverse=True)[:5]:
-                print(f"  {s['saving']:.0%}  {s['raw']:>6,}b->{s['norm']:>5,}b  {s['from'][:25]}  {s['subject'][:35]}")
+                line = f"  {s['saving']:.0%}  {s['raw']:>6,}b->{s['norm']:>5,}b"
+                if "tok_saving" in s:
+                    line += f"  {s['tok_saving']:.0%}  {s['raw_tok']:>5,}t->{s['norm_tok']:>4,}t"
+                line += f"  {s['from'][:25]}  {s['subject'][:35]}"
+                print(line)
 
             # Bottom 5 (least savings)
             print("\nBottom 5 (least savings):")
             for s in sorted(per_msg_stats, key=lambda x: x["saving"])[:5]:
-                print(f"  {s['saving']:.0%}  {s['raw']:>6,}b->{s['norm']:>5,}b  {s['from'][:25]}  {s['subject'][:35]}")
+                line = f"  {s['saving']:.0%}  {s['raw']:>6,}b->{s['norm']:>5,}b"
+                if "tok_saving" in s:
+                    line += f"  {s['tok_saving']:.0%}  {s['raw_tok']:>5,}t->{s['norm_tok']:>4,}t"
+                line += f"  {s['from'][:25]}  {s['subject'][:35]}"
+                print(line)
 
 
 if __name__ == "__main__":
@@ -132,5 +202,6 @@ if __name__ == "__main__":
     parser.add_argument("email", help="Google email for the authenticated account")
     parser.add_argument("--url", default="http://localhost:51429/mcp", help="MCP server URL")
     parser.add_argument("--count", type=int, default=100, help="Number of messages to fetch")
+    parser.add_argument("--tokens", action="store_true", help="Count tokens via Anthropic API (requires ANTHROPIC_API_KEY)")
     args = parser.parse_args()
-    asyncio.run(run(args.email, args.url, args.count))
+    asyncio.run(run(args.email, args.url, args.count, args.tokens))

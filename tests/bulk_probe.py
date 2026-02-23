@@ -41,7 +41,19 @@ async def run(
     page_size: int,
     fetch_bodies: bool,
     throttle: float,
+    use_tokens: bool,
 ):
+    # Set up token counter if requested
+    tok_fn = None
+    if use_tokens:
+        from token_counter import count_tokens
+        test = count_tokens("hello")
+        if test is None:
+            print("WARNING: Token counting unavailable (no ANTHROPIC_API_KEY or API error). Falling back to bytes only.\n")
+        else:
+            tok_fn = count_tokens
+            print(f"Token counting enabled (smoke test: 'hello' = {test} tokens)\n")
+
     async with streamablehttp_client(server_url) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -114,6 +126,9 @@ async def run(
 
             raw_total = 0
             norm_total = 0
+            raw_tokens_total = 0
+            norm_tokens_total = 0
+            token_counted = 0
             errors = 0
             expansions = 0  # messages where normalized > raw
 
@@ -144,9 +159,27 @@ async def run(
                     if norm_bytes > raw_bytes:
                         expansions += 1
 
+                    # Token counting
+                    raw_tok = None
+                    norm_tok = None
+                    if tok_fn:
+                        raw_tok = tok_fn(msg_text)
+                        formatted_text = norm_body + "\n" + "\n".join(
+                            v for v in norm_hdrs.values() if isinstance(v, str)
+                        )
+                        norm_tok = tok_fn(formatted_text)
+                        if raw_tok is not None and norm_tok is not None:
+                            raw_tokens_total += raw_tok
+                            norm_tokens_total += norm_tok
+                            token_counted += 1
+
                     if (i + 1) % 25 == 0 or i == len(all_entries) - 1:
                         pct = 1.0 - (norm_total / raw_total) if raw_total else 0
-                        print(f"  [{i+1}/{len(all_entries)}] raw={estimate_size(raw_total)} norm={estimate_size(norm_total)} saving={pct:.0%}")
+                        line = f"  [{i+1}/{len(all_entries)}] raw={estimate_size(raw_total)} norm={estimate_size(norm_total)} saving={pct:.0%}"
+                        if token_counted > 0:
+                            tok_pct = 1.0 - (norm_tokens_total / raw_tokens_total) if raw_tokens_total else 0
+                            line += f"  tok_saving={tok_pct:.0%} ({token_counted} counted)"
+                        print(line)
 
                 except Exception as e:
                     errors += 1
@@ -170,19 +203,40 @@ async def run(
             print(f"Raw total:       {raw_total:>12,} bytes ({estimate_size(raw_total)})")
             print(f"Normalized:      {norm_total:>12,} bytes ({estimate_size(norm_total)})")
             saving = 1.0 - (norm_total / raw_total) if raw_total else 0
-            print(f"Overall saving:  {saving:.1%}")
-            print(f"Search time:     {search_elapsed:.1f}s ({search_elapsed/max(page_num,1):.2f}s/page)")
+            print(f"Byte saving:     {saving:.1%}")
+
+            if token_counted > 0:
+                tok_saving = 1.0 - (norm_tokens_total / raw_tokens_total) if raw_tokens_total else 0
+                delta = tok_saving - saving
+                print(f"\nRaw tokens:      {raw_tokens_total:>12,}")
+                print(f"Norm tokens:     {norm_tokens_total:>12,}")
+                print(f"Token saving:    {tok_saving:.1%}")
+                print(f"Byte vs token:   {delta:+.1%}  ({'tokens save more' if delta > 0 else 'bytes save more'})")
+                print(f"Token-counted:   {token_counted}/{len(all_entries)} messages")
+
+            print(f"\nSearch time:     {search_elapsed:.1f}s ({search_elapsed/max(page_num,1):.2f}s/page)")
             print(f"Fetch time:      {fetch_elapsed:.1f}s ({fetch_elapsed/max(len(all_entries),1):.2f}s/msg)")
             print(f"Total time:      {total_elapsed:.1f}s")
 
             if len(all_entries) > 0:
-                cost_per_msg_bytes = raw_total / len(all_entries)
-                msgs_per_dollar = 1_000_000 / (cost_per_msg_bytes * 0.000003)  # rough token cost
-                print(f"\nAvg raw/msg:     {estimate_size(int(cost_per_msg_bytes))}")
-                print(f"At $3/MTok:      ~{msgs_per_dollar:,.0f} msgs/$1 (raw)")
-                norm_per_msg = norm_total / len(all_entries)
-                msgs_per_dollar_norm = 1_000_000 / (norm_per_msg * 0.000003)
-                print(f"At $3/MTok:      ~{msgs_per_dollar_norm:,.0f} msgs/$1 (normalized)")
+                if token_counted > 0:
+                    # Use real token counts for cost estimate
+                    raw_tok_per_msg = raw_tokens_total / token_counted
+                    norm_tok_per_msg = norm_tokens_total / token_counted
+                    print(f"\nCost estimate (real tokens):")
+                    print(f"  Avg raw tok/msg:   {raw_tok_per_msg:,.0f}")
+                    print(f"  Avg norm tok/msg:  {norm_tok_per_msg:,.0f}")
+                    print(f"  At $3/MTok:        ~{1_000_000 / raw_tok_per_msg:,.0f} msgs/$1 (raw)")
+                    print(f"  At $3/MTok:        ~{1_000_000 / norm_tok_per_msg:,.0f} msgs/$1 (normalized)")
+                else:
+                    # Fall back to byte-based estimate
+                    cost_per_msg_bytes = raw_total / len(all_entries)
+                    msgs_per_dollar = 1_000_000 / (cost_per_msg_bytes * 0.000003)  # rough token cost
+                    print(f"\nAvg raw/msg:     {estimate_size(int(cost_per_msg_bytes))}")
+                    print(f"At $3/MTok:      ~{msgs_per_dollar:,.0f} msgs/$1 (raw, byte estimate)")
+                    norm_per_msg = norm_total / len(all_entries)
+                    msgs_per_dollar_norm = 1_000_000 / (norm_per_msg * 0.000003)
+                    print(f"At $3/MTok:      ~{msgs_per_dollar_norm:,.0f} msgs/$1 (normalized, byte estimate)")
 
 
 if __name__ == "__main__":
@@ -196,6 +250,7 @@ if __name__ == "__main__":
     parser.add_argument("--page-size", type=int, default=100, help="Messages per page")
     parser.add_argument("--fetch-bodies", action="store_true", help="Also fetch and normalize each message")
     parser.add_argument("--throttle", type=float, default=0.1, help="Delay between requests (seconds)")
+    parser.add_argument("--tokens", action="store_true", help="Count tokens via Anthropic API (requires ANTHROPIC_API_KEY)")
     args = parser.parse_args()
 
     if args.query:
@@ -209,4 +264,5 @@ if __name__ == "__main__":
         args.email, args.url, query,
         args.max_pages, args.page_size,
         args.fetch_bodies, args.throttle,
+        args.tokens,
     ))
