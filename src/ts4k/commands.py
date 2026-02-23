@@ -11,7 +11,10 @@ import asyncio
 import json as _json
 import logging
 import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
@@ -870,6 +873,95 @@ def _contact_to_query(
     return None
 
 
+def spawn_background_preload(
+    source: str,
+    query: str | None = None,
+    contact: str | None = None,
+    since: str | None = None,
+    max_pages: int = 100,
+    page_size: int = 50,
+    fetch_bodies: bool = False,
+    throttle: float = 0.2,
+) -> str:
+    """Spawn a detached subprocess to run preload in the background.
+
+    Creates a batch job, launches ``python -m ts4k preload --resume <job_id>``,
+    and returns immediately with the job ID.
+    """
+    all_cfg = _ensure_sources()
+    prefixes = _resolve_prefixes(source)
+    if not prefixes:
+        return f"Error: no source configured for {source!r}."
+    prefix = prefixes[0]
+    cfg = all_cfg.get(prefix)
+    if not cfg:
+        return f"Error: source {prefix!r} not found."
+
+    provider = cfg.get("provider", "").lower()
+
+    # Resolve contact / since into effective query (same logic as preload())
+    effective_query = query
+    if contact and not effective_query:
+        resolved = _contact_to_query(contact, prefix, provider)
+        if resolved is None:
+            return f"Error: no {prefix}: identifiers found for contact {contact!r}."
+        effective_query = resolved
+    if since and not effective_query:
+        if provider == "gmail":
+            effective_query = _since_to_gmail_query(since, prefix)
+        elif provider == "o365":
+            effective_query = since
+    elif since and effective_query:
+        if provider == "gmail":
+            effective_query = f"{effective_query} {_since_to_gmail_query(since, prefix)}"
+    if not effective_query:
+        effective_query = "in:inbox" if provider == "gmail" else ""
+
+    job_id = batch.create_job(prefix, effective_query)
+
+    # Log directory
+    config_dir = Path(os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")).expanduser()
+    log_dir = config_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{job_id}.log"
+    log_fh = open(log_path, "w", encoding="utf-8")
+
+    # Build child argv
+    argv = [sys.executable, "-m", "ts4k", "preload", "--resume", job_id, "--source", source]
+    if query:
+        argv += ["--query", query]
+    if contact:
+        argv += ["--contact", contact]
+    if since:
+        argv += ["--since", since]
+    argv += ["--max-pages", str(max_pages)]
+    argv += ["--page-size", str(page_size)]
+    if fetch_bodies:
+        argv.append("--bodies")
+    argv += ["--throttle", str(throttle)]
+
+    # Platform-specific detach kwargs
+    kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        DETACHED_PROCESS = 0x00000008
+        kwargs["creationflags"] = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(
+        argv, stdout=log_fh, stderr=subprocess.STDOUT, **kwargs
+    )
+
+    batch.update_job(job_id, pid=proc.pid, log_file=str(log_path))
+
+    return (
+        f"Background preload started: {job_id} (pid {proc.pid})\n"
+        f"Log: {log_path}\n"
+        f"Check: ts4k preload --status"
+    )
+
+
 def manage_preload(action: str, job_id: str | None = None) -> str:
     """Manage preload jobs: status or cancel."""
     if action == "status":
@@ -887,6 +979,10 @@ def manage_preload(action: str, job_id: str | None = None) -> str:
             line = f"{jid}|{src}|{status}|{pages} pages|{msgs} msgs|{query}"
             if error:
                 line += f"|err: {error}"
+            pid = job.get("pid")
+            if pid:
+                state = "running" if batch.is_running(jid) else "exited"
+                line += f"|pid:{pid}({state})"
             lines.append(line)
         return "\n".join(lines)
 

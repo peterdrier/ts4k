@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,6 +115,25 @@ def get_job(job_id: str) -> dict | None:
 def list_jobs() -> dict[str, dict]:
     """Return all jobs as ``{job_id: job_dict}``."""
     return _load()["jobs"]
+
+
+def is_running(job_id: str) -> bool:
+    """Check whether the background process for *job_id* is still alive.
+
+    Uses ``os.kill(pid, 0)`` (signal 0 = existence check, no signal sent).
+    Returns ``False`` if no PID is stored or the process is gone.
+    """
+    job = get_job(job_id)
+    if job is None:
+        return False
+    pid = job.get("pid")
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
 
 
 def delete_job(job_id: str) -> bool:

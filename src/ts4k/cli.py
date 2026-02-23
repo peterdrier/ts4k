@@ -269,6 +269,23 @@ async def _cmd_preload(args: argparse.Namespace) -> None:
         print("Error: --source is required (or --resume to continue a job).", file=sys.stderr)
         sys.exit(1)
 
+    if getattr(args, "bg", False):
+        if not source:
+            print("Error: --source is required with --bg.", file=sys.stderr)
+            sys.exit(1)
+        result = commands.spawn_background_preload(
+            source=source,
+            query=getattr(args, "query", None),
+            contact=getattr(args, "contact", None),
+            since=getattr(args, "since", None),
+            max_pages=getattr(args, "max_pages", 100) or 100,
+            page_size=getattr(args, "page_size", 50) or 50,
+            fetch_bodies=getattr(args, "bodies", False),
+            throttle=getattr(args, "throttle", 0.2) or 0.2,
+        )
+        print(result)
+        return
+
     result = await commands.preload(
         source=source or "",
         query=getattr(args, "query", None),
@@ -472,6 +489,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--throttle", type=float, default=0.2, help="Seconds between pages (default: 0.2)")
     pl.add_argument("--status", action="store_true", help="Show all preload jobs")
     pl.add_argument("--cancel", metavar="JOB_ID", help="Cancel a preload job")
+    pl.add_argument("--bg", action="store_true", help="Run in background (returns job ID immediately)")
     pl.set_defaults(func=_cmd_preload)
 
     # --- overview / o ---

@@ -99,7 +99,7 @@ class TestToolRegistration:
         assert "value" in props
 
     def test_preload_params(self):
-        """ts4k_preload has source, query, contact, etc."""
+        """ts4k_preload has source, query, contact, background, etc."""
         tool = mcp._tool_manager._tools["ts4k_preload"]
         schema = tool.parameters
         props = schema.get("properties", {})
@@ -109,6 +109,7 @@ class TestToolRegistration:
         assert "max_pages" in props
         assert "fetch_bodies" in props
         assert "resume_job" in props
+        assert "background" in props
 
     def test_overview_params(self):
         """ts4k_overview has source, contact, period, fmt, top_n."""

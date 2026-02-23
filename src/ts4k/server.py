@@ -172,6 +172,7 @@ async def ts4k_preload(
     max_pages: int = 10,
     fetch_bodies: bool = False,
     resume_job: str | None = None,
+    background: bool = False,
 ) -> str:
     """Preload messages into cache by paginating through history.
 
@@ -183,7 +184,17 @@ async def ts4k_preload(
         max_pages: Maximum pages to fetch (default 10, lower for MCP).
         fetch_bodies: Also fetch full message bodies (slower).
         resume_job: Job ID to resume an interrupted preload.
+        background: Run in background (returns job ID immediately).
     """
+    if background:
+        return commands.spawn_background_preload(
+            source=source,
+            query=query,
+            contact=contact,
+            since=since,
+            max_pages=max_pages,
+            fetch_bodies=fetch_bodies,
+        )
     return await commands.preload(
         source=source,
         query=query,

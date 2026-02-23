@@ -122,6 +122,38 @@ class TestDeleteJob:
         assert batch.delete_job("job-nope") is False
 
 
+class TestPidTracking:
+    def test_is_running_no_pid(self):
+        """Job without a PID returns False."""
+        job_id = batch.create_job("g", "test")
+        assert batch.is_running(job_id) is False
+
+    def test_is_running_with_current_pid(self):
+        """Storing the current process PID returns True."""
+        import os
+        job_id = batch.create_job("g", "test")
+        batch.update_job(job_id, pid=os.getpid())
+        assert batch.is_running(job_id) is True
+
+    def test_is_running_with_dead_pid(self):
+        """A known-dead PID returns False."""
+        job_id = batch.create_job("g", "test")
+        batch.update_job(job_id, pid=99999999)
+        assert batch.is_running(job_id) is False
+
+    def test_pid_stored_on_update(self):
+        """update_job persists pid and log_file correctly."""
+        job_id = batch.create_job("g", "test")
+        batch.update_job(job_id, pid=12345, log_file="/tmp/test.log")
+        job = batch.get_job(job_id)
+        assert job["pid"] == 12345
+        assert job["log_file"] == "/tmp/test.log"
+
+    def test_is_running_nonexistent_job(self):
+        """Non-existent job returns False."""
+        assert batch.is_running("job-nonexistent") is False
+
+
 class TestPersistence:
     def test_survives_reload(self, tmp_path):
         """Data persists across load/save cycles."""
