@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,9 @@ SCHEMA_VERSION = 1
 
 # Sources that participate in caching (network-heavy adapters only).
 CACHEABLE_SOURCES = {"g", "o"}
+
+# Minimum free disk space required for preload operations.
+MIN_FREE_BYTES = 5 * 1024 ** 3  # 5 GB
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +292,12 @@ def clear(source: str | None = None, stale_only: bool = False) -> int:
 
     _save_index(index)
     return len(to_remove)
+
+
+def check_disk_space() -> bool:
+    """Return ``True`` if the cache directory has >= 5 GB free."""
+    target = _CACHE_DIR if _CACHE_DIR.exists() else _CONFIG_DIR
+    if not target.exists():
+        target = Path.home()
+    free = shutil.disk_usage(target).free
+    return free >= MIN_FREE_BYTES

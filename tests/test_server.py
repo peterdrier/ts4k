@@ -1,6 +1,6 @@
 """Tests for the ts4k MCP server (server.py).
 
-Verifies that all 8 tools are registered with correct names and parameter
+Verifies that all 10 tools are registered with correct names and parameter
 schemas, and that context scoping patches the right module paths.
 """
 
@@ -24,6 +24,8 @@ EXPECTED_TOOLS = {
     "ts4k_contacts",
     "ts4k_cache",
     "ts4k_filter",
+    "ts4k_preload",
+    "ts4k_preload_status",
 }
 
 
@@ -35,13 +37,13 @@ class TestToolRegistration:
         return set(manager._tools.keys())
 
     def test_all_tools_registered(self):
-        """All 8 expected tools are registered."""
+        """All 10 expected tools are registered."""
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_eight_tools(self):
+    def test_exactly_ten_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 8
+        assert len(self._get_tool_names()) == 10
 
     def test_whatsnew_params(self):
         """ts4k_whatsnew has expected parameters."""
@@ -94,6 +96,25 @@ class TestToolRegistration:
         props = schema.get("properties", {})
         assert "action" in props
         assert "value" in props
+
+    def test_preload_params(self):
+        """ts4k_preload has source, query, contact, etc."""
+        tool = mcp._tool_manager._tools["ts4k_preload"]
+        schema = tool.parameters
+        props = schema.get("properties", {})
+        assert "source" in props
+        assert "query" in props
+        assert "contact" in props
+        assert "max_pages" in props
+        assert "fetch_bodies" in props
+        assert "resume_job" in props
+
+    def test_preload_status_no_params(self):
+        """ts4k_preload_status takes no parameters."""
+        tool = mcp._tool_manager._tools["ts4k_preload_status"]
+        schema = tool.parameters
+        props = schema.get("properties", {})
+        assert len(props) == 0
 
     def test_status_no_required_params(self):
         """ts4k_status takes no parameters."""

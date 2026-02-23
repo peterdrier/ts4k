@@ -393,17 +393,20 @@ class GmailAdapter(BaseAdapter):
         return await self.list_messages(query=query)
 
     async def list_messages(
-        self, query: str | None = None, count: int = 20
+        self,
+        query: str | None = None,
+        count: int = 20,
+        page_token: str | None = None,
     ) -> list[dict]:
         """Search Gmail and return a list of message-header dicts."""
-        text = await self._call_tool(
-            "search_gmail_messages",
-            {
-                "user_google_email": self._config.user_email,
-                "query": query or "in:inbox",
-                "page_size": count,
-            },
-        )
+        args: dict[str, Any] = {
+            "user_google_email": self._config.user_email,
+            "query": query or "in:inbox",
+            "page_size": count,
+        }
+        if page_token:
+            args["page_token"] = page_token
+        text = await self._call_tool("search_gmail_messages", args)
         return parse_search_response(text, self.source_prefix)
 
     async def read_message(self, msg_id: str) -> dict:

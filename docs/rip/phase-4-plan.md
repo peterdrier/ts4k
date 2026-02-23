@@ -158,6 +158,26 @@ Runs synchronously by default (paginated loop), caches each page. Checkpoints af
 
 ---
 
+## Phase 4b: Status — Complete
+
+Implemented in commit. Changes:
+- `page_token` added to `BaseAdapter.list_messages()` and all concrete adapters
+- `state/batch.py` — job state CRUD with crash-safe checkpointing
+- `commands.preload()` — paginated fetch loop with contact auto-expand, disk space guard, throttle
+- `commands.manage_preload()` — status/cancel for preload jobs
+- CLI: `ts4k preload` subcommand with `--source`, `--query`, `--contact`, `--bodies`, `--resume`, `--status`, `--cancel`
+- MCP: `ts4k_preload` and `ts4k_preload_status` tools
+- `cache.check_disk_space()` — 5 GB minimum guard
+- Tests: `test_batch.py` (batch CRUD), `test_server.py` updated for 10 tools
+
+### Phase 4c addition: Thread compaction
+When implementing the overview command, add a cache compaction feature that groups cached messages by thread/contact into chronological "nice threads" — a single compact file per conversation with `"Mon, he said: XXX  Tue, she said: YYY"` style output. This makes overview drill-down and agent consumption much more efficient than reading individual cached messages.
+
+### Backlog: WhatsApp history nudge
+WhatsApp-MCP reads from a local SQLite DB that only contains messages the phone has synced. Older history requires WhatsApp to be physically open on the user's phone. Consider a future `ts4k nudge --source w --contact alice` command that triggers a read of the oldest known message for a contact, which may cause WhatsApp to load more history on the phone side. This is speculative and platform-dependent — park it as a backlog item.
+
+---
+
 ## Phase 4c: Overview Command
 
 **Goal:** `ts4k o` — hierarchical summary that lets the agent drill down without fetching bodies.

@@ -107,6 +107,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  src list|add|rm                           Manage sources")
     print("  c link|unlink|find|list                   Manage contacts")
     print("  f show|add-*|rm-*|reset                   Manage filters")
+    print("  preload --source g [--query Q]             Paginate history into cache")
     print("  cache stats|clear                         Manage message cache")
     print("  st                                        Status, stats, efficiency")
     print("  h                                         This help")
@@ -249,6 +250,36 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
                 break
         already = "  [already configured]" if email.lower() in existing_mailboxes else ""
         print(f"  {candidate} → {email}{already}")
+
+
+async def _cmd_preload(args: argparse.Namespace) -> None:
+    """Handle the preload command — paginate history into cache."""
+    # Management actions
+    if getattr(args, "status", False):
+        print(commands.manage_preload("status"))
+        return
+    cancel_id = getattr(args, "cancel", None)
+    if cancel_id:
+        print(commands.manage_preload("cancel", cancel_id))
+        return
+
+    source = getattr(args, "source", None)
+    if not source and not getattr(args, "resume", None):
+        print("Error: --source is required (or --resume to continue a job).", file=sys.stderr)
+        sys.exit(1)
+
+    result = await commands.preload(
+        source=source or "",
+        query=getattr(args, "query", None),
+        contact=getattr(args, "contact", None),
+        since=getattr(args, "since", None),
+        max_pages=getattr(args, "max_pages", 100) or 100,
+        page_size=getattr(args, "page_size", 50) or 50,
+        fetch_bodies=getattr(args, "bodies", False),
+        resume_job=getattr(args, "resume", None),
+        throttle=getattr(args, "throttle", 0.2) or 0.2,
+    )
+    print(result)
 
 
 def _cmd_cache(args: argparse.Namespace) -> None:
@@ -415,6 +446,21 @@ def _build_parser() -> argparse.ArgumentParser:
         fl_sub.add_parser("reset", help="Reset filters to defaults")
 
         fl.set_defaults(func=_cmd_filter)
+
+    # --- preload ---
+    pl = subparsers.add_parser("preload", help="Paginate through history into cache")
+    pl.add_argument("--source", "-s", help="Source prefix or provider name")
+    pl.add_argument("--query", "-q", help="Search query (provider-specific)")
+    pl.add_argument("--contact", help="Contact alias — auto-expands to bidirectional query")
+    pl.add_argument("--since", help="Start date: ISO timestamp or Nd shorthand")
+    pl.add_argument("--max-pages", type=int, default=100, help="Max pages to fetch (default: 100)")
+    pl.add_argument("--page-size", type=int, default=50, help="Messages per page (default: 50)")
+    pl.add_argument("--bodies", action="store_true", help="Fetch full message bodies (slower)")
+    pl.add_argument("--resume", metavar="JOB_ID", help="Resume an interrupted preload job")
+    pl.add_argument("--throttle", type=float, default=0.2, help="Seconds between pages (default: 0.2)")
+    pl.add_argument("--status", action="store_true", help="Show all preload jobs")
+    pl.add_argument("--cancel", metavar="JOB_ID", help="Cancel a preload job")
+    pl.set_defaults(func=_cmd_preload)
 
     # --- cache ---
     ca = subparsers.add_parser("cache", help="Manage message cache")

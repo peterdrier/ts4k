@@ -252,7 +252,10 @@ class WhatsAppAdapter(BaseAdapter):
         return parse_list_messages_response(text, self.source_prefix)
 
     async def list_messages(
-        self, query: str | None = None, count: int = 20
+        self,
+        query: str | None = None,
+        count: int = 20,
+        page_token: str | None = None,
     ) -> list[dict]:
         if query and query.startswith("chat:"):
             # Direct chat JID query

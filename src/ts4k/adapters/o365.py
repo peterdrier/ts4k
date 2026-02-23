@@ -333,7 +333,10 @@ class O365Adapter(BaseAdapter):
         return parse_list_response(text, self.source_prefix)
 
     async def list_messages(
-        self, query: str | None = None, count: int = 20
+        self,
+        query: str | None = None,
+        count: int = 20,
+        page_token: str | None = None,
     ) -> list[dict]:
         args: dict[str, Any] = {
             **self._base_args(),
@@ -342,12 +345,22 @@ class O365Adapter(BaseAdapter):
             "$orderby": "receivedDateTime desc",
         }
 
+        if page_token:
+            args["$skip"] = page_token
+
         if query:
             args["$search"] = f'"{query}"'
 
         tool = self._tool_name("list-mail-messages")
         text = await self._call_tool(tool, args)
-        return parse_list_response(text, self.source_prefix)
+        results = parse_list_response(text, self.source_prefix)
+
+        # Attach next page token if we got a full page
+        if results and len(results) == count:
+            next_offset = int(page_token or 0) + len(results)
+            results[-1]["_next_page_token"] = str(next_offset)
+
+        return results
 
     async def read_message(self, msg_id: str) -> dict:
         raw_id = self._strip_prefix(msg_id)

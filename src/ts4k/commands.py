@@ -25,7 +25,7 @@ from ts4k.core.format import (
     format_thread,
 )
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import cache, contacts, filters, sources, stats, watermarks
+from ts4k.state import batch, cache, contacts, filters, sources, stats, watermarks
 
 logger = logging.getLogger("ts4k")
 
@@ -674,6 +674,232 @@ def manage_filters(action: str | None = None, value: str | None = None) -> str:
             f"skip_patterns: {', '.join(config['skip_patterns']) or '(none)'}",
         ]
         return "\n".join(lines)
+
+
+async def preload(
+    source: str,
+    query: str | None = None,
+    contact: str | None = None,
+    since: str | None = None,
+    max_pages: int = 100,
+    page_size: int = 50,
+    fetch_bodies: bool = False,
+    resume_job: str | None = None,
+    throttle: float = 0.2,
+) -> str:
+    """Paginate through message history, caching results page by page.
+
+    Returns a summary string describing what was cached.
+    """
+    all_cfg = _ensure_sources()
+    prefixes = _resolve_prefixes(source)
+    if not prefixes:
+        return "Error: no source configured for {!r}.".format(source)
+    prefix = prefixes[0]
+    cfg = all_cfg.get(prefix)
+    if not cfg:
+        return f"Error: source {prefix!r} not found."
+
+    provider = cfg.get("provider", "").lower()
+
+    # Contact auto-expand
+    if contact:
+        resolved_query = _contact_to_query(contact, prefix, provider)
+        if resolved_query is None:
+            return f"Error: no {prefix}: identifiers found for contact {contact!r}."
+        query = resolved_query
+
+    # Since → query fragment
+    if since and not query:
+        if provider == "gmail":
+            query = _since_to_gmail_query(since, prefix)
+        elif provider == "o365":
+            query = since  # O365 will use $search
+    elif since and query:
+        if provider == "gmail":
+            query = f"{query} {_since_to_gmail_query(since, prefix)}"
+
+    effective_query = query or ("in:inbox" if provider == "gmail" else "")
+
+    # Resume or create job
+    if resume_job:
+        job = batch.get_job(resume_job)
+        if job is None:
+            return f"Error: job {resume_job!r} not found."
+        if job["status"] not in ("in_progress", "failed", "stopped_disk_low"):
+            return f"Error: job {resume_job!r} has status {job['status']!r} — cannot resume."
+        job_id = resume_job
+        page_token = job.get("next_page_token")
+        pages_fetched = job.get("pages_fetched", 0)
+        messages_cached = job.get("messages_cached", 0)
+        batch.update_job(job_id, status="in_progress", error=None)
+    else:
+        if not cache.check_disk_space():
+            return "Error: less than 5 GB free disk space. Free space and retry."
+        job_id = batch.create_job(prefix, effective_query)
+        page_token = None
+        pages_fetched = 0
+        messages_cached = 0
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        batch.update_job(job_id, status="failed", error="adapter not available")
+        return f"Error: source {prefix!r} not available."
+
+    try:
+        async with adapter:
+            while pages_fetched < max_pages:
+                # Disk check every 10 pages
+                if pages_fetched > 0 and pages_fetched % 10 == 0:
+                    if not cache.check_disk_space():
+                        batch.update_job(
+                            job_id,
+                            status="stopped_disk_low",
+                            pages_fetched=pages_fetched,
+                            messages_cached=messages_cached,
+                            next_page_token=page_token,
+                        )
+                        return (
+                            f"Preload stopped — low disk space. "
+                            f"{pages_fetched} pages, {messages_cached} messages cached. "
+                            f"Resume: ts4k preload --resume {job_id}"
+                        )
+
+                listing = await adapter.list_messages(
+                    query=effective_query, count=page_size, page_token=page_token
+                )
+
+                if not listing:
+                    break
+
+                # Cache each entry
+                for entry in listing:
+                    msg_id = entry.get("id", "")
+                    if not msg_id:
+                        continue
+                    cache.store_header(msg_id, entry)
+
+                    if fetch_bodies:
+                        try:
+                            msg = await adapter.read_message(msg_id)
+                            msg = _normalize_message(msg)
+                            cache.store_message(msg_id, msg)
+                        except Exception as exc:
+                            logger.warning("[%s] body fetch %s: %s", prefix, msg_id, exc)
+
+                    messages_cached += 1
+
+                pages_fetched += 1
+
+                # Extract next page token
+                next_token = listing[-1].get("_next_page_token")
+                page_token = next_token
+
+                # Checkpoint
+                batch.update_job(
+                    job_id,
+                    pages_fetched=pages_fetched,
+                    messages_cached=messages_cached,
+                    next_page_token=page_token,
+                )
+
+                if not next_token:
+                    break
+
+                # Throttle
+                if throttle > 0:
+                    await asyncio.sleep(throttle)
+
+    except Exception as exc:
+        batch.update_job(
+            job_id,
+            status="failed",
+            error=str(exc),
+            pages_fetched=pages_fetched,
+            messages_cached=messages_cached,
+            next_page_token=page_token,
+        )
+        return (
+            f"Preload failed: {exc}\n"
+            f"{pages_fetched} pages, {messages_cached} messages cached. "
+            f"Resume: ts4k preload --resume {job_id}"
+        )
+
+    batch.update_job(job_id, status="done")
+    return (
+        f"Preload complete: {pages_fetched} pages, {messages_cached} messages cached "
+        f"(job {job_id})."
+    )
+
+
+def _contact_to_query(
+    contact: str, prefix: str, provider: str
+) -> str | None:
+    """Expand a contact alias into a platform-specific bidirectional query."""
+    idents = contacts.query(contact.lower().strip())
+    if not idents:
+        # Try find (substring match)
+        matches = contacts.find(contact.lower().strip())
+        if matches:
+            # Use first match
+            idents = next(iter(matches.values()))
+        else:
+            return None
+
+    # Filter by source prefix
+    matching = [i for i in idents if i.startswith(f"{prefix}:")]
+    if not matching:
+        return None
+
+    # Strip prefix
+    raw_ids = [i[len(prefix) + 1 :] for i in matching]
+
+    if provider == "gmail":
+        # Gmail: {from:addr OR to:addr}
+        clauses = []
+        for addr in raw_ids:
+            clauses.append(f"from:{addr}")
+            clauses.append(f"to:{addr}")
+        return "{" + " OR ".join(clauses) + "}"
+
+    if provider == "o365":
+        # O365: quoted search across all fields
+        return " OR ".join(f'"{addr}"' for addr in raw_ids)
+
+    return None
+
+
+def manage_preload(action: str, job_id: str | None = None) -> str:
+    """Manage preload jobs: status or cancel."""
+    if action == "status":
+        jobs = batch.list_jobs()
+        if not jobs:
+            return "No preload jobs."
+        lines = []
+        for jid, job in sorted(jobs.items(), key=lambda x: x[1].get("started_at", "")):
+            status = job.get("status", "?")
+            pages = job.get("pages_fetched", 0)
+            msgs = job.get("messages_cached", 0)
+            src = job.get("source", "?")
+            query = job.get("query", "")
+            error = job.get("error")
+            line = f"{jid}|{src}|{status}|{pages} pages|{msgs} msgs|{query}"
+            if error:
+                line += f"|err: {error}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    if action == "cancel":
+        if not job_id:
+            return "Error: job_id required for cancel."
+        job = batch.get_job(job_id)
+        if job is None:
+            return f"Error: job {job_id!r} not found."
+        if job["status"] == "in_progress":
+            batch.update_job(job_id, status="failed", error="cancelled by user")
+        return f"Job {job_id} cancelled."
+
+    return f"Unknown preload action: {action!r}"
 
 
 def manage_cache(

@@ -56,12 +56,19 @@ class BaseAdapter(ABC):
 
     @abstractmethod
     async def list_messages(
-        self, query: str | None = None, count: int = 20
+        self,
+        query: str | None = None,
+        count: int = 20,
+        page_token: str | None = None,
     ) -> list[dict]:
         """Return message-header dicts matching *query*.
 
         The dicts must contain at least: ``id``, ``thread_id``, ``from``,
         ``subject``, ``date``.
+
+        When *page_token* is provided, fetch the next page of results
+        starting from that token.  If more pages exist, the **last** entry
+        in the returned list will carry a ``_next_page_token`` key.
         """
 
     @abstractmethod

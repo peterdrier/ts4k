@@ -164,6 +164,44 @@ def ts4k_cache(action: str = "stats", source: str | None = None, stale_only: boo
 
 
 @mcp.tool()
+async def ts4k_preload(
+    source: str,
+    query: str | None = None,
+    contact: str | None = None,
+    since: str | None = None,
+    max_pages: int = 10,
+    fetch_bodies: bool = False,
+    resume_job: str | None = None,
+) -> str:
+    """Preload messages into cache by paginating through history.
+
+    Args:
+        source: Source prefix (e.g. "g") or provider name ("gmail").
+        query: Search query (provider-specific). Optional.
+        contact: Contact alias — auto-expands to bidirectional query.
+        since: Start date: ISO timestamp or "Nd" shorthand (e.g. "30d").
+        max_pages: Maximum pages to fetch (default 10, lower for MCP).
+        fetch_bodies: Also fetch full message bodies (slower).
+        resume_job: Job ID to resume an interrupted preload.
+    """
+    return await commands.preload(
+        source=source,
+        query=query,
+        contact=contact,
+        since=since,
+        max_pages=max_pages,
+        fetch_bodies=fetch_bodies,
+        resume_job=resume_job,
+    )
+
+
+@mcp.tool()
+def ts4k_preload_status() -> str:
+    """Show status of all preload jobs."""
+    return commands.manage_preload("status")
+
+
+@mcp.tool()
 def ts4k_filter(action: str = "show", value: str | None = None) -> str:
     """Manage message skip filters.
 
