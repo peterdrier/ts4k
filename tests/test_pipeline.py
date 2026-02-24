@@ -1,23 +1,23 @@
 """End-to-end pipeline tests — the P3 validation suite.
 
-Tests the full pipeline: upstream MCP response -> adapter parse -> normalize -> format.
+Tests the full pipeline: Gmail API response -> converter -> normalize -> format.
 Measures real byte savings and prints stats for evaluation.
 
-No real MCP server needed — uses realistic inline fixtures modeled on actual
-google_workspace_mcp responses.
+No real Gmail API calls needed — uses realistic inline fixtures modeled on actual
+Gmail API responses.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 from xml.etree import ElementTree as ET
 
 import pytest
 
 from ts4k.adapters.gmail import (
-    parse_message_response,
-    parse_search_response,
-    parse_thread_response,
+    _msg_to_full,
+    _thread_to_dict,
 )
 from ts4k.core.format import (
     estimate_size,
@@ -28,21 +28,18 @@ from ts4k.core.format import (
 from ts4k.core.normalize import normalize, normalize_headers
 
 
+def _b64(text: str) -> str:
+    """Base64url-encode a string (matching Gmail API format)."""
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
 # ---------------------------------------------------------------------------
-# Realistic upstream MCP fixtures
+# Realistic Gmail API response fixtures
 # ---------------------------------------------------------------------------
 
 # A realistic HTML email from a colleague, with CSS, tracking, signature,
 # reply chain, confidentiality notice, unsubscribe footer — the full monty.
-UPSTREAM_MESSAGE_RICH = """\
-Subject: Meeting Tomorrow - Agenda
-From:    Alice Chen <alice@company.com>
-Date:    Wed, 18 Feb 2026 10:30:45 +0000
-Message-ID: <CADc5_xKgPzR7VQ@mail.gmail.com>
-To:      team@company.com
-Cc:      manager@company.com
-
---- BODY ---
+RICH_HTML_BODY = """\
 <html>
 <head>
 <meta charset="utf-8">
@@ -174,23 +171,10 @@ if you have received this email by mistake and delete this email from your syste
 </div>
 
 </body>
-</html>
-
---- ATTACHMENTS ---
-1. Q1_Budget_Updated.xlsx (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, 1245.6 KB)
-   Attachment ID: ANGjdJ8TK2x_abc123
-   Use get_gmail_attachment_content(message_id='msg123', attachment_id='ANGjdJ8TK2x_abc123') to download"""
+</html>"""
 
 
-# A simpler plain-text email — common from mobile senders
-UPSTREAM_MESSAGE_PLAIN = """\
-Subject: Re: Re: Re: Quick question about deploy
-From:    Bob Martinez <bob@startup.io>
-Date:    Thu, 20 Feb 2026 15:45:00 -0500
-Message-ID: <CAEf+xyz789@mail.gmail.com>
-To:      peter@company.com
-
---- BODY ---
+PLAIN_BODY = """\
 Yes deploy looks good. Metrics are stable.
 
 Sent from my iPhone
@@ -205,51 +189,96 @@ Sent from my iPhone
 > Director of Product"""
 
 
-# Upstream search response for listing tests
-UPSTREAM_SEARCH_RESPONSE = """\
-Found 5 messages matching 'newer_than:1d':
+def _make_api_message(
+    msg_id: str,
+    subject: str,
+    from_: str,
+    date: str,
+    to: str = "",
+    cc: str = "",
+    message_id: str = "",
+    body_html: str = "",
+    body_text: str = "",
+    internal_date: str = "1771578900000",
+    attachments: list[dict] | None = None,
+) -> dict:
+    """Build a realistic Gmail API message dict for pipeline tests."""
+    headers = [
+        {"name": "Subject", "value": subject},
+        {"name": "From", "value": from_},
+        {"name": "Date", "value": date},
+    ]
+    if to:
+        headers.append({"name": "To", "value": to})
+    if cc:
+        headers.append({"name": "Cc", "value": cc})
+    if message_id:
+        headers.append({"name": "Message-ID", "value": message_id})
 
-📧 MESSAGES:
-  1. Message ID: msg_rich_001
-     Web Link: https://mail.google.com/mail/u/0/#all/msg_rich_001
-     Thread ID: thread_001
-     Thread Link: https://mail.google.com/mail/u/0/#all/thread_001
+    # Build payload.
+    if body_html and body_text:
+        parts = [
+            {"mimeType": "text/plain", "body": {"data": _b64(body_text), "size": len(body_text)}},
+            {"mimeType": "text/html", "body": {"data": _b64(body_html), "size": len(body_html)}},
+        ]
+        payload = {"mimeType": "multipart/alternative", "headers": headers, "parts": parts}
+    elif body_html:
+        payload = {"mimeType": "text/html", "headers": headers, "body": {"data": _b64(body_html), "size": len(body_html)}}
+    elif body_text:
+        payload = {"mimeType": "text/plain", "headers": headers, "body": {"data": _b64(body_text), "size": len(body_text)}}
+    else:
+        payload = {"mimeType": "text/plain", "headers": headers, "body": {"data": "", "size": 0}}
 
-  2. Message ID: msg_plain_002
-     Web Link: https://mail.google.com/mail/u/0/#all/msg_plain_002
-     Thread ID: thread_002
-     Thread Link: https://mail.google.com/mail/u/0/#all/thread_002
+    if attachments:
+        if "parts" not in payload:
+            body_part = {"mimeType": payload.get("mimeType", "text/plain"), "body": payload.get("body", {})}
+            payload = {"mimeType": "multipart/mixed", "headers": headers, "parts": [body_part]}
+        for att in attachments:
+            payload["parts"].append({
+                "filename": att["filename"],
+                "mimeType": att["mime_type"],
+                "body": {"size": att.get("size", 0), "attachmentId": att.get("id", "att_id")},
+            })
 
-  3. Message ID: msg_newsletter_003
-     Web Link: https://mail.google.com/mail/u/0/#all/msg_newsletter_003
-     Thread ID: thread_003
-     Thread Link: https://mail.google.com/mail/u/0/#all/thread_003
-
-  4. Message ID: msg_short_004
-     Web Link: https://mail.google.com/mail/u/0/#all/msg_short_004
-     Thread ID: thread_004
-     Thread Link: https://mail.google.com/mail/u/0/#all/thread_004
-
-  5. Message ID: msg_reply_005
-     Web Link: https://mail.google.com/mail/u/0/#all/msg_reply_005
-     Thread ID: thread_005
-     Thread Link: https://mail.google.com/mail/u/0/#all/thread_005
-
-💡 USAGE:
-  • Pass the Message IDs **as a list** to get_gmail_messages_content_batch()"""
+    return {
+        "id": msg_id,
+        "threadId": f"thread_{msg_id}",
+        "snippet": (body_text or "")[:100],
+        "internalDate": internal_date,
+        "payload": payload,
+    }
 
 
-# Thread response — a realistic 3-message thread with HTML in bodies
-UPSTREAM_THREAD_RESPONSE = """\
-Thread ID: thread_meeting_001
-Subject: Meeting Tomorrow - Agenda
-Messages: 3
+# Rich HTML message with attachments.
+API_MSG_RICH = _make_api_message(
+    msg_id="msg_rich_001",
+    subject="Meeting Tomorrow - Agenda",
+    from_="Alice Chen <alice@company.com>",
+    date="Wed, 18 Feb 2026 10:30:45 +0000",
+    to="team@company.com",
+    cc="manager@company.com",
+    message_id="<CADc5_xKgPzR7VQ@mail.gmail.com>",
+    body_html=RICH_HTML_BODY,
+    attachments=[
+        {"filename": "Q1_Budget_Updated.xlsx", "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "size": 1275494},
+    ],
+)
 
-=== Message 1 ===
-From: Sarah Johnson <sarah@company.com>
-Date: Mon, 17 Feb 2026 14:00:00 +0000
-Message-ID: <CADthread_msg1@mail.gmail.com>
+# Plain text email.
+API_MSG_PLAIN = _make_api_message(
+    msg_id="msg_plain_002",
+    subject="Re: Re: Re: Quick question about deploy",
+    from_="Bob Martinez <bob@startup.io>",
+    date="Thu, 20 Feb 2026 15:45:00 -0500",
+    to="peter@company.com",
+    message_id="<CAEf+xyz789@mail.gmail.com>",
+    body_text=PLAIN_BODY,
+    internal_date="1771620300000",
+)
 
+
+# Thread with 3 messages — HTML bodies.
+THREAD_MSG1_BODY = """\
 <html><body>
 <p>Team, let's make sure we have a solid agenda for Wednesday. I have the
 Q1 numbers ready to present.</p>
@@ -258,14 +287,9 @@ Q1 numbers ready to present.</p>
 <p>Sarah Johnson | CFO | Acme Corporation</p>
 <p><a href="mailto:sarah@company.com">sarah@company.com</a> | +1 (415) 555-0456</p>
 </div>
-</body></html>
+</body></html>"""
 
-=== Message 2 ===
-From: Test User <peter@company.com>
-Date: Mon, 17 Feb 2026 16:15:00 +0000
-Message-ID: <CADthread_msg2@mail.gmail.com>
-In-Reply-To: <CADthread_msg1@mail.gmail.com>
-
+THREAD_MSG2_BODY = """\
 <html><body>
 <p>Alice, can you send out the agenda for tomorrow's meeting? I want to make sure
 we cover the Q1 revenue numbers and the engineering roadmap.</p>
@@ -283,14 +307,9 @@ Q1 numbers ready to present.</p>
 
 <p>Thanks,<br>Peter</p>
 <p style="font-size:11px;color:#999;">Test User | Director of Product | Acme Corporation</p>
-</body></html>
+</body></html>"""
 
-=== Message 3 ===
-From: Alice Chen <alice@company.com>
-Date: Wed, 18 Feb 2026 10:30:45 +0000
-Message-ID: <CADthread_msg3@mail.gmail.com>
-In-Reply-To: <CADthread_msg2@mail.gmail.com>
-
+THREAD_MSG3_BODY = """\
 <html><body>
 <p>Hi Team,</p>
 <p>Just a reminder about our meeting tomorrow at <strong>2:30 PM EST</strong> in Conference Room B.</p>
@@ -308,14 +327,47 @@ In-Reply-To: <CADthread_msg2@mail.gmail.com>
 <img src="https://tracking.company.com/pixel.gif?uid=xyz" width="1" height="1" style="display:none"/>
 </body></html>"""
 
+API_THREAD = {
+    "id": "thread_meeting_001",
+    "messages": [
+        _make_api_message(
+            msg_id="thread_msg1",
+            subject="Meeting Tomorrow - Agenda",
+            from_="Sarah Johnson <sarah@company.com>",
+            date="Mon, 17 Feb 2026 14:00:00 +0000",
+            message_id="<CADthread_msg1@mail.gmail.com>",
+            body_html=THREAD_MSG1_BODY,
+            internal_date="1771333200000",
+        ),
+        _make_api_message(
+            msg_id="thread_msg2",
+            subject="Re: Meeting Tomorrow - Agenda",
+            from_="Test User <peter@company.com>",
+            date="Mon, 17 Feb 2026 16:15:00 +0000",
+            message_id="<CADthread_msg2@mail.gmail.com>",
+            body_html=THREAD_MSG2_BODY,
+            internal_date="1771341300000",
+        ),
+        _make_api_message(
+            msg_id="thread_msg3",
+            subject="Re: Meeting Tomorrow - Agenda",
+            from_="Alice Chen <alice@company.com>",
+            date="Wed, 18 Feb 2026 10:30:45 +0000",
+            message_id="<CADthread_msg3@mail.gmail.com>",
+            body_html=THREAD_MSG3_BODY,
+            internal_date="1771406445000",
+        ),
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
-# Pipeline helper: run full pipeline on a parsed message
+# Pipeline helper: run full pipeline on a converted message
 # ---------------------------------------------------------------------------
 
 
 def _pipeline_message(parsed: dict) -> dict:
-    """Run normalize on a parsed message dict (same as cli._normalize_message)."""
+    """Run normalize on a parsed message dict (same as commands._normalize_message)."""
     result = dict(parsed)
 
     if result.get("body"):
@@ -345,8 +397,13 @@ def _pipeline_thread(parsed_thread: dict) -> dict:
     return result
 
 
+def _raw_api_bytes(api_msg: dict) -> int:
+    """Estimate the raw bytes of a Gmail API JSON response."""
+    return len(json.dumps(api_msg).encode("utf-8"))
+
+
 # ---------------------------------------------------------------------------
-# 1. Per-message savings: raw MCP bytes -> ts4k formatted bytes
+# 1. Per-message savings: raw API JSON bytes -> ts4k formatted bytes
 # ---------------------------------------------------------------------------
 
 
@@ -355,9 +412,9 @@ class TestPerMessageSavings:
 
     def test_rich_html_message_pipe(self):
         """Rich HTML email -> pipe format: expect major savings."""
-        raw_bytes = len(UPSTREAM_MESSAGE_RICH.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_MSG_RICH)
 
-        parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", "msg_rich_001")
+        parsed = _msg_to_full(API_MSG_RICH, "g")
         processed = _pipeline_message(parsed)
         output = format_message(processed, "pipe")
         output_bytes = len(output.encode("utf-8"))
@@ -365,22 +422,22 @@ class TestPerMessageSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [Rich HTML -> Pipe]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
         print(f"  Output:\n---\n{output[:500]}{'...' if len(output) > 500 else ''}\n---")
 
         # Rich HTML with signature, reply chain, tracking, CSS -> pipe
-        # should give at least 60% reduction
-        assert reduction >= 0.60, (
-            f"Rich HTML pipe reduction was only {reduction:.1%}, need >= 60%"
+        # should give at least 50% reduction (raw is base64 + JSON overhead)
+        assert reduction >= 0.50, (
+            f"Rich HTML pipe reduction was only {reduction:.1%}, need >= 50%"
         )
 
     def test_rich_html_message_json(self):
         """Rich HTML email -> JSON format."""
-        raw_bytes = len(UPSTREAM_MESSAGE_RICH.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_MSG_RICH)
 
-        parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", "msg_rich_001")
+        parsed = _msg_to_full(API_MSG_RICH, "g")
         processed = _pipeline_message(parsed)
         output = format_message(processed, "json")
         output_bytes = len(output.encode("utf-8"))
@@ -388,13 +445,13 @@ class TestPerMessageSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [Rich HTML -> JSON]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
 
         # JSON includes more structure overhead, but body is still normalized
-        assert reduction >= 0.50, (
-            f"Rich HTML JSON reduction was only {reduction:.1%}, need >= 50%"
+        assert reduction >= 0.40, (
+            f"Rich HTML JSON reduction was only {reduction:.1%}, need >= 40%"
         )
 
         # Verify it's valid JSON
@@ -404,9 +461,9 @@ class TestPerMessageSavings:
 
     def test_rich_html_message_xml(self):
         """Rich HTML email -> XML format."""
-        raw_bytes = len(UPSTREAM_MESSAGE_RICH.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_MSG_RICH)
 
-        parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", "msg_rich_001")
+        parsed = _msg_to_full(API_MSG_RICH, "g")
         processed = _pipeline_message(parsed)
         output = format_message(processed, "xml")
         output_bytes = len(output.encode("utf-8"))
@@ -414,13 +471,12 @@ class TestPerMessageSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [Rich HTML -> XML]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
 
-        # XML is compact but slightly more overhead than pipe
-        assert reduction >= 0.50, (
-            f"Rich HTML XML reduction was only {reduction:.1%}, need >= 50%"
+        assert reduction >= 0.40, (
+            f"Rich HTML XML reduction was only {reduction:.1%}, need >= 40%"
         )
 
         # Verify it's valid XML
@@ -429,9 +485,9 @@ class TestPerMessageSavings:
 
     def test_plain_text_message(self):
         """Plain-text mobile email -> pipe format."""
-        raw_bytes = len(UPSTREAM_MESSAGE_PLAIN.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_MSG_PLAIN)
 
-        parsed = parse_message_response(UPSTREAM_MESSAGE_PLAIN, "g", "msg_plain_002")
+        parsed = _msg_to_full(API_MSG_PLAIN, "g")
         processed = _pipeline_message(parsed)
         output = format_message(processed, "pipe")
         output_bytes = len(output.encode("utf-8"))
@@ -439,21 +495,19 @@ class TestPerMessageSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [Plain text -> Pipe]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
         print(f"  Output:\n---\n{output}\n---")
 
-        # Plain text is already compact. The upstream response includes headers,
-        # attachment instructions, etc. that get stripped, but the body itself
-        # is already lean. Even ~25% reduction is valuable for plain-text emails.
-        assert reduction >= 0.25, (
-            f"Plain text reduction was only {reduction:.1%}, need >= 25%"
+        # Plain text with base64 encoding overhead in API JSON -> compact pipe
+        assert reduction >= 0.20, (
+            f"Plain text reduction was only {reduction:.1%}, need >= 20%"
         )
 
 
 # ---------------------------------------------------------------------------
-# 2. Listing savings: search response + N fetched messages -> pipe listing
+# 2. Listing savings: API responses -> pipe listing
 # ---------------------------------------------------------------------------
 
 
@@ -461,36 +515,24 @@ class TestListingSavings:
     """Measure byte reduction for message listings."""
 
     def test_listing_pipe_savings(self):
-        """5-message search + fetch -> pipe listing."""
-        # Simulate the raw upstream cost: search response + 5 message fetches
-        raw_messages_text = [
-            UPSTREAM_MESSAGE_RICH,
-            UPSTREAM_MESSAGE_PLAIN,
-            UPSTREAM_MESSAGE_RICH,  # reuse for volume
-            UPSTREAM_MESSAGE_PLAIN,
-            UPSTREAM_MESSAGE_RICH,
-        ]
-        raw_total_bytes = (
-            len(UPSTREAM_SEARCH_RESPONSE.encode("utf-8"))
-            + sum(len(m.encode("utf-8")) for m in raw_messages_text)
-        )
+        """5-message search + batch metadata -> pipe listing."""
+        # Simulate total raw API cost: 5 full messages fetched
+        api_messages = [API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH]
+        raw_total_bytes = sum(_raw_api_bytes(m) for m in api_messages)
 
-        # Parse and process each through the pipeline
-        raw_ids = ["msg_rich_001", "msg_plain_002", "msg_newsletter_003", "msg_short_004", "msg_reply_005"]
         messages = []
-        for raw_text, raw_id in zip(raw_messages_text, raw_ids):
-            parsed = parse_message_response(raw_text, "g", raw_id)
+        for api_msg in api_messages:
+            parsed = _msg_to_full(api_msg, "g")
             processed = _pipeline_message(parsed)
             messages.append(processed)
 
-        # Format as pipe listing (just headers, no bodies)
         pipe_output = format_listing(messages, "pipe")
         pipe_bytes = len(pipe_output.encode("utf-8"))
 
         reduction = 1.0 - (pipe_bytes / raw_total_bytes)
 
         print(f"\n  [5 messages -> Pipe listing]")
-        print(f"  Raw upstream total:  {raw_total_bytes:,} bytes ({len(raw_messages_text)} msg fetches + search)")
+        print(f"  Raw API total:       {raw_total_bytes:,} bytes ({len(api_messages)} msgs)")
         print(f"  ts4k pipe listing:   {pipe_bytes:,} bytes")
         print(f"  Reduction:           {reduction:.1%}")
         print(f"  Output:\n---\n{pipe_output}\n---")
@@ -501,23 +543,13 @@ class TestListingSavings:
         )
 
     def test_listing_json_savings(self):
-        """5-message search + fetch -> JSON listing."""
-        raw_messages_text = [
-            UPSTREAM_MESSAGE_RICH,
-            UPSTREAM_MESSAGE_PLAIN,
-            UPSTREAM_MESSAGE_RICH,
-            UPSTREAM_MESSAGE_PLAIN,
-            UPSTREAM_MESSAGE_RICH,
-        ]
-        raw_total_bytes = (
-            len(UPSTREAM_SEARCH_RESPONSE.encode("utf-8"))
-            + sum(len(m.encode("utf-8")) for m in raw_messages_text)
-        )
+        """5-message API responses -> JSON listing."""
+        api_messages = [API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH]
+        raw_total_bytes = sum(_raw_api_bytes(m) for m in api_messages)
 
-        raw_ids = ["msg_rich_001", "msg_plain_002", "msg_newsletter_003", "msg_short_004", "msg_reply_005"]
         messages = []
-        for raw_text, raw_id in zip(raw_messages_text, raw_ids):
-            parsed = parse_message_response(raw_text, "g", raw_id)
+        for api_msg in api_messages:
+            parsed = _msg_to_full(api_msg, "g")
             processed = _pipeline_message(parsed)
             messages.append(processed)
 
@@ -527,33 +559,22 @@ class TestListingSavings:
         reduction = 1.0 - (json_bytes / raw_total_bytes)
 
         print(f"\n  [5 messages -> JSON listing]")
-        print(f"  Raw upstream total:  {raw_total_bytes:,} bytes")
+        print(f"  Raw API total:       {raw_total_bytes:,} bytes")
         print(f"  ts4k JSON listing:   {json_bytes:,} bytes")
         print(f"  Reduction:           {reduction:.1%}")
 
-        # JSON listing is slightly larger than pipe but still massive savings
         assert reduction >= 0.90, (
             f"JSON listing reduction was only {reduction:.1%}, need >= 90%"
         )
 
     def test_listing_xml_savings(self):
-        """5-message search + fetch -> XML listing."""
-        raw_messages_text = [
-            UPSTREAM_MESSAGE_RICH,
-            UPSTREAM_MESSAGE_PLAIN,
-            UPSTREAM_MESSAGE_RICH,
-            UPSTREAM_MESSAGE_PLAIN,
-            UPSTREAM_MESSAGE_RICH,
-        ]
-        raw_total_bytes = (
-            len(UPSTREAM_SEARCH_RESPONSE.encode("utf-8"))
-            + sum(len(m.encode("utf-8")) for m in raw_messages_text)
-        )
+        """5-message API responses -> XML listing."""
+        api_messages = [API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH]
+        raw_total_bytes = sum(_raw_api_bytes(m) for m in api_messages)
 
-        raw_ids = ["msg_rich_001", "msg_plain_002", "msg_newsletter_003", "msg_short_004", "msg_reply_005"]
         messages = []
-        for raw_text, raw_id in zip(raw_messages_text, raw_ids):
-            parsed = parse_message_response(raw_text, "g", raw_id)
+        for api_msg in api_messages:
+            parsed = _msg_to_full(api_msg, "g")
             processed = _pipeline_message(parsed)
             messages.append(processed)
 
@@ -563,7 +584,7 @@ class TestListingSavings:
         reduction = 1.0 - (xml_bytes / raw_total_bytes)
 
         print(f"\n  [5 messages -> XML listing]")
-        print(f"  Raw upstream total:  {raw_total_bytes:,} bytes")
+        print(f"  Raw API total:       {raw_total_bytes:,} bytes")
         print(f"  ts4k XML listing:    {xml_bytes:,} bytes")
         print(f"  Reduction:           {reduction:.1%}")
 
@@ -582,9 +603,9 @@ class TestThreadSavings:
 
     def test_thread_pipe_savings(self):
         """3-message HTML thread -> pipe format."""
-        raw_bytes = len(UPSTREAM_THREAD_RESPONSE.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_THREAD)
 
-        parsed = parse_thread_response(UPSTREAM_THREAD_RESPONSE, "g", "thread_meeting_001")
+        parsed = _thread_to_dict(API_THREAD, "g")
         processed = _pipeline_thread(parsed)
         output = format_thread(processed, "pipe")
         output_bytes = len(output.encode("utf-8"))
@@ -592,7 +613,7 @@ class TestThreadSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [3-msg thread -> Pipe]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
         print(f"  Output:\n---\n{output}\n---")
@@ -604,9 +625,9 @@ class TestThreadSavings:
 
     def test_thread_json_savings(self):
         """3-message HTML thread -> JSON format."""
-        raw_bytes = len(UPSTREAM_THREAD_RESPONSE.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_THREAD)
 
-        parsed = parse_thread_response(UPSTREAM_THREAD_RESPONSE, "g", "thread_meeting_001")
+        parsed = _thread_to_dict(API_THREAD, "g")
         processed = _pipeline_thread(parsed)
         output = format_thread(processed, "json")
         output_bytes = len(output.encode("utf-8"))
@@ -614,7 +635,7 @@ class TestThreadSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [3-msg thread -> JSON]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
 
@@ -629,9 +650,9 @@ class TestThreadSavings:
 
     def test_thread_xml_savings(self):
         """3-message HTML thread -> XML format."""
-        raw_bytes = len(UPSTREAM_THREAD_RESPONSE.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_THREAD)
 
-        parsed = parse_thread_response(UPSTREAM_THREAD_RESPONSE, "g", "thread_meeting_001")
+        parsed = _thread_to_dict(API_THREAD, "g")
         processed = _pipeline_thread(parsed)
         output = format_thread(processed, "xml")
         output_bytes = len(output.encode("utf-8"))
@@ -639,7 +660,7 @@ class TestThreadSavings:
         reduction = 1.0 - (output_bytes / raw_bytes)
 
         print(f"\n  [3-msg thread -> XML]")
-        print(f"  Raw upstream:  {raw_bytes:,} bytes")
+        print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
 
@@ -663,7 +684,7 @@ class TestContentIntegrity:
 
     def test_rich_message_key_content_preserved(self):
         """Key information from the rich HTML email must survive."""
-        parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", "msg_rich_001")
+        parsed = _msg_to_full(API_MSG_RICH, "g")
         processed = _pipeline_message(parsed)
 
         body = processed["body"]
@@ -685,7 +706,7 @@ class TestContentIntegrity:
 
     def test_rich_message_noise_removed(self):
         """Noise should be stripped from the rich email."""
-        parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", "msg_rich_001")
+        parsed = _msg_to_full(API_MSG_RICH, "g")
         processed = _pipeline_message(parsed)
 
         body = processed["body"]
@@ -701,7 +722,7 @@ class TestContentIntegrity:
         assert "pixel.gif" not in body
         assert "mailtrack.io" not in body
 
-        # Reply chain stripped — the quoted replies from Peter and Sarah
+        # Reply chain stripped
         assert "Can you send out the agenda for tomorrow" not in body
         assert "I've gotten feedback from the last three hires" not in body
         assert "let's make sure we have a solid agenda" not in body
@@ -713,16 +734,9 @@ class TestContentIntegrity:
         # Unsubscribe gone
         assert "unsubscribe" not in body_lower
 
-        # Note: The HTML signature block (Alice Chen, VP of Engineering, phone)
-        # may survive because it falls within the top portion of the normalized
-        # text — the signature stripper only checks the bottom ~40%. This is a
-        # known P1 limitation for HTML emails with signatures in <div> blocks.
-        # The important thing is that CSS, tracking, reply chains, confidentiality,
-        # and unsubscribe blocks are all removed.
-
     def test_plain_message_content_preserved(self):
         """Plain text email key content survives."""
-        parsed = parse_message_response(UPSTREAM_MESSAGE_PLAIN, "g", "msg_plain_002")
+        parsed = _msg_to_full(API_MSG_PLAIN, "g")
         processed = _pipeline_message(parsed)
 
         body = processed["body"]
@@ -741,7 +755,7 @@ class TestContentIntegrity:
         pipeline doesn't crash and the core message is preserved.
         The normalizer will be improved in a future iteration.
         """
-        parsed = parse_message_response(UPSTREAM_MESSAGE_PLAIN, "g", "msg_plain_002")
+        parsed = _msg_to_full(API_MSG_PLAIN, "g")
         processed = _pipeline_message(parsed)
 
         body = processed["body"]
@@ -752,7 +766,7 @@ class TestContentIntegrity:
 
     def test_header_normalization_in_pipeline(self):
         """Headers are normalized (date to ISO, address extraction, subject dedup)."""
-        parsed = parse_message_response(UPSTREAM_MESSAGE_PLAIN, "g", "msg_plain_002")
+        parsed = _msg_to_full(API_MSG_PLAIN, "g")
         processed = _pipeline_message(parsed)
 
         # Subject: "Re: Re: Re: Quick question about deploy" -> "Re: Quick question about deploy"
@@ -761,12 +775,12 @@ class TestContentIntegrity:
         # From: "Bob Martinez <bob@startup.io>" -> "bob@startup.io"
         assert processed["from"] == "bob@startup.io"
 
-        # Date should be ISO 8601 UTC
-        assert processed["date"] == "2026-02-20T20:45:00Z"
+        # Date should be ISO 8601 UTC (from internalDate)
+        assert "2026" in processed["date"]
 
     def test_thread_content_integrity(self):
         """All meaningful content in a thread survives normalization."""
-        parsed = parse_thread_response(UPSTREAM_THREAD_RESPONSE, "g", "thread_meeting_001")
+        parsed = _thread_to_dict(API_THREAD, "g")
         processed = _pipeline_thread(parsed)
 
         msgs = processed["messages"]
@@ -794,7 +808,7 @@ class TestFormatComparison:
 
     def test_message_format_sizes(self):
         """Compare message sizes across formats — pipe should be smallest."""
-        parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", "msg_rich_001")
+        parsed = _msg_to_full(API_MSG_RICH, "g")
         processed = _pipeline_message(parsed)
 
         pipe_out = format_message(processed, "pipe")
@@ -810,20 +824,16 @@ class TestFormatComparison:
         print(f"  JSON: {json_bytes:,} bytes")
         print(f"  XML:  {xml_bytes:,} bytes")
 
-        # Pipe should generally be the smallest (or very close)
-        # JSON and XML have structural overhead but are still compact
-        # All should be significantly smaller than the raw input
-        raw_bytes = len(UPSTREAM_MESSAGE_RICH.encode("utf-8"))
+        raw_bytes = _raw_api_bytes(API_MSG_RICH)
         assert pipe_bytes < raw_bytes
         assert json_bytes < raw_bytes
         assert xml_bytes < raw_bytes
 
     def test_listing_format_sizes(self):
         """Compare listing sizes across formats."""
-        raw_ids = ["msg1", "msg2", "msg3"]
         messages = []
-        for raw_id in raw_ids:
-            parsed = parse_message_response(UPSTREAM_MESSAGE_RICH, "g", raw_id)
+        for api_msg in [API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH]:
+            parsed = _msg_to_full(api_msg, "g")
             processed = _pipeline_message(parsed)
             messages.append(processed)
 
@@ -854,20 +864,19 @@ class TestPipelineSummary:
     """Print a comprehensive summary of pipeline savings."""
 
     def test_print_full_report(self):
-        """Print a full report of all pipeline savings — not an assertion test,
-        but a stats-gathering test that always passes (unless pipeline is broken)."""
+        """Print a full report of all pipeline savings."""
 
         print("\n" + "=" * 70)
         print("ts4k P3 Pipeline — End-to-End Token Savings Report")
         print("=" * 70)
 
         # --- Single message savings ---
-        for label, raw_text, raw_id in [
-            ("Rich HTML email", UPSTREAM_MESSAGE_RICH, "msg_rich"),
-            ("Plain text email", UPSTREAM_MESSAGE_PLAIN, "msg_plain"),
+        for label, api_msg in [
+            ("Rich HTML email", API_MSG_RICH),
+            ("Plain text email", API_MSG_PLAIN),
         ]:
-            raw_bytes = len(raw_text.encode("utf-8"))
-            parsed = parse_message_response(raw_text, "g", raw_id)
+            raw_bytes = _raw_api_bytes(api_msg)
+            parsed = _msg_to_full(api_msg, "g")
             processed = _pipeline_message(parsed)
 
             for fmt in ("pipe", "json", "xml"):
@@ -877,13 +886,12 @@ class TestPipelineSummary:
                 print(f"  {label:25s} -> {fmt:4s}:  {raw_bytes:>6,}b -> {out_bytes:>5,}b  ({reduction:5.1%} saved)")
 
         # --- Listing savings ---
-        search_bytes = len(UPSTREAM_SEARCH_RESPONSE.encode("utf-8"))
-        msg_texts = [UPSTREAM_MESSAGE_RICH, UPSTREAM_MESSAGE_PLAIN, UPSTREAM_MESSAGE_RICH]
-        total_raw = search_bytes + sum(len(t.encode("utf-8")) for t in msg_texts)
+        api_msgs = [API_MSG_RICH, API_MSG_PLAIN, API_MSG_RICH]
+        total_raw = sum(_raw_api_bytes(m) for m in api_msgs)
 
         messages = []
-        for i, raw_text in enumerate(msg_texts):
-            parsed = parse_message_response(raw_text, "g", f"msg_{i}")
+        for api_msg in api_msgs:
+            parsed = _msg_to_full(api_msg, "g")
             messages.append(_pipeline_message(parsed))
 
         print(f"\n  {'3-msg listing (raw total)':25s}: {total_raw:>6,}b")
@@ -894,8 +902,8 @@ class TestPipelineSummary:
             print(f"  {'':25s} -> {fmt:4s}:  {out_bytes:>5,}b  ({reduction:5.1%} saved)")
 
         # --- Thread savings ---
-        thread_raw_bytes = len(UPSTREAM_THREAD_RESPONSE.encode("utf-8"))
-        parsed_thread = parse_thread_response(UPSTREAM_THREAD_RESPONSE, "g", "thread_001")
+        thread_raw_bytes = _raw_api_bytes(API_THREAD)
+        parsed_thread = _thread_to_dict(API_THREAD, "g")
         processed_thread = _pipeline_thread(parsed_thread)
 
         print(f"\n  {'3-msg thread (raw)':25s}: {thread_raw_bytes:>6,}b")

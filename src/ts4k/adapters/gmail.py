@@ -1,21 +1,16 @@
-"""Gmail adapter — MCP client bridge to google_workspace_mcp.
+"""Gmail adapter — direct Google API via google-api-python-client.
 
-This adapter connects to the google_workspace_mcp server as an MCP
-**client**, calls its Gmail tools, and parses the plain-text responses
-into the normalised dicts that the ts4k pipeline expects.
-
-Supports two connection modes:
-
-* **stdio** — launches the upstream server as a subprocess.
-* **streamable-http** — connects to an already-running HTTP server.
+Connects directly to the Gmail API, eliminating the MCP middleman.
+Key efficiency wins:
+- Batch metadata fetch: 1 list + 1 batch get instead of N+1 calls.
+- Field-level selection: only request what we need.
+- Structured JSON: no regex parsing of plain text.
+- Snippet included in listings for free.
 
 Usage::
 
     adapter = GmailAdapter(
-        user_email="alice@gmail.com",
-        transport="stdio",
-        server_command=["python", "main.py", "--tools", "gmail", "--single-user"],
-        server_cwd="H:/source/google_workspace_mcp",
+        GmailAdapterConfig(user_email="alice@gmail.com"),
     )
     async with adapter:
         msgs = await adapter.list_messages("newer_than:1d")
@@ -23,19 +18,18 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import logging
-import re
-from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
-
-from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamablehttp_client
 
 from ts4k.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -47,225 +41,198 @@ class GmailAdapterConfig:
     """All knobs for the Gmail adapter in one place."""
 
     user_email: str
-    """Google email passed to every upstream tool call."""
+    """Google email used for authentication."""
 
-    transport: str = "stdio"
-    """``'stdio'`` or ``'streamable-http'``."""
-
-    # stdio-specific
-    server_command: list[str] = field(default_factory=lambda: ["python", "main.py"])
-    server_args: list[str] = field(
-        default_factory=lambda: ["--tools", "gmail", "--single-user"]
-    )
-    server_cwd: str | None = None
-    server_env: dict[str, str] | None = None
-
-    # HTTP-specific
-    server_url: str = "http://localhost:8000/mcp"
+    config_dir: Path | None = None
+    """Override for credential directory (default: ~/.config/ts4k)."""
 
 
 # ---------------------------------------------------------------------------
-# Response parsers — turn upstream plain-text into structured dicts
+# Response converters — pure functions, easy to test
 # ---------------------------------------------------------------------------
 
-# Regex for a numbered message entry in search results:
-#   1. Message ID: 18d4a2b3c4e5f6a7
-#      Web Link: https://...
-#      Thread ID: 18d4a2b3c4e5f6a8
-#      Thread Link: https://...
-_SEARCH_ENTRY = re.compile(
-    r"^\s*\d+\.\s+Message ID:\s*(?P<msg_id>\S+)\s*\n"
-    r"\s+Web Link:\s*(?P<web_link>\S+)\s*\n"
-    r"\s+Thread ID:\s*(?P<thread_id>\S+)\s*\n"
-    r"\s+Thread Link:\s*(?P<thread_link>\S+)",
-    re.MULTILINE,
-)
 
-# Header lines in a single-message response.
-_HEADER_RE = re.compile(
-    r"^(?P<key>Subject|From|Date|To|Cc|Message-ID|In-Reply-To|References):\s+(?P<value>.+)$",
-    re.MULTILINE,
-)
+def _get_header(headers: list[dict], name: str) -> str:
+    """Case-insensitive lookup of a header value from Gmail API headers list.
 
-# Body delimiter.
-_BODY_DELIM = "--- BODY ---"
-_ATTACH_DELIM = "--- ATTACHMENTS ---"
-
-# Thread message separator: === Message N ===
-_THREAD_MSG_SEP = re.compile(r"^=== Message (\d+) ===$", re.MULTILINE)
-
-# Pagination token.
-_PAGINATION_RE = re.compile(r"page_token='([^']+)'")
-
-
-def parse_search_response(text: str, prefix: str) -> list[dict]:
-    """Parse the upstream ``search_gmail_messages`` plain-text response.
-
-    Returns a list of dicts with ``id``, ``thread_id``, ``web_link``,
-    ``thread_link``.  All IDs are prefixed with *prefix* (e.g. ``'g'``).
+    Gmail API returns headers as ``[{"name": "Subject", "value": "..."}]``.
     """
-    results: list[dict] = []
-    for m in _SEARCH_ENTRY.finditer(text):
-        msg_id = m.group("msg_id")
-        thread_id = m.group("thread_id")
-        results.append(
-            {
-                "id": f"{prefix}:{msg_id}",
-                "raw_id": msg_id,
-                "thread_id": f"{prefix}:{thread_id}",
-                "raw_thread_id": thread_id,
-                "web_link": m.group("web_link"),
-                "thread_link": m.group("thread_link"),
-            }
-        )
-
-    # Check for pagination token.
-    pag = _PAGINATION_RE.search(text)
-    if pag and results:
-        results[-1]["_next_page_token"] = pag.group(1)
-
-    return results
+    name_lower = name.lower()
+    for h in headers:
+        if h.get("name", "").lower() == name_lower:
+            return h.get("value", "")
+    return ""
 
 
-def parse_message_response(text: str, prefix: str, raw_id: str = "") -> dict:
-    """Parse the upstream ``get_gmail_message_content`` plain-text response.
+def _decode_body(payload: dict) -> str:
+    """Extract body text from a Gmail API payload tree.
 
-    Returns a dict with ``id``, ``from``, ``subject``, ``date``, ``body``,
-    and optional ``to``, ``cc``, ``message_id``, ``attachments``.
+    Walks the multipart tree, preferring text/plain over text/html.
+    Returns raw HTML for text/html parts — the normalize pipeline handles
+    HTML-to-text conversion (avoiding double-processing).
     """
-    headers: dict[str, str] = {}
-    for m in _HEADER_RE.finditer(text):
-        key = m.group("key")
-        val = m.group("value").strip()
-        # Normalise key names to lower-case + underscore.
-        norm = key.lower().replace("-", "_")
-        headers[norm] = val
+    mime_type = payload.get("mimeType", "")
 
-    # Body: everything between "--- BODY ---" and "--- ATTACHMENTS ---" (or end).
-    body = ""
-    body_start = text.find(_BODY_DELIM)
-    if body_start != -1:
-        body_start += len(_BODY_DELIM)
-        attach_start = text.find(_ATTACH_DELIM, body_start)
-        if attach_start != -1:
-            body = text[body_start:attach_start].strip()
-        else:
-            body = text[body_start:].strip()
+    # Leaf node with data.
+    body_data = payload.get("body", {}).get("data")
+    if body_data and "multipart" not in mime_type:
+        decoded = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+        # Return raw text (plain or HTML) — normalize pipeline converts HTML.
+        return decoded
 
-    # Attachments — simple list parse.
+    # Multipart: walk parts.
+    parts = payload.get("parts", [])
+    if not parts:
+        return ""
+
+    # Prefer text/plain.
+    for part in parts:
+        if part.get("mimeType") == "text/plain":
+            text = _decode_body(part)
+            if text:
+                return text
+
+    # Fall back to text/html.
+    for part in parts:
+        if part.get("mimeType") == "text/html":
+            text = _decode_body(part)
+            if text:
+                return text
+
+    # Recurse into nested multipart parts.
+    for part in parts:
+        if "multipart" in part.get("mimeType", ""):
+            text = _decode_body(part)
+            if text:
+                return text
+
+    return ""
+
+
+def _extract_attachments(payload: dict) -> list[dict]:
+    """Extract attachment metadata from a Gmail API payload tree.
+
+    Returns a list of dicts with ``filename``, ``mime_type``, ``size``.
+    Skips inline parts (no filename).
+    """
     attachments: list[dict] = []
-    attach_start = text.find(_ATTACH_DELIM)
-    if attach_start != -1:
-        attach_text = text[attach_start + len(_ATTACH_DELIM) :]
-        # Each attachment is numbered: "1. filename.pdf (mime, size)"
-        for att_match in re.finditer(
-            r"(\d+)\.\s+(.+?)\s+\(([^,]+),\s*([^)]+)\)", attach_text
-        ):
+    parts = payload.get("parts", [])
+
+    for part in parts:
+        filename = part.get("filename", "")
+        if filename:
+            body = part.get("body", {})
             attachments.append(
                 {
-                    "index": int(att_match.group(1)),
-                    "filename": att_match.group(2).strip(),
-                    "mime_type": att_match.group(3).strip(),
-                    "size": att_match.group(4).strip(),
+                    "filename": filename,
+                    "mime_type": part.get("mimeType", ""),
+                    "size": body.get("size", 0),
                 }
             )
+        # Recurse into nested multipart.
+        if "multipart" in part.get("mimeType", ""):
+            attachments.extend(_extract_attachments(part))
 
-    result: dict[str, Any] = {
-        "id": f"{prefix}:{raw_id}" if raw_id else "",
-        "from": headers.get("from", ""),
-        "subject": headers.get("subject", ""),
-        "date": headers.get("date", ""),
-        "body": body,
+    return attachments
+
+
+def _internal_date_to_iso(internal_date: str | int | None) -> str:
+    """Convert Gmail internalDate (epoch ms) to ISO-8601 string."""
+    if internal_date is None:
+        return ""
+    try:
+        epoch_ms = int(internal_date)
+        dt = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, TypeError, OSError):
+        return ""
+
+
+def _msg_to_headers(msg: dict, prefix: str) -> dict:
+    """Convert a Gmail API message (metadata format) to a listing dict.
+
+    Returns dict with: id, thread_id, from, subject, date, snippet, source.
+    """
+    headers = msg.get("payload", {}).get("headers", [])
+    msg_id = msg.get("id", "")
+    thread_id = msg.get("threadId", "")
+
+    return {
+        "id": f"{prefix}:{msg_id}",
+        "raw_id": msg_id,
+        "thread_id": f"{prefix}:{thread_id}",
+        "raw_thread_id": thread_id,
+        "from": _get_header(headers, "From"),
+        "subject": _get_header(headers, "Subject"),
+        "date": _internal_date_to_iso(msg.get("internalDate")),
+        "snippet": msg.get("snippet", ""),
+        "source": prefix,
     }
 
-    if headers.get("to"):
-        result["to"] = headers["to"]
-    if headers.get("cc"):
-        result["cc"] = headers["cc"]
-    if headers.get("message_id"):
-        result["message_id"] = headers["message_id"]
+
+def _msg_to_full(msg: dict, prefix: str) -> dict:
+    """Convert a Gmail API message (full format) to a complete message dict.
+
+    Returns dict with: id, from, subject, date, body, and optional
+    to, cc, message_id, attachments.
+    """
+    payload = msg.get("payload", {})
+    headers = payload.get("headers", [])
+    msg_id = msg.get("id", "")
+
+    result: dict[str, Any] = {
+        "id": f"{prefix}:{msg_id}",
+        "raw_id": msg_id,
+        "thread_id": f"{prefix}:{msg.get('threadId', '')}",
+        "from": _get_header(headers, "From"),
+        "subject": _get_header(headers, "Subject"),
+        "date": _internal_date_to_iso(msg.get("internalDate")),
+        "body": _decode_body(payload),
+        "source": prefix,
+    }
+
+    to = _get_header(headers, "To")
+    if to:
+        result["to"] = to
+    cc = _get_header(headers, "Cc")
+    if cc:
+        result["cc"] = cc
+    message_id = _get_header(headers, "Message-ID")
+    if not message_id:
+        message_id = _get_header(headers, "Message-Id")
+    if message_id:
+        result["message_id"] = message_id
+
+    attachments = _extract_attachments(payload)
     if attachments:
         result["attachments"] = attachments
 
     return result
 
 
-def parse_thread_response(text: str, prefix: str, raw_thread_id: str = "") -> dict:
-    """Parse the upstream ``get_gmail_thread_content`` plain-text response.
+def _thread_to_dict(thread: dict, prefix: str) -> dict:
+    """Convert a Gmail API thread (full format) to a thread dict.
 
-    Returns a dict with ``thread_id``, ``subject``, ``message_count``,
-    ``messages`` (list of per-message dicts).
+    Returns dict with: thread_id, subject, message_count, messages.
     """
-    # Thread-level headers appear before the first === Message N ===.
-    thread_id_match = re.search(r"^Thread ID:\s*(\S+)", text, re.MULTILINE)
-    subject_match = re.search(r"^Subject:\s*(.+)$", text, re.MULTILINE)
-    count_match = re.search(r"^Messages:\s*(\d+)", text, re.MULTILINE)
+    thread_id = thread.get("id", "")
+    messages_raw = thread.get("messages", [])
 
-    thread_id_raw = raw_thread_id or (
-        thread_id_match.group(1) if thread_id_match else ""
-    )
-    subject = subject_match.group(1).strip() if subject_match else ""
-    message_count = int(count_match.group(1)) if count_match else 0
-
-    # Split on message separators.
-    parts = _THREAD_MSG_SEP.split(text)
-    # parts[0] is the header, then alternating (msg_num_str, msg_body).
-    messages: list[dict] = []
-    i = 1
-    while i < len(parts) - 1:
-        msg_num = int(parts[i])
-        msg_text = parts[i + 1]
-        msg = _parse_thread_message_block(msg_text, prefix, msg_num)
-        messages.append(msg)
-        i += 2
+    messages = []
+    subject = ""
+    for i, msg in enumerate(messages_raw):
+        full = _msg_to_full(msg, prefix)
+        full["index"] = i + 1
+        if i == 0 and full.get("subject"):
+            subject = full["subject"]
+        messages.append(full)
 
     return {
-        "thread_id": f"{prefix}:{thread_id_raw}" if thread_id_raw else "",
+        "thread_id": f"{prefix}:{thread_id}",
         "subject": subject,
-        "message_count": message_count or len(messages),
+        "message_count": len(messages),
         "messages": messages,
     }
-
-
-def _parse_thread_message_block(text: str, prefix: str, index: int) -> dict:
-    """Parse a single message block within a thread response."""
-    headers: dict[str, str] = {}
-    for m in _HEADER_RE.finditer(text):
-        norm = m.group("key").lower().replace("-", "_")
-        headers[norm] = m.group("value").strip()
-
-    # Body is everything after the last header line (crude but effective for
-    # the upstream format, which has headers then a blank line then body).
-    lines = text.strip().splitlines()
-    body_lines: list[str] = []
-    past_headers = False
-    for line in lines:
-        if past_headers:
-            body_lines.append(line)
-        elif line.strip() == "":
-            # Blank line after header block signals start of body.
-            if headers:
-                past_headers = True
-        elif not _HEADER_RE.match(line):
-            # Non-header, non-blank — treat as body start.
-            past_headers = True
-            body_lines.append(line)
-
-    result: dict[str, Any] = {
-        "index": index,
-        "from": headers.get("from", ""),
-        "date": headers.get("date", ""),
-        "body": "\n".join(body_lines).strip(),
-    }
-
-    if headers.get("subject"):
-        result["subject"] = headers["subject"]
-    if headers.get("message_id"):
-        result["message_id"] = headers["message_id"]
-    if headers.get("in_reply_to"):
-        result["in_reply_to"] = headers["in_reply_to"]
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +241,12 @@ def _parse_thread_message_block(text: str, prefix: str, index: int) -> dict:
 
 
 class GmailAdapter(BaseAdapter):
-    """Gmail adapter that bridges to google_workspace_mcp via MCP client."""
+    """Gmail adapter using direct Google API calls."""
 
     def __init__(self, config: GmailAdapterConfig, prefix: str = "g") -> None:
         self._config = config
         self._prefix = prefix
-        self._session: ClientSession | None = None
-        self._exit_stack: AsyncExitStack | None = None
+        self._service = None
 
     # -- BaseAdapter properties/lifecycle -----------------------------------
 
@@ -289,50 +255,27 @@ class GmailAdapter(BaseAdapter):
         return self._prefix
 
     async def connect(self) -> None:
-        """Open the MCP client session to the upstream server."""
-        if self._session is not None:
+        """Build Gmail API service via OAuth credentials."""
+        if self._service is not None:
             return  # already connected
 
-        stack = AsyncExitStack()
-        self._exit_stack = stack
+        from ts4k.auth.google import build_gmail_service
 
-        if self._config.transport == "stdio":
-            params = StdioServerParameters(
-                command=self._config.server_command[0],
-                args=[
-                    *self._config.server_command[1:],
-                    *self._config.server_args,
-                ],
-                cwd=self._config.server_cwd,
-                env=self._config.server_env,
-            )
-            read_stream, write_stream = await stack.enter_async_context(
-                stdio_client(params)
-            )
-        elif self._config.transport == "streamable-http":
-            read_stream, write_stream, _ = await stack.enter_async_context(
-                streamablehttp_client(self._config.server_url)
-            )
-        else:
-            raise ValueError(
-                f"Unsupported transport: {self._config.transport!r}"
-            )
-
-        session = await stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
+        self._service = await asyncio.to_thread(
+            build_gmail_service,
+            self._config.user_email,
+            config_dir=self._config.config_dir,
         )
-        await session.initialize()
-        self._session = session
-        logger.info(
-            "GmailAdapter connected via %s", self._config.transport
-        )
+        logger.info("GmailAdapter connected for %s", self._config.user_email)
 
     async def disconnect(self) -> None:
-        """Close the MCP client session."""
-        if self._exit_stack is not None:
-            await self._exit_stack.aclose()
-            self._exit_stack = None
-            self._session = None
+        """Close the Gmail API service."""
+        if self._service is not None:
+            try:
+                self._service.close()
+            except Exception:
+                pass
+            self._service = None
             logger.info("GmailAdapter disconnected")
 
     # Context manager support ------------------------------------------------
@@ -346,37 +289,13 @@ class GmailAdapter(BaseAdapter):
 
     # -- Internal helpers ----------------------------------------------------
 
-    def _require_session(self) -> ClientSession:
-        if self._session is None:
+    def _require_service(self):
+        if self._service is None:
             raise RuntimeError(
                 "GmailAdapter is not connected. Call connect() or use "
                 "'async with adapter:' first."
             )
-        return self._session
-
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        """Call an upstream MCP tool and return the text content.
-
-        Raises ``RuntimeError`` if the tool returns an error or no text.
-        """
-        session = self._require_session()
-        result = await session.call_tool(name, arguments)
-
-        if result.isError:
-            texts = [
-                c.text for c in result.content if hasattr(c, "text")
-            ]
-            raise RuntimeError(
-                f"Upstream tool {name!r} returned error: "
-                + ("; ".join(texts) or "(no details)")
-            )
-
-        texts = [c.text for c in result.content if hasattr(c, "text")]
-        if not texts:
-            raise RuntimeError(
-                f"Upstream tool {name!r} returned no text content"
-            )
-        return "\n".join(texts)
+        return self._service
 
     # -- BaseAdapter data methods -------------------------------------------
 
@@ -398,40 +317,97 @@ class GmailAdapter(BaseAdapter):
         count: int = 20,
         page_token: str | None = None,
     ) -> list[dict]:
-        """Search Gmail and return a list of message-header dicts."""
-        args: dict[str, Any] = {
-            "user_google_email": self._config.user_email,
-            "query": query or "in:inbox",
-            "page_size": count,
+        """Search Gmail and return a list of message-header dicts.
+
+        Two-step efficient fetch:
+        1. messages.list() -> IDs only
+        2. Batch messages.get(format=metadata) -> headers + snippet for all IDs
+        """
+        service = self._require_service()
+
+        # Step 1: Get message IDs.
+        list_args: dict[str, Any] = {
+            "userId": "me",
+            "q": query or "in:inbox",
+            "maxResults": count,
         }
         if page_token:
-            args["page_token"] = page_token
-        text = await self._call_tool("search_gmail_messages", args)
-        return parse_search_response(text, self.source_prefix)
+            list_args["pageToken"] = page_token
+
+        list_result = await asyncio.to_thread(
+            lambda: service.users().messages().list(**list_args).execute()
+        )
+
+        message_ids = [m["id"] for m in list_result.get("messages", [])]
+        if not message_ids:
+            return []
+
+        # Step 2: Batch fetch metadata for all IDs.
+        results: list[dict] = []
+        errors: list[str] = []
+
+        def _batch_callback(request_id, response, exception):
+            if exception is not None:
+                errors.append(f"{request_id}: {exception}")
+            else:
+                results.append(response)
+
+        batch = service.new_batch_http_request(callback=_batch_callback)
+        for msg_id in message_ids:
+            batch.add(
+                service.users().messages().get(
+                    userId="me",
+                    id=msg_id,
+                    format="metadata",
+                    metadataHeaders=["Subject", "From", "Date", "To"],
+                )
+            )
+        await asyncio.to_thread(batch.execute)
+
+        if errors:
+            for err in errors:
+                logger.warning("Batch metadata fetch error: %s", err)
+
+        # Convert to header dicts.
+        header_dicts = [_msg_to_headers(msg, self._prefix) for msg in results]
+
+        # Sort by date descending (internalDate order).
+        header_dicts.sort(key=lambda m: m.get("date", ""), reverse=True)
+
+        # Attach pagination token.
+        next_token = list_result.get("nextPageToken")
+        if next_token and header_dicts:
+            header_dicts[-1]["_next_page_token"] = next_token
+
+        return header_dicts
 
     async def read_message(self, msg_id: str) -> dict:
         """Fetch a single message by its ts4k prefixed ID (``g:XXXX``)."""
+        service = self._require_service()
         raw_id = self._strip_prefix(msg_id)
-        text = await self._call_tool(
-            "get_gmail_message_content",
-            {
-                "user_google_email": self._config.user_email,
-                "message_id": raw_id,
-            },
+
+        msg = await asyncio.to_thread(
+            lambda: service.users().messages().get(
+                userId="me",
+                id=raw_id,
+                format="full",
+            ).execute()
         )
-        return parse_message_response(text, self.source_prefix, raw_id)
+        return _msg_to_full(msg, self._prefix)
 
     async def read_thread(self, thread_id: str) -> dict:
         """Fetch a full thread by its ts4k prefixed ID (``g:XXXX``)."""
+        service = self._require_service()
         raw_id = self._strip_prefix(thread_id)
-        text = await self._call_tool(
-            "get_gmail_thread_content",
-            {
-                "user_google_email": self._config.user_email,
-                "thread_id": raw_id,
-            },
+
+        thread = await asyncio.to_thread(
+            lambda: service.users().threads().get(
+                userId="me",
+                id=raw_id,
+                format="full",
+            ).execute()
         )
-        return parse_thread_response(text, self.source_prefix, raw_id)
+        return _thread_to_dict(thread, self._prefix)
 
     # -- Helpers -------------------------------------------------------------
 

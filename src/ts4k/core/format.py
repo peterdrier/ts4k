@@ -175,17 +175,30 @@ def _size(msg: dict) -> str:
 def _listing_pipe(messages: list[dict]) -> str:
     """Pipe-delimited listing — most compact format.
 
-    ::
+    When snippet is available, includes a truncated preview::
 
-        SOURCE|FROM|SUBJECT|DATE|ID|SIZE
-        g|alice@acme.com|Meeting tomorrow|2026-02-20T09:15:00Z|g:abc123|2kb
+        SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET
+        g|alice@acme.com|Meeting tomorrow|2026-02-20T09:15:00Z|g:abc123|2kb|Meeting prep is...
     """
-    lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE"]
-    for msg in messages:
-        lines.append(
-            f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
-            f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}"
-        )
+    has_snippets = any(msg.get("snippet") for msg in messages)
+    if has_snippets:
+        lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET"]
+        for msg in messages:
+            snippet = msg.get("snippet", "")
+            # Truncate long snippets for token efficiency.
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "..."
+            lines.append(
+                f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
+                f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}|{snippet}"
+            )
+    else:
+        lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE"]
+        for msg in messages:
+            lines.append(
+                f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
+                f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}"
+            )
     return "\n".join(lines)
 
 

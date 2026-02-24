@@ -68,11 +68,11 @@ def _make_adapter(
         email = cfg.get("email")
         if not email:
             return None
+        config_dir = cfg.get("config_dir")
         return GmailAdapter(
             GmailAdapterConfig(
                 user_email=email,
-                transport=cfg.get("transport", "streamable-http"),
-                server_url=cfg.get("mcp_url", "http://localhost:51429/mcp"),
+                config_dir=Path(config_dir) if config_dir else None,
             ),
             prefix=prefix,
         )
@@ -286,32 +286,19 @@ async def _fetch_whatsnew_for_source(
             if provider == "gmail":
                 query = _since_to_gmail_query(since, prefix)
                 listing = await adapter.list_messages(query=query, count=count)
-                if not listing:
-                    return []
-                messages = []
-                for entry in listing[:count]:
-                    try:
-                        msg = await adapter.read_message(entry["id"])
-                        msg = _normalize_message(msg)
-                        msg.setdefault("source", prefix)
-                        cache.store_message(msg.get("id", entry["id"]), msg)
-                        messages.append(msg)
-                    except Exception as exc:
-                        logger.warning("[%s] fetch %s: %s", prefix, entry["id"], exc)
-                return messages
-
             else:
                 iso_since = _since_to_iso(since, prefix)
                 listing = await adapter.whatsnew(since=iso_since)
-                if not listing:
-                    return []
-                messages = []
-                for entry in listing[:count]:
-                    msg = _normalize_message(entry)
-                    msg.setdefault("source", prefix)
-                    cache.store_message(msg.get("id", ""), msg)
-                    messages.append(msg)
-                return messages
+
+            if not listing:
+                return []
+            messages = []
+            for entry in listing[:count]:
+                msg = _normalize_message(entry)
+                msg.setdefault("source", prefix)
+                cache.store_message(msg.get("id", ""), msg)
+                messages.append(msg)
+            return messages
 
     except Exception as exc:
         logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -455,25 +442,14 @@ async def list_messages(
         if adapter is None:
             continue
 
-        provider = cfg.get("provider", "").lower()
         try:
             async with adapter:
                 listing = await adapter.list_messages(query=query, count=count)
                 for entry in listing or []:
-                    if provider == "gmail":
-                        try:
-                            msg = await adapter.read_message(entry["id"])
-                            msg = _normalize_message(msg)
-                            msg.setdefault("source", prefix)
-                            cache.store_message(msg.get("id", entry["id"]), msg)
-                            all_messages.append(msg)
-                        except Exception as exc:
-                            logger.warning("[%s] fetch %s: %s", prefix, entry["id"], exc)
-                    else:
-                        msg = _normalize_message(entry)
-                        msg.setdefault("source", prefix)
-                        cache.store_message(msg.get("id", ""), msg)
-                        all_messages.append(msg)
+                    msg = _normalize_message(entry)
+                    msg.setdefault("source", prefix)
+                    cache.store_message(msg.get("id", ""), msg)
+                    all_messages.append(msg)
         except Exception as exc:
             logger.warning("[%s] adapter failed: %s", prefix, exc)
 

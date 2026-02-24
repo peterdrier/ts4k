@@ -1,14 +1,13 @@
-"""Tests for the Gmail MCP client adapter.
+"""Tests for the Gmail adapter — direct Google API implementation.
 
-Unit tests use mocked MCP responses (no real server needed).
-Integration tests (marked ``@pytest.mark.integration``) require a running
-google_workspace_mcp server and are skipped by default.
+Unit tests use Gmail API JSON fixtures (no real Google API calls).
+Integration tests (marked ``@pytest.mark.integration``) require valid
+Google credentials and are skipped by default.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,357 +15,605 @@ import pytest
 from ts4k.adapters.gmail import (
     GmailAdapter,
     GmailAdapterConfig,
-    parse_message_response,
-    parse_search_response,
-    parse_thread_response,
+    _decode_body,
+    _extract_attachments,
+    _get_header,
+    _internal_date_to_iso,
+    _msg_to_full,
+    _msg_to_headers,
+    _thread_to_dict,
 )
 
 # ---------------------------------------------------------------------------
-# Realistic upstream response fixtures
-# ---------------------------------------------------------------------------
-
-SEARCH_RESPONSE_TEXT = """\
-Found 3 messages matching 'newer_than:1d':
-
-📧 MESSAGES:
-  1. Message ID: 18f6a2b3c4e5f6a7
-     Web Link: https://mail.google.com/mail/u/0/#all/18f6a2b3c4e5f6a7
-     Thread ID: 18f6a2b3c4e5f6a8
-     Thread Link: https://mail.google.com/mail/u/0/#all/18f6a2b3c4e5f6a8
-
-  2. Message ID: 18f6b1112233aabb
-     Web Link: https://mail.google.com/mail/u/0/#all/18f6b1112233aabb
-     Thread ID: 18f6b1112233aacc
-     Thread Link: https://mail.google.com/mail/u/0/#all/18f6b1112233aacc
-
-  3. Message ID: 18f6c9988776655d
-     Web Link: https://mail.google.com/mail/u/0/#all/18f6c9988776655d
-     Thread ID: 18f6c9988776655e
-     Thread Link: https://mail.google.com/mail/u/0/#all/18f6c9988776655e
-
-💡 USAGE:
-  • Pass the Message IDs **as a list** to get_gmail_messages_content_batch()
-    e.g. get_gmail_messages_content_batch(message_ids=[...])
-  • Pass the Thread IDs to get_gmail_thread_content() (single) or get_gmail_threads_content_batch() (batch)"""
-
-SEARCH_RESPONSE_WITH_PAGINATION = """\
-Found 2 messages matching 'in:inbox':
-
-📧 MESSAGES:
-  1. Message ID: aaa111
-     Web Link: https://mail.google.com/mail/u/0/#all/aaa111
-     Thread ID: aaa222
-     Thread Link: https://mail.google.com/mail/u/0/#all/aaa222
-
-  2. Message ID: bbb111
-     Web Link: https://mail.google.com/mail/u/0/#all/bbb111
-     Thread ID: bbb222
-     Thread Link: https://mail.google.com/mail/u/0/#all/bbb222
-
-💡 USAGE:
-  • Pass the Message IDs **as a list** to get_gmail_messages_content_batch()
-
-📄 PAGINATION: To get the next page, call search_gmail_messages again with page_token='CiAKGjBpNDd2Nmp2Zml2cXRwYjBpOXA'"""
-
-SEARCH_EMPTY_RESPONSE = "No messages found for query: 'label:NONEXISTENT'"
-
-MESSAGE_RESPONSE_TEXT = """\
-Subject: Meeting tomorrow at 3pm
-From:    Alice Chen <alice@acme.com>
-Date:    Thu, 20 Feb 2026 09:15:00 +0100
-Message-ID: <CABx+abc123@mail.gmail.com>
-To:      peter@example.com
-Cc:      bob@example.com
-
---- BODY ---
-Hey Peter,
-
-Are we still on for 3pm? Let me know if the conference room changed.
-
-Thanks,
-Alice
-
---- ATTACHMENTS ---
-1. agenda.pdf (application/pdf, 24.5 KB)
-   Attachment ID: ANGjdJ8xyz
-   Use get_gmail_attachment_content(message_id='18f6a2b3c4e5f6a7', attachment_id='ANGjdJ8xyz') to download"""
-
-MESSAGE_RESPONSE_MINIMAL = """\
-Subject: Quick question
-From:    Bob <bob@corp.com>
-Date:    Wed, 19 Feb 2026 14:30:00 +0000
-
---- BODY ---
-Hey, what time works?"""
-
-THREAD_RESPONSE_TEXT = """\
-Thread ID: 18f6a2b3c4e5f6a8
-Subject: Meeting tomorrow at 3pm
-Messages: 3
-
-=== Message 1 ===
-From: Alice Chen <alice@acme.com>
-Date: Thu, 20 Feb 2026 09:15:00 +0100
-Message-ID: <CABx+abc123@mail.gmail.com>
-
-Hey Peter,
-
-Are we still on for 3pm? Let me know if the conference room changed.
-
-=== Message 2 ===
-From: Peter <peter@example.com>
-Date: Thu, 20 Feb 2026 09:30:00 +0100
-Message-ID: <CABx+def456@mail.gmail.com>
-In-Reply-To: <CABx+abc123@mail.gmail.com>
-
-Yes! Room B confirmed. See you there.
-
-=== Message 3 ===
-From: Alice Chen <alice@acme.com>
-Date: Thu, 20 Feb 2026 09:32:00 +0100
-
-Great, thanks!"""
-
-
-# ---------------------------------------------------------------------------
-# Parser unit tests (pure functions, no mocking needed)
+# Gmail API JSON fixtures
 # ---------------------------------------------------------------------------
 
 
-class TestParseSearchResponse:
-    """Tests for parse_search_response()."""
-
-    def test_parses_multiple_entries(self):
-        results = parse_search_response(SEARCH_RESPONSE_TEXT, "g")
-        assert len(results) == 3
-
-    def test_prefixes_message_ids(self):
-        results = parse_search_response(SEARCH_RESPONSE_TEXT, "g")
-        assert results[0]["id"] == "g:18f6a2b3c4e5f6a7"
-        assert results[1]["id"] == "g:18f6b1112233aabb"
-        assert results[2]["id"] == "g:18f6c9988776655d"
-
-    def test_preserves_raw_ids(self):
-        results = parse_search_response(SEARCH_RESPONSE_TEXT, "g")
-        assert results[0]["raw_id"] == "18f6a2b3c4e5f6a7"
-
-    def test_prefixes_thread_ids(self):
-        results = parse_search_response(SEARCH_RESPONSE_TEXT, "g")
-        assert results[0]["thread_id"] == "g:18f6a2b3c4e5f6a8"
-
-    def test_includes_web_links(self):
-        results = parse_search_response(SEARCH_RESPONSE_TEXT, "g")
-        assert "mail.google.com" in results[0]["web_link"]
-        assert "mail.google.com" in results[0]["thread_link"]
-
-    def test_empty_response_returns_empty_list(self):
-        results = parse_search_response(SEARCH_EMPTY_RESPONSE, "g")
-        assert results == []
-
-    def test_pagination_token_extracted(self):
-        results = parse_search_response(SEARCH_RESPONSE_WITH_PAGINATION, "g")
-        assert len(results) == 2
-        assert results[-1]["_next_page_token"] == "CiAKGjBpNDd2Nmp2Zml2cXRwYjBpOXA"
-
-    def test_different_prefix(self):
-        results = parse_search_response(SEARCH_RESPONSE_TEXT, "x")
-        assert results[0]["id"].startswith("x:")
-        assert results[0]["thread_id"].startswith("x:")
+def _b64(text: str) -> str:
+    """Base64url-encode a string (matching Gmail API format)."""
+    return base64.urlsafe_b64encode(text.encode()).decode()
 
 
-class TestParseMessageResponse:
-    """Tests for parse_message_response()."""
+# Internal dates (epoch ms) for consistent test output.
+EPOCH_MS_2026_02_20_09_15 = "1771578900000"  # 2026-02-20T09:15:00Z
+EPOCH_MS_2026_02_20_09_30 = "1771579800000"  # 2026-02-20T09:30:00Z
+EPOCH_MS_2026_02_20_09_32 = "1771579920000"  # 2026-02-20T09:32:00Z
+EPOCH_MS_2026_02_19_14_30 = "1771511400000"  # 2026-02-19T14:30:00Z
 
-    def test_extracts_headers(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert msg["subject"] == "Meeting tomorrow at 3pm"
-        assert "Alice Chen" in msg["from"]
-        assert "alice@acme.com" in msg["from"]
-        assert msg["date"] == "Thu, 20 Feb 2026 09:15:00 +0100"
 
-    def test_prefixes_id(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert msg["id"] == "g:18f6a2b3c4e5f6a7"
+def _make_api_message(
+    msg_id: str = "18f6a2b3c4e5f6a7",
+    thread_id: str = "18f6a2b3c4e5f6a8",
+    subject: str = "Meeting tomorrow at 3pm",
+    from_: str = "Alice Chen <alice@acme.com>",
+    date: str = "Thu, 20 Feb 2026 09:15:00 +0100",
+    to: str = "peter@example.com",
+    cc: str = "",
+    message_id: str = "<CABx+abc123@mail.gmail.com>",
+    body_text: str = "Hey Peter,\n\nAre we still on for 3pm? Let me know if the conference room changed.\n\nThanks,\nAlice",
+    body_html: str = "",
+    snippet: str = "Hey Peter, Are we still on for 3pm?",
+    internal_date: str = EPOCH_MS_2026_02_20_09_15,
+    attachments: list[dict] | None = None,
+    format: str = "full",
+) -> dict:
+    """Build a realistic Gmail API message dict."""
+    headers = [
+        {"name": "Subject", "value": subject},
+        {"name": "From", "value": from_},
+        {"name": "Date", "value": date},
+    ]
+    if to:
+        headers.append({"name": "To", "value": to})
+    if cc:
+        headers.append({"name": "Cc", "value": cc})
+    if message_id:
+        headers.append({"name": "Message-ID", "value": message_id})
 
-    def test_extracts_body(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert "still on for 3pm" in msg["body"]
-        assert "conference room" in msg["body"]
+    # Build payload based on content.
+    if format == "metadata":
+        payload = {"headers": headers}
+    elif body_html and body_text:
+        # multipart/alternative
+        payload = {
+            "mimeType": "multipart/alternative",
+            "headers": headers,
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64(body_text), "size": len(body_text)},
+                },
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": _b64(body_html), "size": len(body_html)},
+                },
+            ],
+        }
+    elif body_text:
+        payload = {
+            "mimeType": "text/plain",
+            "headers": headers,
+            "body": {"data": _b64(body_text), "size": len(body_text)},
+        }
+    elif body_html:
+        payload = {
+            "mimeType": "text/html",
+            "headers": headers,
+            "body": {"data": _b64(body_html), "size": len(body_html)},
+        }
+    else:
+        payload = {
+            "mimeType": "text/plain",
+            "headers": headers,
+            "body": {"data": "", "size": 0},
+        }
 
-    def test_body_does_not_include_attachments(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert "agenda.pdf" not in msg["body"]
+    # Add attachments to payload.
+    if attachments:
+        if "parts" not in payload:
+            # Wrap existing body as first part of multipart/mixed.
+            body_part = {
+                "mimeType": payload.get("mimeType", "text/plain"),
+                "body": payload.get("body", {}),
+            }
+            payload = {
+                "mimeType": "multipart/mixed",
+                "headers": headers,
+                "parts": [body_part],
+            }
+        for att in attachments:
+            payload["parts"].append({
+                "filename": att["filename"],
+                "mimeType": att["mime_type"],
+                "body": {"size": att.get("size", 0), "attachmentId": att.get("id", "att_id")},
+            })
 
-    def test_extracts_optional_to_cc(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert msg["to"] == "peter@example.com"
-        assert msg["cc"] == "bob@example.com"
+    msg = {
+        "id": msg_id,
+        "threadId": thread_id,
+        "snippet": snippet,
+        "internalDate": internal_date,
+        "payload": payload,
+    }
+    return msg
 
-    def test_extracts_rfc822_message_id(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert msg["message_id"] == "<CABx+abc123@mail.gmail.com>"
 
-    def test_extracts_attachments(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a7")
-        assert "attachments" in msg
-        assert len(msg["attachments"]) == 1
-        att = msg["attachments"][0]
-        assert att["filename"] == "agenda.pdf"
-        assert att["mime_type"] == "application/pdf"
-        assert att["size"] == "24.5 KB"
+# Full message with attachments.
+API_MSG_FULL = _make_api_message(
+    attachments=[
+        {"filename": "agenda.pdf", "mime_type": "application/pdf", "size": 25088, "id": "ANGjdJ8xyz"},
+    ],
+    cc="bob@example.com",
+)
+
+# Minimal message (no optional fields).
+API_MSG_MINIMAL = _make_api_message(
+    msg_id="abc123",
+    thread_id="abc124",
+    subject="Quick question",
+    from_="Bob <bob@corp.com>",
+    to="",
+    cc="",
+    message_id="",
+    body_text="Hey, what time works?",
+    snippet="Hey, what time works?",
+    internal_date=EPOCH_MS_2026_02_19_14_30,
+    format="full",
+)
+
+# Metadata-format message (no body, for listings).
+API_MSG_METADATA = _make_api_message(format="metadata")
+
+# HTML-only message.
+API_MSG_HTML = _make_api_message(
+    msg_id="html001",
+    body_text="",
+    body_html="<html><body><p>Hello <b>world</b></p></body></html>",
+    snippet="Hello world",
+)
+
+# Thread with 3 messages.
+API_THREAD = {
+    "id": "18f6a2b3c4e5f6a8",
+    "messages": [
+        _make_api_message(
+            msg_id="msg001",
+            thread_id="18f6a2b3c4e5f6a8",
+            body_text="Are we still on for 3pm? Let me know if the conference room changed.",
+            internal_date=EPOCH_MS_2026_02_20_09_15,
+        ),
+        _make_api_message(
+            msg_id="msg002",
+            thread_id="18f6a2b3c4e5f6a8",
+            from_="Peter <peter@example.com>",
+            body_text="Yes! Room B confirmed. See you there.",
+            snippet="Yes! Room B confirmed. See you there.",
+            internal_date=EPOCH_MS_2026_02_20_09_30,
+            message_id="<CABx+def456@mail.gmail.com>",
+        ),
+        _make_api_message(
+            msg_id="msg003",
+            thread_id="18f6a2b3c4e5f6a8",
+            body_text="Great, thanks!",
+            snippet="Great, thanks!",
+            internal_date=EPOCH_MS_2026_02_20_09_32,
+            message_id="",
+        ),
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# Converter unit tests (pure functions)
+# ---------------------------------------------------------------------------
+
+
+class TestGetHeader:
+    """Tests for _get_header()."""
+
+    def test_finds_header_case_insensitive(self):
+        headers = [{"name": "Subject", "value": "Hello"}]
+        assert _get_header(headers, "subject") == "Hello"
+        assert _get_header(headers, "SUBJECT") == "Hello"
+        assert _get_header(headers, "Subject") == "Hello"
+
+    def test_missing_header_returns_empty(self):
+        headers = [{"name": "From", "value": "alice@test.com"}]
+        assert _get_header(headers, "Subject") == ""
+
+    def test_empty_headers_list(self):
+        assert _get_header([], "Subject") == ""
+
+
+class TestDecodeBody:
+    """Tests for _decode_body()."""
+
+    def test_text_plain(self):
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": _b64("Hello world"), "size": 11},
+        }
+        assert _decode_body(payload) == "Hello world"
+
+    def test_text_html_returned_raw(self):
+        """HTML is returned raw — normalize pipeline handles conversion."""
+        html = "<html><body><p>Hello <b>world</b></p></body></html>"
+        payload = {
+            "mimeType": "text/html",
+            "body": {"data": _b64(html), "size": len(html)},
+        }
+        result = _decode_body(payload)
+        assert result == html
+
+    def test_multipart_alternative_prefers_plain(self):
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain text"), "size": 10},
+                },
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": _b64("<p>HTML text</p>"), "size": 16},
+                },
+            ],
+        }
+        assert _decode_body(payload) == "Plain text"
+
+    def test_multipart_with_only_html(self):
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": _b64("<p>Only HTML</p>"), "size": 15},
+                },
+            ],
+        }
+        result = _decode_body(payload)
+        assert result == "<p>Only HTML</p>"
+
+    def test_nested_multipart(self):
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": _b64("Nested plain"), "size": 12},
+                        },
+                    ],
+                },
+            ],
+        }
+        assert _decode_body(payload) == "Nested plain"
+
+    def test_empty_body(self):
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"size": 0},
+        }
+        assert _decode_body(payload) == ""
+
+    def test_no_parts_no_data(self):
+        payload = {"mimeType": "multipart/mixed", "parts": []}
+        assert _decode_body(payload) == ""
+
+
+class TestExtractAttachments:
+    """Tests for _extract_attachments()."""
+
+    def test_single_attachment(self):
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("Body"), "size": 4}},
+                {
+                    "filename": "report.pdf",
+                    "mimeType": "application/pdf",
+                    "body": {"size": 50000, "attachmentId": "att1"},
+                },
+            ],
+        }
+        atts = _extract_attachments(payload)
+        assert len(atts) == 1
+        assert atts[0]["filename"] == "report.pdf"
+        assert atts[0]["mime_type"] == "application/pdf"
+        assert atts[0]["size"] == 50000
+
+    def test_inline_parts_skipped(self):
+        """Parts without filename (inline) are skipped."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("Body"), "size": 4}},
+                {"mimeType": "image/png", "body": {"size": 1000}},  # No filename = inline.
+            ],
+        }
+        assert _extract_attachments(payload) == []
+
+    def test_multiple_attachments(self):
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {"filename": "a.pdf", "mimeType": "application/pdf", "body": {"size": 100}},
+                {"filename": "b.docx", "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "body": {"size": 200}},
+            ],
+        }
+        atts = _extract_attachments(payload)
+        assert len(atts) == 2
+        assert atts[0]["filename"] == "a.pdf"
+        assert atts[1]["filename"] == "b.docx"
+
+    def test_nested_multipart_attachments(self):
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {"filename": "nested.txt", "mimeType": "text/plain", "body": {"size": 50}},
+                    ],
+                },
+            ],
+        }
+        atts = _extract_attachments(payload)
+        assert len(atts) == 1
+        assert atts[0]["filename"] == "nested.txt"
+
+
+class TestInternalDateToIso:
+    """Tests for _internal_date_to_iso()."""
+
+    def test_converts_epoch_ms(self):
+        result = _internal_date_to_iso(EPOCH_MS_2026_02_20_09_15)
+        assert result == "2026-02-20T09:15:00Z"
+
+    def test_none_returns_empty(self):
+        assert _internal_date_to_iso(None) == ""
+
+    def test_invalid_returns_empty(self):
+        assert _internal_date_to_iso("not_a_number") == ""
+
+
+class TestMsgToHeaders:
+    """Tests for _msg_to_headers()."""
+
+    def test_correct_field_mapping(self):
+        result = _msg_to_headers(API_MSG_METADATA, "g")
+        assert result["id"] == "g:18f6a2b3c4e5f6a7"
+        assert result["thread_id"] == "g:18f6a2b3c4e5f6a8"
+        assert result["from"] == "Alice Chen <alice@acme.com>"
+        assert result["subject"] == "Meeting tomorrow at 3pm"
+        assert result["source"] == "g"
+
+    def test_prefix_applied(self):
+        result = _msg_to_headers(API_MSG_METADATA, "gn")
+        assert result["id"].startswith("gn:")
+        assert result["thread_id"].startswith("gn:")
+        assert result["source"] == "gn"
+
+    def test_snippet_included(self):
+        result = _msg_to_headers(API_MSG_METADATA, "g")
+        assert result["snippet"] == "Hey Peter, Are we still on for 3pm?"
+
+    def test_raw_ids_preserved(self):
+        result = _msg_to_headers(API_MSG_METADATA, "g")
+        assert result["raw_id"] == "18f6a2b3c4e5f6a7"
+        assert result["raw_thread_id"] == "18f6a2b3c4e5f6a8"
+
+
+class TestMsgToFull:
+    """Tests for _msg_to_full()."""
+
+    def test_body_extracted(self):
+        result = _msg_to_full(API_MSG_FULL, "g")
+        assert "still on for 3pm" in result["body"]
+        assert "conference room" in result["body"]
+
+    def test_headers_present(self):
+        result = _msg_to_full(API_MSG_FULL, "g")
+        assert result["id"] == "g:18f6a2b3c4e5f6a7"
+        assert "Alice Chen" in result["from"]
+        assert result["subject"] == "Meeting tomorrow at 3pm"
+
+    def test_optional_to_cc(self):
+        result = _msg_to_full(API_MSG_FULL, "g")
+        assert result["to"] == "peter@example.com"
+        assert result["cc"] == "bob@example.com"
+
+    def test_message_id_extracted(self):
+        result = _msg_to_full(API_MSG_FULL, "g")
+        assert result["message_id"] == "<CABx+abc123@mail.gmail.com>"
+
+    def test_attachments_extracted(self):
+        result = _msg_to_full(API_MSG_FULL, "g")
+        assert "attachments" in result
+        assert len(result["attachments"]) == 1
+        assert result["attachments"][0]["filename"] == "agenda.pdf"
 
     def test_minimal_message_no_optional_fields(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_MINIMAL, "g", "abc123")
-        assert msg["subject"] == "Quick question"
-        assert "Bob" in msg["from"]
-        assert msg["body"] == "Hey, what time works?"
-        # Optional fields should be absent (not empty strings).
-        assert "to" not in msg
-        assert "cc" not in msg
-        assert "attachments" not in msg
+        result = _msg_to_full(API_MSG_MINIMAL, "g")
+        assert result["subject"] == "Quick question"
+        assert "Bob" in result["from"]
+        assert result["body"] == "Hey, what time works?"
+        assert "to" not in result
+        assert "cc" not in result
+        assert "attachments" not in result
+        assert "message_id" not in result
 
-    def test_empty_raw_id(self):
-        msg = parse_message_response(MESSAGE_RESPONSE_MINIMAL, "g", "")
-        assert msg["id"] == ""
+    def test_html_body_returned_raw(self):
+        """HTML body is returned raw — normalize pipeline converts."""
+        result = _msg_to_full(API_MSG_HTML, "g")
+        assert "<b>world</b>" in result["body"]
 
 
-class TestParseThreadResponse:
-    """Tests for parse_thread_response()."""
+class TestThreadToDict:
+    """Tests for _thread_to_dict()."""
 
-    def test_extracts_thread_metadata(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        assert thread["thread_id"] == "g:18f6a2b3c4e5f6a8"
-        assert thread["subject"] == "Meeting tomorrow at 3pm"
-        assert thread["message_count"] == 3
+    def test_thread_metadata(self):
+        result = _thread_to_dict(API_THREAD, "g")
+        assert result["thread_id"] == "g:18f6a2b3c4e5f6a8"
+        assert result["subject"] == "Meeting tomorrow at 3pm"
+        assert result["message_count"] == 3
 
-    def test_extracts_all_messages(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        assert len(thread["messages"]) == 3
+    def test_all_messages_extracted(self):
+        result = _thread_to_dict(API_THREAD, "g")
+        assert len(result["messages"]) == 3
 
     def test_first_message_content(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        msg1 = thread["messages"][0]
+        result = _thread_to_dict(API_THREAD, "g")
+        msg1 = result["messages"][0]
         assert msg1["index"] == 1
         assert "Alice Chen" in msg1["from"]
         assert "still on for 3pm" in msg1["body"]
 
     def test_second_message_content(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        msg2 = thread["messages"][1]
+        result = _thread_to_dict(API_THREAD, "g")
+        msg2 = result["messages"][1]
         assert msg2["index"] == 2
         assert "Peter" in msg2["from"]
         assert "Room B confirmed" in msg2["body"]
 
     def test_third_message_content(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        msg3 = thread["messages"][2]
+        result = _thread_to_dict(API_THREAD, "g")
+        msg3 = result["messages"][2]
         assert msg3["index"] == 3
         assert "thanks" in msg3["body"].lower()
 
-    def test_message_ids_extracted(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        msg1 = thread["messages"][0]
-        assert msg1.get("message_id") == "<CABx+abc123@mail.gmail.com>"
-
-    def test_in_reply_to_extracted(self):
-        thread = parse_thread_response(THREAD_RESPONSE_TEXT, "g", "18f6a2b3c4e5f6a8")
-        msg2 = thread["messages"][1]
-        assert msg2.get("in_reply_to") == "<CABx+abc123@mail.gmail.com>"
+    def test_subject_from_first_message(self):
+        result = _thread_to_dict(API_THREAD, "g")
+        assert result["subject"] == "Meeting tomorrow at 3pm"
 
 
 # ---------------------------------------------------------------------------
-# Adapter-level tests (mock the MCP session)
+# Adapter-level tests (mock Google API service)
 # ---------------------------------------------------------------------------
 
 
-def _make_text_content(text: str):
-    """Create a mock TextContent object."""
-    tc = MagicMock()
-    tc.text = text
-    tc.type = "text"
-    return tc
-
-
-def _make_call_result(text: str, is_error: bool = False):
-    """Create a mock CallToolResult."""
-    result = MagicMock()
-    result.isError = is_error
-    result.content = [_make_text_content(text)]
-    return result
+def _make_mock_service():
+    """Create a mock Gmail API service."""
+    service = MagicMock()
+    return service
 
 
 def _make_adapter(user_email: str = "user@gmail.com") -> GmailAdapter:
-    """Create a GmailAdapter with a mocked session (no real MCP connection)."""
+    """Create a GmailAdapter with a mocked service (no real Google API calls)."""
     config = GmailAdapterConfig(user_email=user_email)
     adapter = GmailAdapter(config)
-    adapter._session = AsyncMock(spec=["call_tool", "initialize"])
+    adapter._service = _make_mock_service()
     return adapter
 
 
 class TestGmailAdapterListMessages:
-    """Test GmailAdapter.list_messages() with mocked MCP session."""
+    """Test GmailAdapter.list_messages() with mocked Google API."""
 
     @pytest.mark.asyncio
-    async def test_returns_parsed_results(self):
+    async def test_returns_enriched_dicts(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(SEARCH_RESPONSE_TEXT)
-        )
+
+        # Mock messages.list to return IDs.
+        list_result = {
+            "messages": [{"id": "msg1"}, {"id": "msg2"}],
+        }
+        adapter._service.users().messages().list().execute = MagicMock(return_value=list_result)
+        adapter._service.users().messages().list.return_value.execute = MagicMock(return_value=list_result)
+
+        # Mock batch — collect the added requests and call the callback.
+        batch_responses = [
+            _make_api_message(msg_id="msg1", subject="Subject 1", internal_date=EPOCH_MS_2026_02_20_09_15, format="metadata"),
+            _make_api_message(msg_id="msg2", subject="Subject 2", internal_date=EPOCH_MS_2026_02_19_14_30, format="metadata"),
+        ]
+        batch_idx = [0]
+
+        class MockBatch:
+            def __init__(self, callback):
+                self.callback = callback
+                self.requests = []
+
+            def add(self, request):
+                self.requests.append(request)
+
+            def execute(self):
+                for i, _req in enumerate(self.requests):
+                    self.callback(str(i), batch_responses[i], None)
+
+        def new_batch(callback):
+            return MockBatch(callback)
+
+        adapter._service.new_batch_http_request = new_batch
 
         results = await adapter.list_messages("newer_than:1d")
 
-        assert len(results) == 3
-        assert results[0]["id"] == "g:18f6a2b3c4e5f6a7"
+        assert len(results) == 2
+        # Sorted by date desc — msg1 is newer.
+        assert results[0]["id"] == "g:msg1"
+        assert results[0]["subject"] == "Subject 1"
+        assert results[0]["from"] == "Alice Chen <alice@acme.com>"
+        assert results[0]["snippet"] == "Hey Peter, Are we still on for 3pm?"
 
     @pytest.mark.asyncio
-    async def test_passes_correct_arguments(self):
-        adapter = _make_adapter("alice@example.com")
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(SEARCH_RESPONSE_TEXT)
-        )
-
-        await adapter.list_messages("label:INBOX", count=5)
-
-        adapter._session.call_tool.assert_called_once_with(
-            "search_gmail_messages",
-            {
-                "user_google_email": "alice@example.com",
-                "query": "label:INBOX",
-                "page_size": 5,
-            },
-        )
-
-    @pytest.mark.asyncio
-    async def test_default_query_is_inbox(self):
+    async def test_pagination_token_forwarded(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(SEARCH_EMPTY_RESPONSE)
-        )
 
-        await adapter.list_messages()
+        list_result = {
+            "messages": [{"id": "msg1"}],
+            "nextPageToken": "CiAKGjBpNDd2Nmp2Zml2cXRwYjBpOXA",
+        }
+        # Mock the chained call: service.users().messages().list(**args).execute()
+        mock_list_request = MagicMock()
+        mock_list_request.execute = MagicMock(return_value=list_result)
+        adapter._service.users.return_value.messages.return_value.list.return_value = mock_list_request
 
-        args = adapter._session.call_tool.call_args
-        assert args[0][1]["query"] == "in:inbox"
+        batch_responses = [
+            _make_api_message(msg_id="msg1", format="metadata"),
+        ]
+
+        class MockBatch:
+            def __init__(self, callback):
+                self.callback = callback
+                self.requests = []
+            def add(self, request):
+                self.requests.append(request)
+            def execute(self):
+                for i, _req in enumerate(self.requests):
+                    self.callback(str(i), batch_responses[i], None)
+
+        adapter._service.new_batch_http_request = lambda callback: MockBatch(callback)
+
+        results = await adapter.list_messages()
+        assert results[-1]["_next_page_token"] == "CiAKGjBpNDd2Nmp2Zml2cXRwYjBpOXA"
 
     @pytest.mark.asyncio
     async def test_empty_result(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(SEARCH_EMPTY_RESPONSE)
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value={"messages": []}
         )
-
         results = await adapter.list_messages("label:NONEXISTENT")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_no_messages_key(self):
+        adapter = _make_adapter()
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value={}
+        )
+        results = await adapter.list_messages()
         assert results == []
 
 
 class TestGmailAdapterReadMessage:
-    """Test GmailAdapter.read_message() with mocked MCP session."""
+    """Test GmailAdapter.read_message() with mocked Google API."""
 
     @pytest.mark.asyncio
-    async def test_returns_parsed_message(self):
+    async def test_returns_full_message(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(MESSAGE_RESPONSE_TEXT)
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=API_MSG_FULL
         )
 
         msg = await adapter.read_message("g:18f6a2b3c4e5f6a7")
@@ -376,38 +623,40 @@ class TestGmailAdapterReadMessage:
         assert "still on for 3pm" in msg["body"]
 
     @pytest.mark.asyncio
-    async def test_strips_prefix_in_upstream_call(self):
+    async def test_strips_prefix(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(MESSAGE_RESPONSE_MINIMAL)
-        )
+        mock_execute = MagicMock(return_value=API_MSG_MINIMAL)
+        adapter._service.users().messages().get.return_value.execute = mock_execute
 
         await adapter.read_message("g:abc123")
 
-        args = adapter._session.call_tool.call_args
-        assert args[0][1]["message_id"] == "abc123"
+        # Verify the raw ID was passed (prefix stripped).
+        adapter._service.users().messages().get.assert_called_with(
+            userId="me", id="abc123", format="full"
+        )
 
     @pytest.mark.asyncio
     async def test_handles_unprefixed_id(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(MESSAGE_RESPONSE_MINIMAL)
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=API_MSG_MINIMAL
         )
 
         await adapter.read_message("abc123")
 
-        args = adapter._session.call_tool.call_args
-        assert args[0][1]["message_id"] == "abc123"
+        adapter._service.users().messages().get.assert_called_with(
+            userId="me", id="abc123", format="full"
+        )
 
 
 class TestGmailAdapterReadThread:
-    """Test GmailAdapter.read_thread() with mocked MCP session."""
+    """Test GmailAdapter.read_thread() with mocked Google API."""
 
     @pytest.mark.asyncio
-    async def test_returns_parsed_thread(self):
+    async def test_returns_full_thread(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(THREAD_RESPONSE_TEXT)
+        adapter._service.users().threads().get.return_value.execute = MagicMock(
+            return_value=API_THREAD
         )
 
         thread = await adapter.read_thread("g:18f6a2b3c4e5f6a8")
@@ -417,87 +666,93 @@ class TestGmailAdapterReadThread:
         assert len(thread["messages"]) == 3
 
     @pytest.mark.asyncio
-    async def test_strips_prefix_in_upstream_call(self):
+    async def test_strips_prefix(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(THREAD_RESPONSE_TEXT)
+        adapter._service.users().threads().get.return_value.execute = MagicMock(
+            return_value=API_THREAD
         )
 
         await adapter.read_thread("g:18f6a2b3c4e5f6a8")
 
-        args = adapter._session.call_tool.call_args
-        assert args[0][1]["thread_id"] == "18f6a2b3c4e5f6a8"
+        adapter._service.users().threads().get.assert_called_with(
+            userId="me", id="18f6a2b3c4e5f6a8", format="full"
+        )
 
 
 class TestGmailAdapterWhatsnew:
-    """Test GmailAdapter.whatsnew() with mocked MCP session."""
+    """Test GmailAdapter.whatsnew() delegates correctly."""
 
     @pytest.mark.asyncio
     async def test_default_uses_newer_than_1d(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(SEARCH_RESPONSE_TEXT)
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value={}
         )
 
         await adapter.whatsnew()
 
-        args = adapter._session.call_tool.call_args
-        assert args[0][1]["query"] == "newer_than:1d"
+        call_kwargs = adapter._service.users().messages().list.call_args
+        assert call_kwargs is not None
+        # The query should contain "newer_than:1d".
+        kwargs = call_kwargs[1] if call_kwargs[1] else {}
+        assert kwargs.get("q") == "newer_than:1d"
 
     @pytest.mark.asyncio
     async def test_with_since_uses_after(self):
         adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result(SEARCH_RESPONSE_TEXT)
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value={}
         )
 
         await adapter.whatsnew(since="2026-02-20T08:30:00Z")
 
-        args = adapter._session.call_tool.call_args
-        assert args[0][1]["query"] == "after:2026-02-20T08:30:00Z"
+        call_kwargs = adapter._service.users().messages().list.call_args
+        kwargs = call_kwargs[1] if call_kwargs[1] else {}
+        assert kwargs.get("q") == "after:2026-02-20T08:30:00Z"
 
 
 class TestGmailAdapterErrorHandling:
     """Test error handling in the adapter."""
 
     @pytest.mark.asyncio
-    async def test_upstream_error_raises_runtime_error(self):
-        adapter = _make_adapter()
-        adapter._session.call_tool = AsyncMock(
-            return_value=_make_call_result("Something went wrong", is_error=True)
-        )
-
-        with pytest.raises(RuntimeError, match="returned error"):
-            await adapter.read_message("g:bad_id")
-
-    @pytest.mark.asyncio
     async def test_not_connected_raises(self):
         config = GmailAdapterConfig(user_email="user@gmail.com")
         adapter = GmailAdapter(config)
-        # Don't call connect() — session is None.
+        # Don't call connect() — service is None.
 
         with pytest.raises(RuntimeError, match="not connected"):
             await adapter.list_messages()
 
     @pytest.mark.asyncio
-    async def test_empty_content_raises(self):
+    async def test_api_error_propagates(self):
         adapter = _make_adapter()
-        result = MagicMock()
-        result.isError = False
-        result.content = []  # No text content.
-        adapter._session.call_tool = AsyncMock(return_value=result)
+        from googleapiclient.errors import HttpError
 
-        with pytest.raises(RuntimeError, match="no text content"):
-            await adapter.list_messages()
+        mock_resp = MagicMock()
+        mock_resp.status = 404
+        mock_resp.reason = "Not Found"
+        error = HttpError(mock_resp, b'{"error": {"message": "Not Found"}}')
+
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            side_effect=error
+        )
+
+        with pytest.raises(HttpError):
+            await adapter.read_message("g:nonexistent")
 
 
 class TestGmailAdapterSourcePrefix:
     """Test that source_prefix is correct."""
 
-    def test_source_prefix_is_g(self):
+    def test_default_prefix_is_g(self):
         config = GmailAdapterConfig(user_email="user@gmail.com")
         adapter = GmailAdapter(config)
         assert adapter.source_prefix == "g"
+
+    def test_custom_prefix(self):
+        config = GmailAdapterConfig(user_email="user@gmail.com")
+        adapter = GmailAdapter(config, prefix="gn")
+        assert adapter.source_prefix == "gn"
 
 
 class TestGmailAdapterIdStripping:
@@ -517,21 +772,20 @@ class TestGmailAdapterIdStripping:
 
 
 # ---------------------------------------------------------------------------
-# Integration tests — require a real google_workspace_mcp server
+# Integration tests — require valid Google credentials
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 class TestGmailAdapterIntegration:
-    """Integration tests that connect to a real google_workspace_mcp server.
+    """Integration tests that connect to real Gmail API.
 
     These are skipped by default.  Run with::
 
         pytest -m integration tests/test_gmail_adapter.py -v
 
     Prerequisites:
-    - google_workspace_mcp server available at H:/source/google_workspace_mcp
-    - Valid Google OAuth credentials configured
+    - Valid Google OAuth credentials (run ``ts4k auth gmail <email>`` first)
     - Set env var TS4K_TEST_EMAIL to the Google email to use
     """
 
@@ -540,15 +794,7 @@ class TestGmailAdapterIntegration:
         import os
 
         email = os.environ.get("TS4K_TEST_EMAIL", "user@gmail.com")
-        return GmailAdapter(
-            GmailAdapterConfig(
-                user_email=email,
-                transport="stdio",
-                server_command=["python", "main.py"],
-                server_args=["--tools", "gmail", "--single-user"],
-                server_cwd="H:/source/google_workspace_mcp",
-            )
-        )
+        return GmailAdapter(GmailAdapterConfig(user_email=email))
 
     @pytest.mark.asyncio
     async def test_connect_and_list(self, adapter):
@@ -557,6 +803,8 @@ class TestGmailAdapterIntegration:
             assert isinstance(results, list)
             if results:
                 assert results[0]["id"].startswith("g:")
+                assert results[0]["from"]  # Has header data.
+                assert results[0]["subject"] is not None
 
     @pytest.mark.asyncio
     async def test_read_message(self, adapter):

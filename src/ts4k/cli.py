@@ -367,6 +367,45 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
     await sub_args.func(sub_args)
 
 
+def _cmd_auth(args: argparse.Namespace) -> None:
+    """Handle the auth command — authenticate with a platform."""
+    platform = getattr(args, "platform", None)
+
+    if platform == "gmail":
+        email = getattr(args, "email", None)
+        if not email:
+            print("Error: email is required.", file=sys.stderr)
+            sys.exit(1)
+
+        from ts4k.auth.google import get_credentials
+
+        check_only = getattr(args, "check", False)
+
+        try:
+            creds = get_credentials(email)
+            if check_only:
+                if creds.valid:
+                    print(f"Credentials valid for {email}.")
+                else:
+                    print(f"Credentials exist but are not valid for {email}.", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(f"Authenticated {email} successfully.")
+        except FileNotFoundError as exc:
+            if check_only:
+                print(f"No credentials found for {email}.", file=sys.stderr)
+                print(f"Run: ts4k auth gmail {email}")
+            else:
+                print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            print(f"Authentication failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("Usage: ts4k auth gmail <email>", file=sys.stderr)
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -536,6 +575,16 @@ def _build_parser() -> argparse.ArgumentParser:
         hp = subparsers.add_parser(cmd_name, help="Show status and quick reference")
         hp.set_defaults(func=_cmd_help)
 
+    # --- auth ---
+    au = subparsers.add_parser("auth", help="Authenticate with a platform")
+    au_sub = au.add_subparsers(dest="platform")
+
+    au_gmail = au_sub.add_parser("gmail", help="Authenticate with Gmail (opens browser)")
+    au_gmail.add_argument("email", help="Google email to authenticate")
+    au_gmail.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
+
+    au.set_defaults(func=_cmd_auth)
+
     # --- skill ---
     sk = subparsers.add_parser("skill", help="Machine-readable output for Claude Code")
     sk.add_argument("subcmd", nargs="?", help="Subcommand: wn, l, g, t")
@@ -570,7 +619,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources, _cmd_cache, _cmd_overview):
+    if args.func in (_cmd_help, _cmd_contacts, _cmd_filter, _cmd_status, _cmd_sources, _cmd_cache, _cmd_overview, _cmd_auth):
         args.func(args)
         return
 
