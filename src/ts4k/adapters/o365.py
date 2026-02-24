@@ -1,12 +1,11 @@
-"""O365 adapter — MCP client bridge to Softeria ms-365-mcp-server.
+"""O365 adapter — direct Microsoft Graph API client via httpx + MSAL.
 
-Connects to the ms-365-mcp-server (TypeScript, stdio) which wraps
-Microsoft Graph API and returns JSON responses.
+Calls the Graph API directly using ``httpx.AsyncClient`` with tokens
+from ``ts4k.auth.microsoft``.  No MCP subprocess, no Node.js middleman.
 
 Supports both personal (``/me/``) and shared mailbox access.  When
-``mailbox`` is set in config, the adapter uses shared mailbox tools
-(``list-shared-mailbox-messages``, ``get-shared-mailbox-message``).
-When ``None``, it uses standard ``/me/`` tools.
+``mailbox`` is set in config, the adapter targets ``/users/{mailbox}/``
+instead of ``/me/``.
 
 Multi-mailbox setup::
 
@@ -14,18 +13,18 @@ Multi-mailbox setup::
     {
         "oa": {"provider": "o365", "mailbox": "user@contoso.com",
                "client_id": "<id>", "tenant_id": "<tid>"},
-        "ob": {"provider": "o365", "mailbox": "hello@example.org"},
-        "oh": {"provider": "o365", "mailbox": "support@example.org"}
+        "ob": {"provider": "o365", "mailbox": "hello@example.org",
+               "client_id": "<id>"},
+        "oh": {"provider": "o365", "mailbox": "support@example.org",
+               "client_id": "<id>"}
     }
 
 Usage::
 
     adapter = O365Adapter(O365AdapterConfig(
+        client_id="<app-registration-id>",
+        tenant_id="<tenant-id>",
         mailbox="user@contoso.com",
-        server_env={
-            "MS365_MCP_CLIENT_ID": "<id>",
-            "MS365_MCP_TENANT_ID": "<tid>",
-        },
     ))
     async with adapter:
         msgs = await adapter.whatsnew()
@@ -33,16 +32,14 @@ Usage::
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-import os
-from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
+import httpx
 
 from ts4k.adapters.base import BaseAdapter
 
@@ -68,22 +65,16 @@ _READ_SELECT = (
 class O365AdapterConfig:
     """All knobs for the O365 adapter."""
 
-    server_command: list[str] = field(
-        default_factory=lambda: ["npx", "-y", "@softeria/ms-365-mcp-server"]
-    )
-    server_args: list[str] = field(
-        default_factory=lambda: ["--preset", "mail", "--org-mode"]
-    )
-    server_cwd: str | None = None
-    server_env: dict[str, str] | None = None
-
+    client_id: str = ""
+    tenant_id: str = "common"
     mailbox: str | None = None
-    """Target mailbox email.  When set, uses shared mailbox tools.
-    When ``None``, uses ``/me/`` tools (primary mailbox)."""
+    """Target mailbox email.  When set, uses ``/users/{mailbox}/`` endpoint.
+    When ``None``, uses ``/me/`` (primary mailbox)."""
+    config_dir: Path | None = None
 
 
 # ---------------------------------------------------------------------------
-# Response parsers — JSON from Graph API (via Softeria)
+# Response converters — dict from Graph API JSON
 # ---------------------------------------------------------------------------
 
 
@@ -112,18 +103,11 @@ def _format_recipients(recipients: list[dict]) -> str:
     return ", ".join(parts)
 
 
-def parse_list_response(text: str, prefix: str) -> list[dict]:
-    """Parse the JSON response from a list-mail-messages / list-shared-mailbox-messages call.
+def _list_response_to_dicts(data: dict | list, prefix: str) -> list[dict]:
+    """Convert a Graph API list response (dict or list) to normalised dicts.
 
-    Expects ``{"value": [...]}`` wrapping an array of Graph API messages,
-    or a bare array ``[...]``.
+    Accepts ``{"value": [...]}`` wrapping or a bare array ``[...]``.
     """
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse O365 list response as JSON")
-        return []
-
     items = data.get("value", data) if isinstance(data, dict) else data
     if not isinstance(items, list):
         return []
@@ -148,16 +132,13 @@ def parse_list_response(text: str, prefix: str) -> list[dict]:
     return results
 
 
-def parse_message_response(text: str, prefix: str) -> dict:
-    """Parse the JSON response from a get-mail-message / get-shared-mailbox-message call."""
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse O365 message response as JSON")
+def _message_to_dict(data: dict, prefix: str) -> dict:
+    """Convert a single Graph API message dict to a normalised dict."""
+    if not data:
         return {}
 
-    # Handle wrapped responses (sometimes the tool returns {"value": {...}})
-    if isinstance(data, dict) and "value" in data and isinstance(data["value"], dict):
+    # Handle wrapped responses (sometimes {"value": {...}})
+    if "value" in data and isinstance(data["value"], dict):
         data = data["value"]
 
     raw_id = data.get("id", "")
@@ -203,82 +184,50 @@ def parse_message_response(text: str, prefix: str) -> dict:
 
 
 class O365Adapter(BaseAdapter):
-    """O365 adapter that bridges to ms-365-mcp-server via stdio MCP client."""
+    """O365 adapter using direct Microsoft Graph API calls via httpx."""
 
     def __init__(self, config: O365AdapterConfig, prefix: str = "o") -> None:
         self._config = config
         self._prefix = prefix
-        self._session: ClientSession | None = None
-        self._exit_stack: AsyncExitStack | None = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def source_prefix(self) -> str:
         return self._prefix
 
-    # -- Tool routing helpers -----------------------------------------------
+    # -- URL routing helper -------------------------------------------------
 
-    def _tool_name(self, base: str) -> str:
-        """Return the correct tool name based on mailbox config.
+    def _base_url(self) -> str:
+        """Return the base path for mailbox operations.
 
-        ``base`` is one of ``"list-mail-messages"``, ``"get-mail-message"``.
-        When ``mailbox`` is set, maps to shared-mailbox variants.
+        Returns ``/me`` for personal mailbox, ``/users/{mailbox}`` for shared.
         """
         if self._config.mailbox:
-            return base.replace("mail-message", "shared-mailbox-message")
-        return base
-
-    def _base_args(self) -> dict[str, str]:
-        """Return base tool arguments (``user-id`` for shared mailbox, or empty)."""
-        if self._config.mailbox:
-            return {"userId": self._config.mailbox}
-        return {}
+            return f"/users/{self._config.mailbox}"
+        return "/me"
 
     # -- Lifecycle ----------------------------------------------------------
 
     async def connect(self) -> None:
-        if self._session is not None:
+        if self._client is not None:
             return
 
-        stack = AsyncExitStack()
-        self._exit_stack = stack
+        from ts4k.auth.microsoft import build_graph_client
 
-        # Merge custom env vars into current environment (passing a bare dict
-        # to StdioServerParameters replaces the entire env, breaking PATH etc.)
-        merged_env: dict[str, str] | None = None
-        if self._config.server_env:
-            merged_env = {**os.environ, **self._config.server_env}
-
-        params = StdioServerParameters(
-            command=self._config.server_command[0],
-            args=[
-                *self._config.server_command[1:],
-                *self._config.server_args,
-            ],
-            cwd=self._config.server_cwd,
-            env=merged_env,
+        # build_graph_client is synchronous (MSAL token acquisition).
+        self._client = await asyncio.to_thread(
+            build_graph_client,
+            self._config.client_id,
+            tenant_id=self._config.tenant_id,
+            config_dir=self._config.config_dir,
         )
-        read_stream, write_stream = await stack.enter_async_context(
-            stdio_client(params)
-        )
-        session = await stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        await session.initialize()
-        self._session = session
-
-        # Trigger login to ensure auth is ready
-        try:
-            await self._call_tool("login", {})
-        except Exception as exc:
-            logger.debug("Login call returned: %s (may be expected)", exc)
         mailbox_str = f" ({self._config.mailbox})" if self._config.mailbox else ""
-        logger.info("O365Adapter connected via stdio%s", mailbox_str)
+        logger.info("O365Adapter connected via Graph API%s", mailbox_str)
 
     async def disconnect(self) -> None:
-        if self._exit_stack is not None:
-            await self._exit_stack.aclose()
-            self._exit_stack = None
-            self._session = None
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
             logger.info("O365Adapter disconnected")
 
     async def __aenter__(self) -> O365Adapter:
@@ -288,31 +237,20 @@ class O365Adapter(BaseAdapter):
     async def __aexit__(self, *exc: object) -> None:
         await self.disconnect()
 
-    def _require_session(self) -> ClientSession:
-        if self._session is None:
+    def _require_client(self) -> httpx.AsyncClient:
+        if self._client is None:
             raise RuntimeError(
                 "O365Adapter is not connected. Call connect() or use "
                 "'async with adapter:' first."
             )
-        return self._session
+        return self._client
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        session = self._require_session()
-        result = await session.call_tool(name, arguments)
-
-        if result.isError:
-            texts = [c.text for c in result.content if hasattr(c, "text")]
-            raise RuntimeError(
-                f"Upstream tool {name!r} returned error: "
-                + ("; ".join(texts) or "(no details)")
-            )
-
-        texts = [c.text for c in result.content if hasattr(c, "text")]
-        if not texts:
-            raise RuntimeError(
-                f"Upstream tool {name!r} returned no text content"
-            )
-        return "\n".join(texts)
+    async def _get(self, path: str, params: dict[str, str] | None = None) -> dict:
+        """Issue a GET request to Graph API and return the parsed JSON."""
+        client = self._require_client()
+        resp = await client.get(path, params=params)
+        resp.raise_for_status()
+        return resp.json()
 
     # -- BaseAdapter data methods -------------------------------------------
 
@@ -321,16 +259,14 @@ class O365Adapter(BaseAdapter):
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             since = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        args: dict[str, Any] = {
-            **self._base_args(),
+        params = {
             "$filter": f"receivedDateTime ge {since}",
             "$select": _LIST_SELECT,
             "$orderby": "receivedDateTime desc",
         }
 
-        tool = self._tool_name("list-mail-messages")
-        text = await self._call_tool(tool, args)
-        return parse_list_response(text, self.source_prefix)
+        data = await self._get(f"{self._base_url()}/messages", params)
+        return _list_response_to_dicts(data, self.source_prefix)
 
     async def list_messages(
         self,
@@ -338,22 +274,20 @@ class O365Adapter(BaseAdapter):
         count: int = 20,
         page_token: str | None = None,
     ) -> list[dict]:
-        args: dict[str, Any] = {
-            **self._base_args(),
+        params: dict[str, str] = {
             "$select": _LIST_SELECT,
             "$top": str(count),
             "$orderby": "receivedDateTime desc",
         }
 
         if page_token:
-            args["$skip"] = page_token
+            params["$skip"] = page_token
 
         if query:
-            args["$search"] = f'"{query}"'
+            params["$search"] = f'"{query}"'
 
-        tool = self._tool_name("list-mail-messages")
-        text = await self._call_tool(tool, args)
-        results = parse_list_response(text, self.source_prefix)
+        data = await self._get(f"{self._base_url()}/messages", params)
+        results = _list_response_to_dicts(data, self.source_prefix)
 
         # Attach next page token if we got a full page
         if results and len(results) == count:
@@ -363,17 +297,14 @@ class O365Adapter(BaseAdapter):
         return results
 
     async def read_message(self, msg_id: str) -> dict:
-        raw_id = self._strip_prefix(msg_id)
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
 
-        args: dict[str, Any] = {
-            **self._base_args(),
-            "message-id": raw_id,
-            "$select": _READ_SELECT,
-        }
+        params = {"$select": _READ_SELECT}
 
-        tool = self._tool_name("get-mail-message")
-        text = await self._call_tool(tool, args)
-        return parse_message_response(text, self.source_prefix)
+        data = await self._get(
+            f"{self._base_url()}/messages/{raw_id}", params
+        )
+        return _message_to_dict(data, self.source_prefix)
 
     async def read_thread(self, thread_id: str) -> dict:
         """Read an O365 conversation by conversationId.
@@ -382,34 +313,21 @@ class O365Adapter(BaseAdapter):
         all messages with that conversation ID and return them sorted
         chronologically.
         """
-        raw_id = self._strip_prefix(thread_id)
+        raw_id = _strip_prefix(thread_id, self.source_prefix)
 
-        args: dict[str, Any] = {
-            **self._base_args(),
+        params = {
             "$filter": f"conversationId eq '{raw_id}'",
             "$select": _READ_SELECT,
             "$orderby": "receivedDateTime asc",
         }
 
-        tool = self._tool_name("list-mail-messages")
-        text = await self._call_tool(tool, args)
-
-        # Parse as full messages (with body.content)
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            return {
-                "thread_id": f"{self.source_prefix}:{raw_id}",
-                "subject": "",
-                "message_count": 0,
-                "messages": [],
-            }
+        data = await self._get(f"{self._base_url()}/messages", params)
 
         items = data.get("value", data) if isinstance(data, dict) else data
         if not isinstance(items, list):
             items = []
 
-        messages = [parse_message_response(json.dumps(m), self.source_prefix) for m in items]
+        messages = [_message_to_dict(m, self.source_prefix) for m in items]
         subject = messages[0].get("subject", "") if messages else ""
 
         return {
@@ -422,17 +340,13 @@ class O365Adapter(BaseAdapter):
     # -- Discovery ----------------------------------------------------------
 
     async def discover_mailboxes(self) -> dict:
-        """Call get-current-user to discover available mailboxes.
+        """Query ``/me`` to discover available mailboxes.
 
         Returns a dict with ``primary``, ``aliases``, and ``display_name``.
         """
-        text = await self._call_tool("get-current-user", {
+        data = await self._get("/me", {
             "$select": "mail,otherMails,proxyAddresses,displayName",
         })
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            return {"primary": "", "aliases": [], "display_name": ""}
 
         primary = data.get("mail", "")
         display_name = data.get("displayName", "")
@@ -459,9 +373,14 @@ class O365Adapter(BaseAdapter):
             "display_name": display_name,
         }
 
-    # -- Helpers ------------------------------------------------------------
 
-    def _strip_prefix(self, prefixed_id: str) -> str:
-        if prefixed_id.startswith(f"{self.source_prefix}:"):
-            return prefixed_id[len(self.source_prefix) + 1:]
-        return prefixed_id
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_prefix(prefixed_id: str, prefix: str) -> str:
+    """Remove the source prefix from an ID if present."""
+    if prefixed_id.startswith(f"{prefix}:"):
+        return prefixed_id[len(prefix) + 1:]
+    return prefixed_id

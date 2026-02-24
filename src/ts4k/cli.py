@@ -196,20 +196,22 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
     """Discover O365 mailboxes for the authenticated user."""
     all_cfg = sources.list_all()
 
-    server_env: dict[str, str] | None = None
+    client_id = tenant_id = None
     for cfg in all_cfg.values():
         if cfg.get("provider", "").lower() == "o365":
             client_id = cfg.get("client_id")
-            tenant_id = cfg.get("tenant_id")
-            if client_id or tenant_id:
-                server_env = {}
-                if client_id:
-                    server_env["MS365_MCP_CLIENT_ID"] = client_id
-                if tenant_id:
-                    server_env["MS365_MCP_TENANT_ID"] = tenant_id
+            tenant_id = cfg.get("tenant_id", "common")
+            if client_id:
                 break
 
-    adapter = O365Adapter(O365AdapterConfig(server_env=server_env), prefix="_discover")
+    if not client_id:
+        print("Error: No O365 source with client_id configured.", file=sys.stderr)
+        sys.exit(1)
+
+    adapter = O365Adapter(
+        O365AdapterConfig(client_id=client_id, tenant_id=tenant_id),
+        prefix="_discover",
+    )
 
     print("Discovering O365 mailboxes for authenticated user...")
     try:
@@ -401,8 +403,33 @@ def _cmd_auth(args: argparse.Namespace) -> None:
         except Exception as exc:
             print(f"Authentication failed: {exc}", file=sys.stderr)
             sys.exit(1)
+    elif platform == "o365":
+        client_id = getattr(args, "client_id", None)
+        if not client_id:
+            print("Error: --client-id is required.", file=sys.stderr)
+            sys.exit(1)
+
+        from ts4k.auth.microsoft import get_credentials as get_ms_credentials
+
+        tenant_id = getattr(args, "tenant_id", "common") or "common"
+        check_only = getattr(args, "check", False)
+
+        try:
+            creds = get_ms_credentials(client_id, tenant_id=tenant_id)
+            if check_only:
+                if "access_token" in creds:
+                    print(f"Credentials valid for client {client_id}.")
+                else:
+                    print(f"Credentials exist but are not valid for client {client_id}.", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(f"Authenticated client {client_id} successfully.")
+        except Exception as exc:
+            print(f"Authentication failed: {exc}", file=sys.stderr)
+            sys.exit(1)
     else:
         print("Usage: ts4k auth gmail <email>", file=sys.stderr)
+        print("       ts4k auth o365 --client-id <id> [--tenant-id <id>]", file=sys.stderr)
         sys.exit(1)
 
 
@@ -582,6 +609,11 @@ def _build_parser() -> argparse.ArgumentParser:
     au_gmail = au_sub.add_parser("gmail", help="Authenticate with Gmail (opens browser)")
     au_gmail.add_argument("email", help="Google email to authenticate")
     au_gmail.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
+
+    au_o365 = au_sub.add_parser("o365", help="Authenticate with Microsoft 365 (device code flow)")
+    au_o365.add_argument("--client-id", required=True, help="Azure AD app registration client ID")
+    au_o365.add_argument("--tenant-id", default="common", help="Azure AD tenant ID (default: common)")
+    au_o365.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
 
     au.set_defaults(func=_cmd_auth)
 

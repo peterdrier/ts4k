@@ -88,35 +88,16 @@ def _make_adapter(
         )
 
     if provider == "o365":
-        raw_cmd = cfg.get("server_command")
-        if isinstance(raw_cmd, str):
-            server_command = [raw_cmd]
-        elif isinstance(raw_cmd, list):
-            server_command = raw_cmd
-        else:
-            server_command = ["npx", "-y", "@softeria/ms-365-mcp-server"]
-
-        server_args = (
-            cfg.get("server_args", []) if raw_cmd else ["--preset", "mail", "--org-mode"]
-        )
-
-        server_env: dict[str, str] | None = None
-        client_id = cfg.get("client_id")
-        tenant_id = cfg.get("tenant_id")
-        if client_id or tenant_id:
-            server_env = {}
-            if client_id:
-                server_env["MS365_MCP_CLIENT_ID"] = client_id
-            if tenant_id:
-                server_env["MS365_MCP_TENANT_ID"] = tenant_id
-
+        client_id = cfg.get("client_id", "")
+        if not client_id:
+            logger.warning("O365 source %r missing client_id", prefix)
+            return None
         return O365Adapter(
             O365AdapterConfig(
-                server_command=server_command,
-                server_args=server_args,
+                client_id=client_id,
+                tenant_id=cfg.get("tenant_id", "common"),
                 mailbox=cfg.get("mailbox"),
-                server_cwd=cfg.get("mcp_cwd"),
-                server_env=server_env,
+                config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
             ),
             prefix=prefix,
         )
