@@ -97,6 +97,8 @@
 | whatsapp-mcp Go bridge | Low — local |
 | WhatsApp Web protocol (whatsmeow) | **Medium** — Meta could break |
 | O365 connector (TBD) | **Research needed** |
+| @cocal/google-calendar-mcp | Low — already working |
+| O365 calendar (via Softeria) | Low — same server handles mail + calendar |
 | MCP protocol/SDK | Low — Anthropic-backed |
 
 ---
@@ -115,6 +117,7 @@
 | `contacts` | `c` | Cross-platform identity map | Must-have |
 | `send` | `s` | Send via platform (safety-railed) | Should-have |
 | `draft` | `d` | Create draft via platform | Should-have |
+| `cal` | — | Unified calendar view (today/week/next) | Should-have |
 | `status` | `st` | Health, watermarks, stats, jobs | Should-have |
 | `help` | `h` | Human-readable help | Must-have |
 | `skill` | — | LLM-optimized command reference | Must-have |
@@ -138,9 +141,9 @@ Configurable via `--format pipe|json|xml` (`-f p|j|x`):
 
 ### Scope Boundary
 
-**In:** Normalize pipeline, 11 commands, 3 modes, 3 day-one adapters (Gmail/WhatsApp/O365), adapter interface for 5-8+ sources (including non-messaging), pipe/JSON/XML output, watermarks, contacts, stats, safety-railed send/draft, background tasks, Docker template.
+**In:** Normalize pipeline, 11+ commands, 3 modes, 3 day-one adapters (Gmail/WhatsApp/O365), calendar adapters (Google Calendar/O365), adapter interface for 5-8+ sources (including non-messaging), pipe/JSON/XML output, watermarks, contacts, stats, safety-railed send/draft, background tasks, Docker template.
 
-**Out:** Building connectors (wraps existing), OAuth/auth, real-time push, UI, automatic contact resolution, LLM calls inside ts4k, non-messaging adapters (day 5+).
+**Out:** Building connectors (wraps existing), OAuth/auth, real-time push, UI, automatic contact resolution, LLM calls inside ts4k, calendar write operations (create/accept/decline — deferred).
 
 ---
 
@@ -235,6 +238,7 @@ Day 2 afternoon: [P5: Container]                           (independent)
 | 3 | O365 + MCP Server | 9-12 | O365 adapter, MCP server mode, 3-platform whatsnew |
 | 4 | Overview + Bulk | 13-16 | Overview drill-down, background tasks, cache, resumable batch |
 | 5 | Send + Docker + Release | 17-22 | Send/draft, Docker template, PyPI, docs, public release |
+| 6 | Calendar | 23-26 | Calendar adapters (Google Calendar, O365), unified schedule view, attendee context enrichment |
 
 Day estimates are upper bounds. Peter expects faster.
 
@@ -248,6 +252,7 @@ Day estimates are upper bounds. Peter expects faster.
 | M3 | Three platforms + MCP server | Day 12 | Bulk historical |
 | M4 | Bulk historical viable | Day 16 | Release |
 | M5 | Public release | Day 22 | Community |
+| M6 | Calendar context ("what's my day + who am I meeting") | Day 26 | Cohesive person view |
 
 ### Top Risks
 
@@ -300,3 +305,5 @@ Day estimates are upper bounds. Peter expects faster.
 | 28 | Watermarks scoped per-context | 6 | Multiple agents/sessions don't steal each other's messages |
 | 29 | Docker template, not pre-built image | 6 | Users build locally with their own credentials |
 | 30 | Biggest risk: opportunity cost | 6 | Awareness + ability to pause/resume |
+| 31 | Calendar access — cohesive person view, not token savings | 6 | Calendar data is already compact; value is cross-referencing attendees with message history |
+| 32 | Calendar is read-only initially | 6 | Create/accept/decline deferred; read-only matches messaging Phase 1-4 pattern |
