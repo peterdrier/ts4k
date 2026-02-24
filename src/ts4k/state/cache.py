@@ -295,11 +295,14 @@ def clear(source: str | None = None, stale_only: bool = False) -> int:
 
 def check_disk_space() -> bool:
     """Return ``True`` if the cache directory has >= 5 GB free."""
-    target = _CACHE_DIR if _CACHE_DIR.exists() else _CONFIG_DIR
-    if not target.exists():
-        target = Path.home()
-    free = shutil.disk_usage(target).free
-    return free >= MIN_FREE_BYTES
+    try:
+        target = _CACHE_DIR if _CACHE_DIR.exists() else _CONFIG_DIR
+        if not target.exists():
+            target = Path.home()
+        free = shutil.disk_usage(target).free
+        return free >= MIN_FREE_BYTES
+    except OSError:
+        return True  # optimistic: don't block preload on inaccessible paths
 
 
 # ---------------------------------------------------------------------------

@@ -51,4 +51,4 @@ Early development. See [docs/plan-v1.md](docs/plan-v1.md) for the full project p
 
 ## License
 
-TBD
+MIT
