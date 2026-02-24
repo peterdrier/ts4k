@@ -40,12 +40,12 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def ts4k_whatsnew(
+async def updates(
     source: str = "all",
     since: str | None = None,
     count: int = 20,
     fmt: str = "pipe",
-    apply_filter: bool = False,
+    filter: bool = False,
 ) -> str:
     """Fetch new messages since the last check (updates watermark).
 
@@ -54,14 +54,14 @@ async def ts4k_whatsnew(
         since: Time range — "2d", "7d", ISO timestamp, or omit for watermark.
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default, most compact), "json", or "xml".
-        apply_filter: Apply configured skip filters (default off).
+        filter: Apply configured skip filters (default off).
     """
     result = await commands.whatsnew(
         source=source,
         since=since,
         count=count,
         fmt=fmt,
-        apply_filter=apply_filter,
+        filter=filter,
     )
     if result.error:
         return result.error
@@ -69,40 +69,40 @@ async def ts4k_whatsnew(
 
 
 @mcp.tool()
-async def ts4k_get(msg_id: str, fmt: str = "pipe") -> str:
+async def get(id: str, fmt: str = "pipe") -> str:
     """Read a single message by its prefixed ID.
 
     Args:
-        msg_id: Message ID with source prefix (e.g. "g:18f6a2b3c4e5f6a7").
+        id: Message ID with source prefix (e.g. "g:18f6a2b3c4e5f6a7").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
-    result = await commands.get_message(msg_id=msg_id, fmt=fmt)
+    result = await commands.get_message(id=id, fmt=fmt)
     if result.error:
         return result.error
     return result.output
 
 
 @mcp.tool()
-async def ts4k_thread(thread_id: str, fmt: str = "pipe") -> str:
+async def thread(tid: str, fmt: str = "pipe") -> str:
     """Read a thread or conversation by its prefixed ID.
 
     Args:
-        thread_id: Thread/chat ID with source prefix (e.g. "g:18f6a2b3c4e5f6a8").
+        tid: Thread/chat ID with source prefix (e.g. "g:18f6a2b3c4e5f6a8").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
-    result = await commands.get_thread(thread_id=thread_id, fmt=fmt)
+    result = await commands.get_thread(tid=tid, fmt=fmt)
     if result.error:
         return result.error
     return result.output
 
 
-@mcp.tool()
-async def ts4k_list(
+@mcp.tool(name="list")
+async def list_tool(
     source: str = "all",
     query: str | None = None,
     count: int = 20,
     fmt: str = "pipe",
-    apply_filter: bool = False,
+    filter: bool = False,
 ) -> str:
     """Search and list messages matching a query.
 
@@ -111,14 +111,14 @@ async def ts4k_list(
         query: Search query string (provider-specific).
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default), "json", or "xml".
-        apply_filter: Apply configured skip filters (default off).
+        filter: Apply configured skip filters (default off).
     """
     result = await commands.list_messages(
         source=source,
         query=query,
         count=count,
         fmt=fmt,
-        apply_filter=apply_filter,
+        filter=filter,
     )
     if result.error:
         return result.error
@@ -126,13 +126,13 @@ async def ts4k_list(
 
 
 @mcp.tool()
-def ts4k_status() -> str:
+def status() -> str:
     """Show operational status: sources, watermarks, contacts, filters, stats."""
     return commands.get_status()
 
 
 @mcp.tool()
-def ts4k_contacts(
+def contacts(
     action: str = "list",
     alias: str | None = None,
     identifiers: list[str] | None = None,
@@ -152,26 +152,26 @@ def ts4k_contacts(
 
 
 @mcp.tool()
-def ts4k_cache(action: str = "stats", source: str | None = None, stale_only: bool = False) -> str:
+def cache(action: str = "stats", source: str | None = None, stale: bool = False) -> str:
     """Manage the message cache.
 
     Args:
         action: "stats" (show cache info) or "clear" (purge cached messages).
         source: For clear, limit to this source prefix (e.g. "g", "o"). Default: all.
-        stale_only: For clear, only remove entries from an older schema version.
+        stale: For clear, only remove entries from an older schema version.
     """
-    return commands.manage_cache(action=action, source=source, stale_only=stale_only)
+    return commands.manage_cache(action=action, source=source, stale=stale)
 
 
 @mcp.tool()
-async def ts4k_preload(
+async def preload(
     source: str,
     query: str | None = None,
     contact: str | None = None,
     since: str | None = None,
-    max_pages: int = 10,
-    fetch_bodies: bool = False,
-    resume_job: str | None = None,
+    pages: int = 10,
+    bodies: bool = False,
+    resume: str | None = None,
     background: bool = False,
 ) -> str:
     """Preload messages into cache by paginating through history.
@@ -181,9 +181,9 @@ async def ts4k_preload(
         query: Search query (provider-specific). Optional.
         contact: Contact alias — auto-expands to bidirectional query.
         since: Start date: ISO timestamp or "Nd" shorthand (e.g. "30d").
-        max_pages: Maximum pages to fetch (default 10, lower for MCP).
-        fetch_bodies: Also fetch full message bodies (slower).
-        resume_job: Job ID to resume an interrupted preload.
+        pages: Maximum pages to fetch (default 10, lower for MCP).
+        bodies: Also fetch full message bodies (slower).
+        resume: Job ID to resume an interrupted preload.
         background: Run in background (returns job ID immediately).
     """
     if background:
@@ -192,33 +192,33 @@ async def ts4k_preload(
             query=query,
             contact=contact,
             since=since,
-            max_pages=max_pages,
-            fetch_bodies=fetch_bodies,
+            pages=pages,
+            bodies=bodies,
         )
     return await commands.preload(
         source=source,
         query=query,
         contact=contact,
         since=since,
-        max_pages=max_pages,
-        fetch_bodies=fetch_bodies,
-        resume_job=resume_job,
+        pages=pages,
+        bodies=bodies,
+        resume=resume,
     )
 
 
 @mcp.tool()
-def ts4k_preload_status() -> str:
+def preload_status() -> str:
     """Show status of all preload jobs."""
     return commands.manage_preload("status")
 
 
 @mcp.tool()
-def ts4k_overview(
+def overview(
     source: str | None = None,
     contact: str | None = None,
     period: str | None = None,
     fmt: str = "pipe",
-    top_n: int = 10,
+    top: int = 10,
 ) -> str:
     """Hierarchical overview of cached messages. Cache-only, instant.
 
@@ -232,15 +232,15 @@ def ts4k_overview(
         contact: Contact alias or name to drill into.
         period: Filter by period — "2025", "2025-Q1", "2025-03", or "2025-01..2025-06".
         fmt: Output format — "pipe" (default), "json", or "xml".
-        top_n: Number of top senders/threads to show (default 10).
+        top: Number of top senders/threads to show (default 10).
     """
     return commands.overview(
-        source=source, contact=contact, period=period, fmt=fmt, top_n=top_n
+        source=source, contact=contact, period=period, fmt=fmt, top=top
     )
 
 
-@mcp.tool()
-def ts4k_filter(action: str = "show", value: str | None = None) -> str:
+@mcp.tool(name="filter")
+def filter_tool(action: str = "show", value: str | None = None) -> str:
     """Manage message skip filters.
 
     Args:

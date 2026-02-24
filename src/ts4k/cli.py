@@ -47,7 +47,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
         since=getattr(args, "since", None),
         count=getattr(args, "count", 20) or 20,
         fmt=getattr(args, "format", "pipe") or "pipe",
-        apply_filter=getattr(args, "filter", False),
+        filter=getattr(args, "filter", False),
     )
     if result.error:
         print(result.error, file=sys.stderr)
@@ -57,7 +57,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
 
 async def _cmd_get(args: argparse.Namespace) -> None:
     result = await commands.get_message(
-        msg_id=args.id,
+        id=args.id,
         fmt=getattr(args, "format", "pipe") or "pipe",
     )
     if result.error:
@@ -68,7 +68,7 @@ async def _cmd_get(args: argparse.Namespace) -> None:
 
 async def _cmd_thread(args: argparse.Namespace) -> None:
     result = await commands.get_thread(
-        thread_id=args.id,
+        tid=args.id,
         fmt=getattr(args, "format", "pipe") or "pipe",
     )
     if result.error:
@@ -83,7 +83,7 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         query=getattr(args, "query", None),
         count=getattr(args, "count", 20) or 20,
         fmt=getattr(args, "format", "pipe") or "pipe",
-        apply_filter=getattr(args, "filter", False),
+        filter=getattr(args, "filter", False),
     )
     if result.error:
         print(result.error, file=sys.stderr)
@@ -100,20 +100,23 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("ts4k — Token Saver 4000")
     print()
     print("Commands:")
-    print("  wn [--since 2d] [--source PREFIX|all]     What's new (updates watermark)")
-    print("  l [-q QUERY] [-n COUNT] [--source ...]    List messages")
-    print("  g MSG_ID                                  Read a message (prefix:id)")
-    print("  t THREAD_ID                               Read a thread/chat")
+    print("  updates [--since 2d] [--source S] [-n N]  What's new (updates watermark)  [wn]")
+    print("  l(ist) [-q QUERY] [--source S] [-n N]     Search messages")
+    print("  g(et) ID                                  Read a message (prefix:id)")
+    print("  t(hread) TID                              Read a thread/chat")
+    print("  o(verview) [--source S] [--contact C]     Cache summary (drill-down)")
+    print("  st(atus)                                  Health, stats, efficiency")
+    print()
     print("  src list|add|rm                           Manage sources")
-    print("  c link|unlink|find|list                   Manage contacts")
-    print("  f show|add-*|rm-*|reset                   Manage filters")
-    print("  o [--source P] [--contact C] [--period P]  Overview of cached messages")
-    print("  preload --source g [--query Q]             Paginate history into cache")
-    print("  cache stats|clear                         Manage message cache")
-    print("  st                                        Status, stats, efficiency")
-    print("  h                                         This help")
+    print("  c(ontacts) link|unlink|find|list          Manage contacts")
+    print("  f(ilter) show|add-*|rm-*|reset            Manage filters")
+    print("  preload --source S [--query Q] [--bg]     Paginate history into cache")
+    print("  cache stats|clear [--source S] [--stale]  Manage message cache")
+    print("  skill [more]                              Compact reference for agents")
+    print("  h(elp)                                    This help")
     print()
     print("Flags: -F applies filters (off by default), -f p|j|x sets format")
+    print("IDs:   g:xxx (Gmail), o:xxx (O365), w:xxx (WhatsApp)")
     print()
     print("Sources:")
     if all_cfg:
@@ -278,9 +281,9 @@ async def _cmd_preload(args: argparse.Namespace) -> None:
             query=getattr(args, "query", None),
             contact=getattr(args, "contact", None),
             since=getattr(args, "since", None),
-            max_pages=getattr(args, "max_pages", 100) or 100,
-            page_size=getattr(args, "page_size", 50) or 50,
-            fetch_bodies=getattr(args, "bodies", False),
+            pages=getattr(args, "max_pages", 100) or 100,
+            batch_size=getattr(args, "page_size", 50) or 50,
+            bodies=getattr(args, "bodies", False),
             throttle=getattr(args, "throttle", 0.2) or 0.2,
         )
         print(result)
@@ -291,10 +294,10 @@ async def _cmd_preload(args: argparse.Namespace) -> None:
         query=getattr(args, "query", None),
         contact=getattr(args, "contact", None),
         since=getattr(args, "since", None),
-        max_pages=getattr(args, "max_pages", 100) or 100,
-        page_size=getattr(args, "page_size", 50) or 50,
-        fetch_bodies=getattr(args, "bodies", False),
-        resume_job=getattr(args, "resume", None),
+        pages=getattr(args, "max_pages", 100) or 100,
+        batch_size=getattr(args, "page_size", 50) or 50,
+        bodies=getattr(args, "bodies", False),
+        resume=getattr(args, "resume", None),
         throttle=getattr(args, "throttle", 0.2) or 0.2,
     )
     print(result)
@@ -306,7 +309,7 @@ def _cmd_overview(args: argparse.Namespace) -> None:
         contact=getattr(args, "contact", None),
         period=getattr(args, "period", None),
         fmt=getattr(args, "format", "pipe") or "pipe",
-        top_n=getattr(args, "top", 10) or 10,
+        top=getattr(args, "top", 10) or 10,
     )
     print(output)
 
@@ -314,8 +317,8 @@ def _cmd_overview(args: argparse.Namespace) -> None:
 def _cmd_cache(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
     source = getattr(args, "source", None)
-    stale_only = getattr(args, "stale", False)
-    print(commands.manage_cache(action=action, source=source, stale_only=stale_only))
+    stale = getattr(args, "stale", False)
+    print(commands.manage_cache(action=action, source=source, stale=stale))
 
 
 def _cmd_filter(args: argparse.Namespace) -> None:
@@ -334,14 +337,26 @@ def _cmd_filter(args: argparse.Namespace) -> None:
 
 
 async def _cmd_skill(args: argparse.Namespace) -> None:
-    """Handle the skill command — machine-readable output for Claude Code."""
+    """Handle the skill command — machine-readable output for Claude Code.
+
+    Three tiers:
+    - ``ts4k skill`` → tier 1 (core commands reference)
+    - ``ts4k skill more`` → tier 2 (admin commands reference)
+    - ``ts4k skill <cmd> [args]`` → route to command with pipe format
+    """
     subcmd = getattr(args, "subcmd", None)
     if not subcmd:
-        print("Usage: ts4k skill <wn|l|g|t> [args...]", file=sys.stderr)
-        sys.exit(1)
+        print(commands.skill_reference("basic"))
+        return
+
+    if subcmd == "more":
+        print(commands.skill_reference("more"))
+        return
 
     argv = [subcmd] + (getattr(args, "skill_args", None) or [])
-    argv.extend(["-f", "pipe"])
+    # Force pipe format unless explicitly overridden
+    if "-f" not in argv and "--format" not in argv:
+        argv.extend(["-f", "pipe"])
     parser = _build_parser()
     sub_args = parser.parse_args(argv)
 
@@ -383,8 +398,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # --- whatsnew / wn ---
-    for cmd_name in ("whatsnew", "wn"):
+    # --- whatsnew / wn / updates ---
+    for cmd_name in ("updates", "whatsnew", "wn"):
         wn = subparsers.add_parser(cmd_name, help="Show new messages (updates watermark)")
         wn.add_argument("--since", help="Time range: 2d, 7d, ISO timestamp, or Gmail query")
         wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")

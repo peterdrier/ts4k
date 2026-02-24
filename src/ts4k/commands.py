@@ -328,7 +328,7 @@ async def whatsnew(
     since: str | None = None,
     count: int = 20,
     fmt: str = "pipe",
-    apply_filter: bool = False,
+    filter: bool = False,
 ) -> CommandResult:
     """Fetch new messages, update watermarks, return formatted output."""
     active_prefixes = _resolve_prefixes(source)
@@ -359,7 +359,7 @@ async def whatsnew(
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
     all_messages = all_messages[:count]
 
-    if apply_filter:
+    if filter:
         all_messages = apply_filters(all_messages, filters.get_config())
 
     if not all_messages:
@@ -378,17 +378,17 @@ async def whatsnew(
     return CommandResult(output=output, messages_processed=len(all_messages))
 
 
-async def get_message(msg_id: str, fmt: str = "pipe") -> CommandResult:
+async def get_message(id: str, fmt: str = "pipe") -> CommandResult:
     """Read a single message by prefixed ID."""
     # Read-through: check cache first
-    cached = cache.get_message(msg_id)
+    cached = cache.get_message(id)
     if cached and cached.get("body"):
         output = format_message(cached, fmt=fmt)
         _record_stats("g", [cached], output)
         return CommandResult(output=output, messages_processed=1)
 
     all_cfg = _ensure_sources()
-    prefix = _prefix_from_id(msg_id, all_cfg)
+    prefix = _prefix_from_id(id, all_cfg)
     cfg = all_cfg.get(prefix)
 
     if not cfg:
@@ -399,19 +399,19 @@ async def get_message(msg_id: str, fmt: str = "pipe") -> CommandResult:
         return CommandResult(error=f"Source {prefix!r} not available.")
 
     async with adapter:
-        msg = await adapter.read_message(msg_id)
+        msg = await adapter.read_message(id)
         msg = _normalize_message(msg)
-        cache.store_message(msg_id, msg)
+        cache.store_message(id, msg)
         output = format_message(msg, fmt=fmt)
         _record_stats("g", [msg], output)
 
     return CommandResult(output=output, messages_processed=1)
 
 
-async def get_thread(thread_id: str, fmt: str = "pipe") -> CommandResult:
+async def get_thread(tid: str, fmt: str = "pipe") -> CommandResult:
     """Read a thread/conversation by prefixed ID."""
     all_cfg = _ensure_sources()
-    prefix = _prefix_from_id(thread_id, all_cfg)
+    prefix = _prefix_from_id(tid, all_cfg)
     cfg = all_cfg.get(prefix)
 
     if not cfg:
@@ -422,7 +422,7 @@ async def get_thread(thread_id: str, fmt: str = "pipe") -> CommandResult:
         return CommandResult(error=f"Source {prefix!r} not available.")
 
     async with adapter:
-        thread = await adapter.read_thread(thread_id)
+        thread = await adapter.read_thread(tid)
         thread = _normalize_thread(thread)
         for msg in thread.get("messages", []):
             mid = msg.get("id")
@@ -439,7 +439,7 @@ async def list_messages(
     query: str | None = None,
     count: int = 20,
     fmt: str = "pipe",
-    apply_filter: bool = False,
+    filter: bool = False,
 ) -> CommandResult:
     """List messages matching a query."""
     active_prefixes = _resolve_prefixes(source)
@@ -483,7 +483,7 @@ async def list_messages(
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
     all_messages = all_messages[:count]
 
-    if apply_filter:
+    if filter:
         all_messages = apply_filters(all_messages, filters.get_config())
 
     if not all_messages:
@@ -685,10 +685,10 @@ async def preload(
     query: str | None = None,
     contact: str | None = None,
     since: str | None = None,
-    max_pages: int = 100,
-    page_size: int = 50,
-    fetch_bodies: bool = False,
-    resume_job: str | None = None,
+    pages: int = 100,
+    batch_size: int = 50,
+    bodies: bool = False,
+    resume: str | None = None,
     throttle: float = 0.2,
 ) -> str:
     """Paginate through message history, caching results page by page.
@@ -726,13 +726,13 @@ async def preload(
     effective_query = query or ("in:inbox" if provider == "gmail" else "")
 
     # Resume or create job
-    if resume_job:
-        job = batch.get_job(resume_job)
+    if resume:
+        job = batch.get_job(resume)
         if job is None:
-            return f"Error: job {resume_job!r} not found."
+            return f"Error: job {resume!r} not found."
         if job["status"] not in ("in_progress", "failed", "stopped_disk_low"):
-            return f"Error: job {resume_job!r} has status {job['status']!r} — cannot resume."
-        job_id = resume_job
+            return f"Error: job {resume!r} has status {job['status']!r} — cannot resume."
+        job_id = resume
         page_token = job.get("next_page_token")
         pages_fetched = job.get("pages_fetched", 0)
         messages_cached = job.get("messages_cached", 0)
@@ -752,7 +752,7 @@ async def preload(
 
     try:
         async with adapter:
-            while pages_fetched < max_pages:
+            while pages_fetched < pages:
                 # Disk check every 10 pages
                 if pages_fetched > 0 and pages_fetched % 10 == 0:
                     if not cache.check_disk_space():
@@ -770,7 +770,7 @@ async def preload(
                         )
 
                 listing = await adapter.list_messages(
-                    query=effective_query, count=page_size, page_token=page_token
+                    query=effective_query, count=batch_size, page_token=page_token
                 )
 
                 if not listing:
@@ -783,7 +783,7 @@ async def preload(
                         continue
                     cache.store_header(msg_id, entry)
 
-                    if fetch_bodies:
+                    if bodies:
                         try:
                             msg = await adapter.read_message(msg_id)
                             msg = _normalize_message(msg)
@@ -878,9 +878,9 @@ def spawn_background_preload(
     query: str | None = None,
     contact: str | None = None,
     since: str | None = None,
-    max_pages: int = 100,
-    page_size: int = 50,
-    fetch_bodies: bool = False,
+    pages: int = 100,
+    batch_size: int = 50,
+    bodies: bool = False,
     throttle: float = 0.2,
 ) -> str:
     """Spawn a detached subprocess to run preload in the background.
@@ -934,9 +934,9 @@ def spawn_background_preload(
         argv += ["--contact", contact]
     if since:
         argv += ["--since", since]
-    argv += ["--max-pages", str(max_pages)]
-    argv += ["--page-size", str(page_size)]
-    if fetch_bodies:
+    argv += ["--max-pages", str(pages)]
+    argv += ["--page-size", str(batch_size)]
+    if bodies:
         argv.append("--bodies")
     argv += ["--throttle", str(throttle)]
 
@@ -1110,7 +1110,7 @@ def _filter_by_contact(
     ]
 
 
-def _build_top_view(headers: list[dict], top_n: int) -> dict:
+def _build_top_view(headers: list[dict], top: int) -> dict:
     """Build the top-level overview: group by source, count senders."""
     by_source: dict[str, list[dict]] = {}
     for h in headers:
@@ -1125,7 +1125,7 @@ def _build_top_view(headers: list[dict], top_n: int) -> dict:
         for m in msgs:
             sender = _resolve_sender(m.get("from", ""))
             sender_counts[sender] = sender_counts.get(sender, 0) + 1
-        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
         sources_list.append({
             "prefix": src,
             "label": _SOURCE_LABELS.get(src, src),
@@ -1144,7 +1144,7 @@ def _build_top_view(headers: list[dict], top_n: int) -> dict:
 
 
 def _build_source_view(
-    headers: list[dict], source: str, top_n: int
+    headers: list[dict], source: str, top: int
 ) -> dict:
     """Top senders + top threads for a single source."""
     filtered = [h for h in headers if h.get("source") == source]
@@ -1155,7 +1155,7 @@ def _build_source_view(
     for m in filtered:
         sender = _resolve_sender(m.get("from", ""))
         sender_counts[sender] = sender_counts.get(sender, 0) + 1
-    top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
 
     # Top threads (only when enough entries have thread_id)
     thread_counts: dict[str, dict] = {}
@@ -1174,7 +1174,7 @@ def _build_source_view(
     if len(thread_counts) >= 3:
         top_threads = sorted(
             thread_counts.values(), key=lambda x: x["count"], reverse=True
-        )[:top_n]
+        )[:top]
 
     return {
         "level": "source",
@@ -1207,7 +1207,7 @@ def _build_period_breakdown(headers: list[dict]) -> list[dict]:
 
 
 def _build_contact_view(
-    headers: list[dict], contact: str, top_n: int
+    headers: list[dict], contact: str, top: int
 ) -> dict:
     """By-source + by-period breakdown for a contact."""
     by_source: dict[str, list[dict]] = {}
@@ -1244,7 +1244,7 @@ def overview(
     contact: str | None = None,
     period: str | None = None,
     fmt: str = "pipe",
-    top_n: int = 10,
+    top: int = 10,
 ) -> str:
     """Hierarchical overview of cached messages. Cache-only, no adapter calls.
 
@@ -1279,11 +1279,11 @@ def overview(
 
     # Build the appropriate view
     if contact:
-        data = _build_contact_view(headers, contact, top_n)
+        data = _build_contact_view(headers, contact, top)
     elif source:
-        data = _build_source_view(headers, source, top_n)
+        data = _build_source_view(headers, source, top)
     else:
-        data = _build_top_view(headers, top_n)
+        data = _build_top_view(headers, top)
 
     return format_overview(data, fmt=fmt)
 
@@ -1291,13 +1291,13 @@ def overview(
 def manage_cache(
     action: str | None = None,
     source: str | None = None,
-    stale_only: bool = False,
+    stale: bool = False,
 ) -> str:
     """Manage message cache. Returns output string."""
     if action == "clear":
-        removed = cache.clear(source=source, stale_only=stale_only)
+        removed = cache.clear(source=source, stale_only=stale)
         scope = f"source {source}" if source else "all sources"
-        qualifier = " stale" if stale_only else ""
+        qualifier = " stale" if stale else ""
         return f"Cleared {removed}{qualifier} cached messages ({scope})."
 
     # Default: stats
@@ -1319,3 +1319,34 @@ def manage_cache(
 
     lines.append(f"  Schema: v{s['schema_version']}")
     return "\n".join(lines)
+
+
+def skill_reference(level: str = "basic") -> str:
+    """Return compact command reference for skill mode.
+
+    Args:
+        level: "basic" for everyday commands (tier 1),
+               "more" for admin/power commands (tier 2).
+    """
+    if level == "more":
+        return (
+            "ts4k admin commands:\n"
+            "preload --source S [--query Q] [--bg]|Paginate history into cache\n"
+            "preload --status|Show preload jobs\n"
+            "contacts link ALIAS ID [ID...]|Link identifiers to alias\n"
+            "contacts unlink|find|list|Manage contacts\n"
+            "filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|skip-groups|reset\n"
+            "cache stats|clear [--source S] [--stale]|Manage cache\n"
+            "help|Human-readable help"
+        )
+    return (
+        "ts4k \u2014 token-efficient messaging gateway\n"
+        "updates [--source S] [--since T] [-n N]|What's new\n"
+        "list [-q Q] [--source S] [-n N]|Search messages\n"
+        "get ID|Read message\n"
+        "thread TID|Read thread\n"
+        "overview [--source S] [--contact C] [--period P]|Cache summary\n"
+        "status|Health + stats\n"
+        "IDs: g:xxx o:xxx w:xxx. Formats: -f p|j|x. Filters: -F.\n"
+        "More: ts4k skill more"
+    )

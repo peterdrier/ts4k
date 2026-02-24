@@ -16,17 +16,17 @@ from ts4k.server import mcp, _apply_context
 # ---------------------------------------------------------------------------
 
 EXPECTED_TOOLS = {
-    "ts4k_whatsnew",
-    "ts4k_get",
-    "ts4k_thread",
-    "ts4k_list",
-    "ts4k_status",
-    "ts4k_contacts",
-    "ts4k_cache",
-    "ts4k_filter",
-    "ts4k_preload",
-    "ts4k_preload_status",
-    "ts4k_overview",
+    "updates",
+    "get",
+    "thread",
+    "list",
+    "status",
+    "contacts",
+    "cache",
+    "filter",
+    "preload",
+    "preload_status",
+    "overview",
 }
 
 
@@ -46,34 +46,34 @@ class TestToolRegistration:
         """No extra tools registered."""
         assert len(self._get_tool_names()) == 11
 
-    def test_whatsnew_params(self):
-        """ts4k_whatsnew has expected parameters."""
-        tool = mcp._tool_manager._tools["ts4k_whatsnew"]
+    def test_updates_params(self):
+        """updates has expected parameters."""
+        tool = mcp._tool_manager._tools["updates"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "source" in props
         assert "since" in props
         assert "count" in props
         assert "fmt" in props
-        assert "apply_filter" in props
+        assert "filter" in props
 
     def test_get_params(self):
-        """ts4k_get requires msg_id."""
-        tool = mcp._tool_manager._tools["ts4k_get"]
+        """get requires id."""
+        tool = mcp._tool_manager._tools["get"]
         schema = tool.parameters
         props = schema.get("properties", {})
-        assert "msg_id" in props
+        assert "id" in props
 
     def test_thread_params(self):
-        """ts4k_thread requires thread_id."""
-        tool = mcp._tool_manager._tools["ts4k_thread"]
+        """thread requires tid."""
+        tool = mcp._tool_manager._tools["thread"]
         schema = tool.parameters
         props = schema.get("properties", {})
-        assert "thread_id" in props
+        assert "tid" in props
 
     def test_list_params(self):
-        """ts4k_list has source, query, count params."""
-        tool = mcp._tool_manager._tools["ts4k_list"]
+        """list has source, query, count params."""
+        tool = mcp._tool_manager._tools["list"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "source" in props
@@ -81,8 +81,8 @@ class TestToolRegistration:
         assert "count" in props
 
     def test_contacts_params(self):
-        """ts4k_contacts has action, alias, identifiers, term."""
-        tool = mcp._tool_manager._tools["ts4k_contacts"]
+        """contacts has action, alias, identifiers, term."""
+        tool = mcp._tool_manager._tools["contacts"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "action" in props
@@ -91,47 +91,47 @@ class TestToolRegistration:
         assert "term" in props
 
     def test_filter_params(self):
-        """ts4k_filter has action and value."""
-        tool = mcp._tool_manager._tools["ts4k_filter"]
+        """filter has action and value."""
+        tool = mcp._tool_manager._tools["filter"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "action" in props
         assert "value" in props
 
     def test_preload_params(self):
-        """ts4k_preload has source, query, contact, background, etc."""
-        tool = mcp._tool_manager._tools["ts4k_preload"]
+        """preload has source, query, contact, background, etc."""
+        tool = mcp._tool_manager._tools["preload"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "source" in props
         assert "query" in props
         assert "contact" in props
-        assert "max_pages" in props
-        assert "fetch_bodies" in props
-        assert "resume_job" in props
+        assert "pages" in props
+        assert "bodies" in props
+        assert "resume" in props
         assert "background" in props
 
     def test_overview_params(self):
-        """ts4k_overview has source, contact, period, fmt, top_n."""
-        tool = mcp._tool_manager._tools["ts4k_overview"]
+        """overview has source, contact, period, fmt, top."""
+        tool = mcp._tool_manager._tools["overview"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "source" in props
         assert "contact" in props
         assert "period" in props
         assert "fmt" in props
-        assert "top_n" in props
+        assert "top" in props
 
     def test_preload_status_no_params(self):
-        """ts4k_preload_status takes no parameters."""
-        tool = mcp._tool_manager._tools["ts4k_preload_status"]
+        """preload_status takes no parameters."""
+        tool = mcp._tool_manager._tools["preload_status"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert len(props) == 0
 
     def test_status_no_required_params(self):
-        """ts4k_status takes no parameters."""
-        tool = mcp._tool_manager._tools["ts4k_status"]
+        """status takes no parameters."""
+        tool = mcp._tool_manager._tools["status"]
         schema = tool.parameters
         props = schema.get("properties", {})
         # status has no user-facing params
