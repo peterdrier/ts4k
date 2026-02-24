@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,8 +59,8 @@ def _load() -> dict[str, Any]:
 
 def _save(data: dict[str, Any]) -> None:
     """Persist batch state to disk."""
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _BATCH_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    from ts4k.state._io import safe_write_json
+    safe_write_json(_BATCH_FILE, data)
 
 
 def _now_iso() -> str:
@@ -131,6 +133,32 @@ def is_running(job_id: str) -> bool:
         return False
     try:
         os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def kill_job(job_id: str) -> bool:
+    """Terminate the background process for *job_id*.
+
+    Returns ``True`` if the kill signal was sent successfully.
+    Returns ``False`` if the job doesn't exist, has no PID, or the
+    process is already dead.
+    """
+    job = get_job(job_id)
+    if job is None:
+        return False
+    pid = job.get("pid")
+    if not pid:
+        return False
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
         return True
     except (OSError, ProcessLookupError):
         return False

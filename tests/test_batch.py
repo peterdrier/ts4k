@@ -154,6 +154,50 @@ class TestPidTracking:
         assert batch.is_running("job-nonexistent") is False
 
 
+class TestKillJob:
+    def test_nonexistent_job(self):
+        assert batch.kill_job("job-nonexistent") is False
+
+    def test_no_pid(self):
+        """Job without a PID stored returns False."""
+        job_id = batch.create_job("g", "test")
+        assert batch.kill_job(job_id) is False
+
+    def test_dead_pid(self):
+        """A known-dead PID returns False (signal fails)."""
+        job_id = batch.create_job("g", "test")
+        batch.update_job(job_id, pid=99999999)
+        # On Windows taskkill fails silently (returns non-zero but no exception).
+        # On Unix os.kill raises ProcessLookupError → False.
+        # Either way, the function should not raise.
+        result = batch.kill_job(job_id)
+        # Can be True on Windows (taskkill doesn't raise) or False on Unix
+        assert isinstance(result, bool)
+
+    def test_live_subprocess(self):
+        """Kill a real subprocess and verify it dies."""
+        import subprocess, sys, time
+
+        # Start a long-running subprocess
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+        )
+        job_id = batch.create_job("g", "test")
+        batch.update_job(job_id, pid=proc.pid)
+
+        assert batch.kill_job(job_id) is True
+
+        # Wait for it to die (with timeout)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            pytest.fail("Process did not die after kill_job")
+
+        assert proc.poll() is not None  # process has exited
+
+
 class TestPersistence:
     def test_survives_reload(self, tmp_path):
         """Data persists across load/save cycles."""

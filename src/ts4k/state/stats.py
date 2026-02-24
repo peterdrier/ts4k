@@ -70,10 +70,8 @@ def _deep_copy_empty() -> dict[str, Any]:
 
 def _save(data: dict[str, Any]) -> None:
     """Persist stats to disk."""
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _STATS_FILE.write_text(
-        json.dumps(data, indent=2) + "\n", encoding="utf-8"
-    )
+    from ts4k.state._io import safe_write_json
+    safe_write_json(_STATS_FILE, data)
 
 
 # ---------------------------------------------------------------------------

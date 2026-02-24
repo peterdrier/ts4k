@@ -72,10 +72,8 @@ def _load() -> dict[str, dict[str, Any]]:
 
 def _save(data: dict[str, dict[str, Any]]) -> None:
     """Persist the source map to disk."""
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _SOURCES_FILE.write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    from ts4k.state._io import safe_write_json
+    safe_write_json(_SOURCES_FILE, data, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------

@@ -59,9 +59,9 @@ def _load_index() -> dict[str, Any]:
 
 def _save_index(data: dict[str, Any]) -> None:
     """Persist the index to disk."""
+    from ts4k.state._io import safe_write_json
     data.setdefault("_meta", {})["schema_version"] = SCHEMA_VERSION
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _INDEX_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    safe_write_json(_INDEX_FILE, data)
 
 
 def _body_path(msg_id: str) -> Path:
@@ -100,9 +100,8 @@ def store_header(msg_id: str, header: dict) -> None:
 
 def store_body(msg_id: str, body: str) -> None:
     """Cache a message body to a separate file."""
-    _BODIES_DIR.mkdir(parents=True, exist_ok=True)
-    path = _body_path(msg_id)
-    path.write_text(json.dumps({"body": body}) + "\n", encoding="utf-8")
+    from ts4k.state._io import safe_write_json
+    safe_write_json(_body_path(msg_id), {"body": body}, indent=None)
 
 
 def store_message(msg_id: str, msg: dict) -> None:
@@ -301,3 +300,63 @@ def check_disk_space() -> bool:
         target = Path.home()
     free = shutil.disk_usage(target).free
     return free >= MIN_FREE_BYTES
+
+
+# ---------------------------------------------------------------------------
+# Batch API — accumulate header writes, flush once
+# ---------------------------------------------------------------------------
+
+
+class CacheBatch:
+    """Context manager that batches ``store_header`` calls into a single index write.
+
+    For preload loops where thousands of headers are cached per page, this avoids
+    O(n) full-file rewrites of ``index.json``.  Body files are still written
+    individually (they're small independent files).
+
+    Usage::
+
+        with CacheBatch() as cb:
+            for entry in listing:
+                cb.store_header(msg_id, entry)
+            # index.json written once on exit
+
+    Call ``flush()`` for an explicit mid-batch checkpoint.
+    """
+
+    def __init__(self) -> None:
+        self._index: dict[str, Any] | None = None
+        self._dirty: bool = False
+
+    def __enter__(self) -> CacheBatch:
+        self._index = _load_index()
+        self._dirty = False
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        if self._dirty and self._index is not None:
+            _save_index(self._index)
+        self._index = None
+
+    def store_header(self, msg_id: str, header: dict) -> None:
+        """Accumulate a header in the in-memory index (no disk write)."""
+        if self._index is None:
+            raise RuntimeError("CacheBatch must be used as a context manager")
+
+        source = header.get("source", "")
+        if source and source not in CACHEABLE_SOURCES:
+            return
+
+        entry = {k: v for k, v in header.items() if k != "body"}
+        entry["_schema_version"] = SCHEMA_VERSION
+        entry["_cached_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._index["messages"][msg_id] = entry
+        self._dirty = True
+
+    def flush(self) -> None:
+        """Write accumulated headers to disk without leaving the batch."""
+        if self._index is None:
+            raise RuntimeError("CacheBatch must be used as a context manager")
+        if self._dirty:
+            _save_index(self._index)
+            self._dirty = False

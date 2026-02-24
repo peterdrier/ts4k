@@ -733,22 +733,26 @@ async def preload(
                 if not listing:
                     break
 
-                # Cache each entry
-                for entry in listing:
-                    msg_id = entry.get("id", "")
-                    if not msg_id:
-                        continue
-                    cache.store_header(msg_id, entry)
+                # Cache each entry (batch header writes — one index.json
+                # write per page instead of per message)
+                with cache.CacheBatch() as cb:
+                    for entry in listing:
+                        msg_id = entry.get("id", "")
+                        if not msg_id:
+                            continue
+                        cb.store_header(msg_id, entry)
 
-                    if bodies:
-                        try:
-                            msg = await adapter.read_message(msg_id)
-                            msg = _normalize_message(msg)
-                            cache.store_message(msg_id, msg)
-                        except Exception as exc:
-                            logger.warning("[%s] body fetch %s: %s", prefix, msg_id, exc)
+                        if bodies:
+                            try:
+                                msg = await adapter.read_message(msg_id)
+                                msg = _normalize_message(msg)
+                                # store_header via batch; body as individual file
+                                cb.store_header(msg_id, msg)
+                                cache.store_body(msg_id, msg.get("body", ""))
+                            except Exception as exc:
+                                logger.warning("[%s] body fetch %s: %s", prefix, msg_id, exc)
 
-                    messages_cached += 1
+                        messages_cached += 1
 
                 pages_fetched += 1
 
@@ -949,8 +953,12 @@ def manage_preload(action: str, job_id: str | None = None) -> str:
         job = batch.get_job(job_id)
         if job is None:
             return f"Error: job {job_id!r} not found."
+        killed = False
         if job["status"] == "in_progress":
+            killed = batch.kill_job(job_id)
             batch.update_job(job_id, status="failed", error="cancelled by user")
+        if killed:
+            return f"Job {job_id} cancelled (process killed)."
         return f"Job {job_id} cancelled."
 
     return f"Unknown preload action: {action!r}"

@@ -21,6 +21,7 @@ from ts4k.state.cache import (
     store_header, store_body, store_message,
     get_header, get_body, get_message, has,
     list_headers, count, stats, clear,
+    CacheBatch,
     SCHEMA_VERSION, CACHEABLE_SOURCES,
 )
 
@@ -276,3 +277,102 @@ class TestEdgeCases:
         store_header("g:abc", _gmail_msg())
         hdr = get_header("g:abc")
         assert "_cached_at" in hdr
+
+
+# ---------------------------------------------------------------------------
+# CacheBatch
+# ---------------------------------------------------------------------------
+
+class TestCacheBatch:
+    def test_stores_multiple_headers(self):
+        with CacheBatch() as cb:
+            cb.store_header("g:a", _gmail_msg("a"))
+            cb.store_header("g:b", _gmail_msg("b"))
+        assert has("g:a")
+        assert has("g:b")
+
+    def test_writes_index_once(self, monkeypatch):
+        """Batch should call _save_index exactly once on exit."""
+        import ts4k.state.cache as mod
+        call_count = 0
+        original = mod._save_index
+
+        def counting_save(data):
+            nonlocal call_count
+            call_count += 1
+            original(data)
+
+        monkeypatch.setattr(mod, "_save_index", counting_save)
+
+        with CacheBatch() as cb:
+            cb.store_header("g:a", _gmail_msg("a"))
+            cb.store_header("g:b", _gmail_msg("b"))
+            cb.store_header("g:c", _gmail_msg("c"))
+            assert call_count == 0  # nothing written yet
+
+        assert call_count == 1  # single write on exit
+
+    def test_flushes_on_exception(self):
+        """Data accumulated before an exception should be persisted."""
+        try:
+            with CacheBatch() as cb:
+                cb.store_header("g:saved", _gmail_msg("saved"))
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        assert has("g:saved")
+
+    def test_explicit_flush(self, monkeypatch):
+        import ts4k.state.cache as mod
+        call_count = 0
+        original = mod._save_index
+
+        def counting_save(data):
+            nonlocal call_count
+            call_count += 1
+            original(data)
+
+        monkeypatch.setattr(mod, "_save_index", counting_save)
+
+        with CacheBatch() as cb:
+            cb.store_header("g:a", _gmail_msg("a"))
+            cb.flush()
+            assert call_count == 1
+            cb.store_header("g:b", _gmail_msg("b"))
+
+        assert call_count == 2  # flush + exit
+
+    def test_skips_non_cacheable(self):
+        """WhatsApp messages should be silently skipped."""
+        wa_msg = {"id": "w:1", "from": "x", "subject": "", "date": "2026-01-01", "source": "w"}
+        with CacheBatch() as cb:
+            cb.store_header("w:1", wa_msg)
+        assert not has("w:1")
+
+    def test_raises_outside_context(self):
+        cb = CacheBatch()
+        with pytest.raises(RuntimeError, match="context manager"):
+            cb.store_header("g:a", _gmail_msg("a"))
+
+    def test_flush_raises_outside_context(self):
+        cb = CacheBatch()
+        with pytest.raises(RuntimeError, match="context manager"):
+            cb.flush()
+
+    def test_no_write_when_empty(self, monkeypatch):
+        """An empty batch should not write to disk."""
+        import ts4k.state.cache as mod
+        call_count = 0
+        original = mod._save_index
+
+        def counting_save(data):
+            nonlocal call_count
+            call_count += 1
+            original(data)
+
+        monkeypatch.setattr(mod, "_save_index", counting_save)
+
+        with CacheBatch():
+            pass
+
+        assert call_count == 0

@@ -36,8 +36,8 @@ def _load() -> dict[str, str]:
 
 def _save(data: dict[str, str]) -> None:
     """Persist watermarks to disk."""
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _WM_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    from ts4k.state._io import safe_write_json
+    safe_write_json(_WM_FILE, data)
 
 
 def get(source: str) -> str | None:
