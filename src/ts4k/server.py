@@ -22,16 +22,20 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from ts4k import commands
+from ts4k.state.refs import RefTable
 
 mcp = FastMCP(
     name="ts4k",
     instructions=(
         "ts4k (Token Saver 4000) provides token-efficient access to messages "
         "across Gmail, WhatsApp, O365, and other platforms. Use pipe format "
-        "(default) for maximum token efficiency. Message IDs are prefixed "
-        "with the source (e.g. g:abc123, w:3EB05C, o:AAMk...)."
+        "(default) for maximum token efficiency. Listings use short refs "
+        "(#1, #2, ...) — use these with get/thread instead of full IDs."
     ),
 )
+
+# Session-scoped ref table — accumulates across tool calls within one connection.
+_refs = RefTable()
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +53,8 @@ async def updates(
 ) -> str:
     """Fetch new messages since the last check (updates watermark).
 
+    Listings use short refs (#1, #2, ...) — pass these to get/thread.
+
     Args:
         source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
         since: Time range — "2d", "7d", ISO timestamp, or omit for watermark.
@@ -62,6 +68,7 @@ async def updates(
         count=count,
         fmt=fmt,
         filter=filter,
+        ref_table=_refs,
     )
     if result.error:
         return result.error
@@ -70,13 +77,13 @@ async def updates(
 
 @mcp.tool()
 async def get(id: str, fmt: str = "pipe") -> str:
-    """Read a single message by its prefixed ID.
+    """Read a single message by its prefixed ID or short ref.
 
     Args:
-        id: Message ID with source prefix (e.g. "g:18f6a2b3c4e5f6a7").
+        id: Message ID (e.g. "g:18f6a2b3c4e5f6a7") or short ref (e.g. "#3").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
-    result = await commands.get_message(id=id, fmt=fmt)
+    result = await commands.get_message(id=id, fmt=fmt, ref_table=_refs)
     if result.error:
         return result.error
     return result.output
@@ -84,13 +91,13 @@ async def get(id: str, fmt: str = "pipe") -> str:
 
 @mcp.tool()
 async def thread(tid: str, fmt: str = "pipe") -> str:
-    """Read a thread or conversation by its prefixed ID.
+    """Read a thread or conversation by its prefixed ID or short ref.
 
     Args:
-        tid: Thread/chat ID with source prefix (e.g. "g:18f6a2b3c4e5f6a8").
+        tid: Thread/chat ID (e.g. "g:18f6a2b3c4e5f6a8") or short ref (e.g. "#3").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
-    result = await commands.get_thread(tid=tid, fmt=fmt)
+    result = await commands.get_thread(tid=tid, fmt=fmt, ref_table=_refs)
     if result.error:
         return result.error
     return result.output
@@ -106,6 +113,8 @@ async def list_tool(
 ) -> str:
     """Search and list messages matching a query.
 
+    Listings use short refs (#1, #2, ...) — pass these to get/thread.
+
     Args:
         source: Source prefix, provider name, or "all".
         query: Search query string (provider-specific).
@@ -119,6 +128,7 @@ async def list_tool(
         count=count,
         fmt=fmt,
         filter=filter,
+        ref_table=_refs,
     )
     if result.error:
         return result.error

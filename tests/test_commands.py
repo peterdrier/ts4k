@@ -163,8 +163,41 @@ class TestCommandResult:
         assert r.output == ""
         assert r.messages_processed == 0
         assert r.error is None
+        assert r.ref_map is None
 
     def test_with_error(self):
         r = commands.CommandResult(error="bad thing")
         assert r.error == "bad thing"
         assert r.output == ""
+
+    def test_with_ref_map(self):
+        r = commands.CommandResult(ref_map={"g:abc": 1})
+        assert r.ref_map == {"g:abc": 1}
+
+
+# ---------------------------------------------------------------------------
+# _resolve_ref
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRef:
+    def test_passthrough_real_id(self):
+        from ts4k.state.refs import RefTable
+        rt = RefTable()
+        rt.assign([{"id": "g:abc"}])
+        assert commands._resolve_ref("g:abc", rt) == "g:abc"
+
+    def test_resolve_ref(self):
+        from ts4k.state.refs import RefTable
+        rt = RefTable()
+        rt.assign([{"id": "g:abc"}])
+        assert commands._resolve_ref("#1", rt) == "g:abc"
+
+    def test_unresolvable_ref_passes_through(self):
+        from ts4k.state.refs import RefTable
+        rt = RefTable()
+        assert commands._resolve_ref("#99", rt) == "#99"
+
+    def test_no_ref_table(self):
+        assert commands._resolve_ref("#1", None) == "#1"
+        assert commands._resolve_ref("g:abc", None) == "g:abc"

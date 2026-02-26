@@ -12,6 +12,7 @@ Target: 60%+ byte savings vs raw JSON pretty-print for listings.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
 
@@ -20,18 +21,24 @@ from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 # ---------------------------------------------------------------------------
 
 
-def format_listing(messages: list[dict], fmt: str = "pipe") -> str:
+def format_listing(
+    messages: list[dict],
+    fmt: str = "pipe",
+    ref_map: dict[str, int] | None = None,
+) -> str:
     """Format a list of message-header dicts.
 
     Each dict should have at least: ``source``, ``from``, ``subject``,
     ``date``, ``id``.  ``body`` is used only for size estimation.
 
     *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    *ref_map*: ``{full_id: ref_num}`` — when provided, pipe format uses
+    ``#N`` short refs instead of full IDs, and compact timestamps.
     """
     fmt = _resolve_fmt(fmt)
 
     if fmt == "pipe":
-        return _listing_pipe(messages)
+        return _listing_pipe(messages, ref_map=ref_map)
     elif fmt == "json":
         return _listing_json(messages)
     elif fmt == "xml":
@@ -172,20 +179,28 @@ def _size(msg: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _listing_pipe(messages: list[dict]) -> str:
+def _listing_pipe(
+    messages: list[dict],
+    ref_map: dict[str, int] | None = None,
+) -> str:
     """Pipe-delimited listing — most compact format.
 
-    When snippet is available, includes a truncated preview::
-
-        SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET
-        g|alice@acme.com|Meeting tomorrow|2026-02-20T09:15:00Z|g:abc123|2kb|Meeting prep is...
+    When *ref_map* is provided, uses short ``#N`` refs and compact timestamps
+    with date-header grouping.  Otherwise falls back to the legacy format with
+    full IDs and ISO timestamps.
     """
+    if ref_map is not None:
+        return _listing_pipe_refs(messages, ref_map)
+    return _listing_pipe_legacy(messages)
+
+
+def _listing_pipe_legacy(messages: list[dict]) -> str:
+    """Legacy pipe listing with full IDs and ISO timestamps."""
     has_snippets = any(msg.get("snippet") for msg in messages)
     if has_snippets:
         lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET"]
         for msg in messages:
             snippet = msg.get("snippet", "")
-            # Truncate long snippets for token efficiency.
             if len(snippet) > 80:
                 snippet = snippet[:77] + "..."
             lines.append(
@@ -199,6 +214,50 @@ def _listing_pipe(messages: list[dict]) -> str:
                 f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
                 f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}"
             )
+    return "\n".join(lines)
+
+
+def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
+    """Pipe listing with short refs, compact timestamps, and date-header grouping."""
+    precision = _detect_precision(messages)
+    has_snippets = any(msg.get("snippet") for msg in messages)
+
+    # Group by date for date-header grouping (only when messages span multiple days)
+    use_headers = precision != "time"
+    groups = _group_by_date(messages, precision) if use_headers else None
+
+    lines: list[str] = []
+
+    if has_snippets:
+        lines.append("#|SOURCE|FROM|SUBJECT|DATE|SIZE|SNIPPET")
+    else:
+        lines.append("#|SOURCE|FROM|SUBJECT|DATE|SIZE")
+
+    if groups:
+        for date_label, group_msgs in groups:
+            lines.append(f"--- {date_label} ---")
+            for msg in group_msgs:
+                ref = ref_map.get(msg.get("id", ""), 0)
+                ts = _compact_ts(msg.get("date", ""), "time")
+                row = f"#{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
+                if has_snippets:
+                    snippet = msg.get("snippet", "")
+                    if len(snippet) > 80:
+                        snippet = snippet[:77] + "..."
+                    row += f"|{snippet}"
+                lines.append(row)
+    else:
+        for msg in messages:
+            ref = ref_map.get(msg.get("id", ""), 0)
+            ts = _compact_ts(msg.get("date", ""), precision)
+            row = f"#{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
+            if has_snippets:
+                snippet = msg.get("snippet", "")
+                if len(snippet) > 80:
+                    snippet = snippet[:77] + "..."
+                row += f"|{snippet}"
+            lines.append(row)
+
     return "\n".join(lines)
 
 
@@ -239,6 +298,109 @@ def _thread_pipe(thread: dict) -> str:
             lines.append(body)
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Compact timestamp helpers
+# ---------------------------------------------------------------------------
+
+# Month abbreviations (1-indexed: _MONTHS[1] = "Jan")
+_MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _parse_iso(iso_str: str) -> datetime | None:
+    """Parse an ISO 8601 timestamp to datetime.  Returns None on failure."""
+    if not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _detect_precision(messages: list[dict]) -> str:
+    """Determine the most compact timestamp precision for a message set.
+
+    Returns ``'time'`` (same day), ``'day'`` (same year), or ``'year'`` (spans years).
+    """
+    dates: list[datetime] = []
+    for msg in messages:
+        dt = _parse_iso(msg.get("date", ""))
+        if dt:
+            dates.append(dt)
+
+    if not dates:
+        return "day"
+
+    years = {d.year for d in dates}
+    if len(years) > 1:
+        return "year"
+
+    day_keys = {(d.year, d.month, d.day) for d in dates}
+    if len(day_keys) == 1:
+        return "time"
+
+    return "day"
+
+
+def _compact_ts(iso_str: str, precision: str) -> str:
+    """Format a single timestamp at the chosen precision.
+
+    - ``'time'``: ``22:23``
+    - ``'day'``: ``23Feb 22:23``
+    - ``'year'``: ``23Feb25 22:23``
+    """
+    dt = _parse_iso(iso_str)
+    if dt is None:
+        return iso_str  # fallback: return as-is
+
+    time_part = f"{dt.hour:02d}:{dt.minute:02d}"
+    if precision == "time":
+        return time_part
+    month = _MONTHS[dt.month]
+    if precision == "day":
+        return f"{dt.day}{month} {time_part}"
+    # year
+    yr = dt.year % 100
+    return f"{dt.day}{month}{yr:02d} {time_part}"
+
+
+def _date_label(dt: datetime, precision: str) -> str:
+    """Date header label for grouping rows."""
+    month = _MONTHS[dt.month]
+    if precision == "year":
+        yr = dt.year % 100
+        return f"{dt.day}{month}{yr:02d}"
+    return f"{dt.day}{month}"
+
+
+def _group_by_date(
+    messages: list[dict], precision: str
+) -> list[tuple[str, list[dict]]]:
+    """Group messages by date for date-header output.
+
+    Returns ``[(date_label, [messages]), ...]`` in message order.
+    """
+    groups: list[tuple[str, list[dict]]] = []
+    current_label: str | None = None
+    current_group: list[dict] = []
+
+    for msg in messages:
+        dt = _parse_iso(msg.get("date", ""))
+        label = _date_label(dt, precision) if dt else "?"
+        if label != current_label:
+            if current_group:
+                groups.append((current_label or "?", current_group))
+            current_label = label
+            current_group = [msg]
+        else:
+            current_group.append(msg)
+
+    if current_group:
+        groups.append((current_label or "?", current_group))
+
+    return groups
 
 
 # ---------------------------------------------------------------------------

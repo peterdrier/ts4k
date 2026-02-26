@@ -34,6 +34,32 @@ from typing import Any
 from ts4k import commands
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.state import sources, watermarks
+from ts4k.state.refs import RefTable
+
+
+# ---------------------------------------------------------------------------
+# Ref table helpers
+# ---------------------------------------------------------------------------
+
+
+def _refs_path() -> Path:
+    """Path to the CLI refs file."""
+    from pathlib import Path
+
+    config_dir = Path(os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")).expanduser()
+    return config_dir / "refs.json"
+
+
+def _new_ref_table() -> RefTable:
+    """Create a fresh RefTable for CLI listing commands (last-listing-wins)."""
+    return RefTable()
+
+
+def _load_ref_table() -> RefTable:
+    """Load the ref table from disk for CLI get/thread commands."""
+    rt = RefTable()
+    rt.load(_refs_path())
+    return rt
 
 
 # ---------------------------------------------------------------------------
@@ -42,23 +68,31 @@ from ts4k.state import sources, watermarks
 
 
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
+    refs = _new_ref_table()
     result = await commands.whatsnew(
         source=getattr(args, "source", None),
         since=getattr(args, "since", None),
         count=getattr(args, "count", 20) or 20,
         fmt=getattr(args, "format", "pipe") or "pipe",
         filter=getattr(args, "filter", False),
+        ref_table=refs,
     )
     if result.error:
         print(result.error, file=sys.stderr)
         return
+    refs.save(_refs_path())
     print(result.output)
 
 
 async def _cmd_get(args: argparse.Namespace) -> None:
+    refs = _load_ref_table() if args.id.startswith("#") else None
+    if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
+        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.", file=sys.stderr)
+        sys.exit(1)
     result = await commands.get_message(
         id=args.id,
         fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
     )
     if result.error:
         print(result.error, file=sys.stderr)
@@ -67,9 +101,14 @@ async def _cmd_get(args: argparse.Namespace) -> None:
 
 
 async def _cmd_thread(args: argparse.Namespace) -> None:
+    refs = _load_ref_table() if args.id.startswith("#") else None
+    if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
+        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.", file=sys.stderr)
+        sys.exit(1)
     result = await commands.get_thread(
         tid=args.id,
         fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
     )
     if result.error:
         print(result.error, file=sys.stderr)
@@ -78,16 +117,19 @@ async def _cmd_thread(args: argparse.Namespace) -> None:
 
 
 async def _cmd_list(args: argparse.Namespace) -> None:
+    refs = _new_ref_table()
     result = await commands.list_messages(
         source=getattr(args, "source", None),
         query=getattr(args, "query", None),
         count=getattr(args, "count", 20) or 20,
         fmt=getattr(args, "format", "pipe") or "pipe",
         filter=getattr(args, "filter", False),
+        ref_table=refs,
     )
     if result.error:
         print(result.error, file=sys.stderr)
         return
+    refs.save(_refs_path())
     print(result.output)
 
 

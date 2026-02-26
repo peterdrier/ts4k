@@ -446,3 +446,139 @@ class TestInvalidFormat:
     def test_thread_bad_format(self):
         with pytest.raises(ValueError, match="Unknown format"):
             format_thread({}, "toml")
+
+
+# ---------------------------------------------------------------------------
+# Ref-aware pipe format
+# ---------------------------------------------------------------------------
+
+
+SAMPLE_REF_MAP = {
+    "g:18f6a2b3c4e5f6a7": 1,
+    "g:18f6b1112233aabb": 2,
+    "g:18f6c9988776655d": 3,
+}
+
+
+class TestPipeFormatWithRefs:
+    def test_header_has_ref_column(self):
+        result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
+        header = result.split("\n")[0]
+        assert header.startswith("#|SOURCE|")
+        assert "ID" not in header
+
+    def test_ref_in_first_column(self):
+        result = format_listing(SAMPLE_MESSAGES[:1], "pipe", ref_map=SAMPLE_REF_MAP)
+        lines = result.split("\n")
+        # Data lines start with #<digit>, header starts with #|
+        data_lines = [l for l in lines if l.startswith("#") and not l.startswith("#|")]
+        assert data_lines
+        fields = data_lines[0].split("|")
+        assert fields[0] == "#1"
+
+    def test_no_full_id_in_ref_mode(self):
+        result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
+        # Full IDs should not appear in ref mode pipe output
+        assert "g:18f6a2b3c4e5f6a7" not in result
+        assert "g:18f6b1112233aabb" not in result
+
+    def test_all_refs_present(self):
+        result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
+        assert "#1|" in result
+        assert "#2|" in result
+        assert "#3|" in result
+
+    def test_without_ref_map_uses_legacy(self):
+        """No ref_map → legacy format with full IDs."""
+        result = format_listing(SAMPLE_MESSAGES, "pipe")
+        assert "SOURCE|FROM|SUBJECT|DATE|ID|SIZE" in result
+        assert "g:18f6a2b3c4e5f6a7" in result
+
+    def test_json_ignores_ref_map(self):
+        """JSON format should ignore ref_map and keep full IDs."""
+        result = format_listing(SAMPLE_MESSAGES, "json", ref_map=SAMPLE_REF_MAP)
+        data = json.loads(result)
+        assert data[0]["id"] == "g:18f6a2b3c4e5f6a7"
+
+    def test_xml_ignores_ref_map(self):
+        """XML format should ignore ref_map and keep full IDs."""
+        result = format_listing(SAMPLE_MESSAGES, "xml", ref_map=SAMPLE_REF_MAP)
+        root = ET.fromstring(result)
+        m = root.find("m")
+        assert m.get("id") == "g:18f6a2b3c4e5f6a7"
+
+
+# ---------------------------------------------------------------------------
+# Compact timestamps
+# ---------------------------------------------------------------------------
+
+
+class TestCompactTimestamps:
+    def test_same_day_time_only(self):
+        """All same-day messages → time only, no date headers."""
+        msgs = [
+            {"id": "g:1", "source": "g", "from": "a@b.com", "subject": "X",
+             "date": "2026-02-20T09:15:00Z", "body": ""},
+            {"id": "g:2", "source": "g", "from": "b@c.com", "subject": "Y",
+             "date": "2026-02-20T14:30:00Z", "body": ""},
+        ]
+        ref_map = {"g:1": 1, "g:2": 2}
+        result = format_listing(msgs, "pipe", ref_map=ref_map)
+        lines = result.split("\n")
+        # No date headers when all same day
+        assert not any(l.startswith("---") for l in lines)
+        # Times should be compact HH:MM
+        assert "09:15" in result
+        assert "14:30" in result
+        # Full ISO should NOT appear
+        assert "2026-02-20T" not in result
+
+    def test_same_year_different_days(self):
+        """Messages span days within same year → DDMon format with date headers."""
+        msgs = [
+            {"id": "g:1", "source": "g", "from": "a@b.com", "subject": "X",
+             "date": "2026-02-20T09:15:00Z", "body": ""},
+            {"id": "g:2", "source": "g", "from": "b@c.com", "subject": "Y",
+             "date": "2026-02-18T14:30:00Z", "body": ""},
+        ]
+        ref_map = {"g:1": 1, "g:2": 2}
+        result = format_listing(msgs, "pipe", ref_map=ref_map)
+        # Should have date headers
+        assert "--- 20Feb ---" in result
+        assert "--- 18Feb ---" in result
+        # Each row should have time-only after date header
+        data_lines = [l for l in result.split("\n") if l.startswith("#") and not l.startswith("#|")]
+        for line in data_lines:
+            fields = line.split("|")
+            # DATE field (index 4 in #|SOURCE|FROM|SUBJECT|DATE|SIZE)
+            ts = fields[4]
+            assert ":" in ts  # has time
+            assert "Feb" not in ts  # no month in row (it's in the header)
+
+    def test_cross_year(self):
+        """Messages span years → DDMonYY format."""
+        msgs = [
+            {"id": "g:1", "source": "g", "from": "a@b.com", "subject": "X",
+             "date": "2026-02-20T09:15:00Z", "body": ""},
+            {"id": "g:2", "source": "g", "from": "b@c.com", "subject": "Y",
+             "date": "2025-12-15T14:30:00Z", "body": ""},
+        ]
+        ref_map = {"g:1": 1, "g:2": 2}
+        result = format_listing(msgs, "pipe", ref_map=ref_map)
+        # Date headers should include year
+        assert "--- 20Feb26 ---" in result
+        assert "--- 15Dec25 ---" in result
+
+    def test_empty_messages_no_crash(self):
+        result = format_listing([], "pipe", ref_map={})
+        assert "#|SOURCE|" in result
+
+    def test_missing_date_fallback(self):
+        """Messages without dates should not crash."""
+        msgs = [
+            {"id": "g:1", "source": "g", "from": "a@b.com", "subject": "X",
+             "date": "", "body": ""},
+        ]
+        ref_map = {"g:1": 1}
+        result = format_listing(msgs, "pipe", ref_map=ref_map)
+        assert "#1|" in result

@@ -30,6 +30,7 @@ from ts4k.core.format import (
 )
 from ts4k.core.normalize import normalize, normalize_headers
 from ts4k.state import batch, cache, contacts, filters, sources, stats, watermarks
+from ts4k.state.refs import RefTable
 
 logger = logging.getLogger("ts4k")
 
@@ -46,6 +47,7 @@ class CommandResult:
     output: str = ""
     messages_processed: int = 0
     error: str | None = None
+    ref_map: dict[str, int] | None = None  # {full_id: ref_num}
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +251,20 @@ def _record_stats(command: str, messages: list[dict], output: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Ref resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
+    """Translate ``#N`` to a real ID via *ref_table*, or pass through as-is."""
+    if ref_table is not None and id_or_ref.startswith("#"):
+        resolved = ref_table.resolve(id_or_ref)
+        if resolved is not None:
+            return resolved
+    return id_or_ref
+
+
+# ---------------------------------------------------------------------------
 # Parallel adapter helpers
 # ---------------------------------------------------------------------------
 
@@ -297,6 +313,7 @@ async def whatsnew(
     count: int = 20,
     fmt: str = "pipe",
     filter: bool = False,
+    ref_table: RefTable | None = None,
 ) -> CommandResult:
     """Fetch new messages, update watermarks, return formatted output."""
     active_prefixes = _resolve_prefixes(source)
@@ -333,7 +350,8 @@ async def whatsnew(
     if not all_messages:
         return CommandResult(error="No new messages.")
 
-    output = format_listing(all_messages, fmt=fmt)
+    ref_map = ref_table.assign(all_messages) if ref_table else None
+    output = format_listing(all_messages, fmt=fmt, ref_map=ref_map)
     _record_stats("wn", all_messages, output)
 
     # Update watermarks per source
@@ -343,11 +361,17 @@ async def whatsnew(
             if newest:
                 watermarks.update(prefix, newest)
 
-    return CommandResult(output=output, messages_processed=len(all_messages))
+    return CommandResult(
+        output=output, messages_processed=len(all_messages), ref_map=ref_map
+    )
 
 
-async def get_message(id: str, fmt: str = "pipe") -> CommandResult:
-    """Read a single message by prefixed ID."""
+async def get_message(
+    id: str, fmt: str = "pipe", ref_table: RefTable | None = None
+) -> CommandResult:
+    """Read a single message by prefixed ID or short ref (``#3``)."""
+    id = _resolve_ref(id, ref_table)
+
     # Read-through: check cache first
     cached = cache.get_message(id)
     if cached and cached.get("body"):
@@ -376,8 +400,11 @@ async def get_message(id: str, fmt: str = "pipe") -> CommandResult:
     return CommandResult(output=output, messages_processed=1)
 
 
-async def get_thread(tid: str, fmt: str = "pipe") -> CommandResult:
-    """Read a thread/conversation by prefixed ID."""
+async def get_thread(
+    tid: str, fmt: str = "pipe", ref_table: RefTable | None = None
+) -> CommandResult:
+    """Read a thread/conversation by prefixed ID or short ref (``#3``)."""
+    tid = _resolve_ref(tid, ref_table)
     all_cfg = _ensure_sources()
     prefix = _prefix_from_id(tid, all_cfg)
     cfg = all_cfg.get(prefix)
@@ -408,6 +435,7 @@ async def list_messages(
     count: int = 20,
     fmt: str = "pipe",
     filter: bool = False,
+    ref_table: RefTable | None = None,
 ) -> CommandResult:
     """List messages matching a query."""
     active_prefixes = _resolve_prefixes(source)
@@ -446,10 +474,13 @@ async def list_messages(
     if not all_messages:
         return CommandResult(error="No messages found.")
 
-    output = format_listing(all_messages, fmt=fmt)
+    ref_map = ref_table.assign(all_messages) if ref_table else None
+    output = format_listing(all_messages, fmt=fmt, ref_map=ref_map)
     _record_stats("l", all_messages, output)
 
-    return CommandResult(output=output, messages_processed=len(all_messages))
+    return CommandResult(
+        output=output, messages_processed=len(all_messages), ref_map=ref_map
+    )
 
 
 def get_status() -> str:
