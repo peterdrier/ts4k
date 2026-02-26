@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ts4k.auth.google import (
-    _DEFAULT_CONFIG_DIR,
+    _default_config_dir,
     _resolve_client_secret,
     _token_path,
     get_credentials,
@@ -60,7 +60,7 @@ class TestTokenPath:
         assert result == Path("/config/ts4k/google/alice@test.com/token.json")
 
     def test_default_config_dir(self):
-        result = _token_path("bob@test.com", _DEFAULT_CONFIG_DIR)
+        result = _token_path("bob@test.com", _default_config_dir())
         assert "google" in str(result)
         assert "bob@test.com" in str(result)
         assert result.name == "token.json"

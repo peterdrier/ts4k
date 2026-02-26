@@ -485,7 +485,9 @@ async def list_messages(
 
 def get_status() -> str:
     """Return operational status summary as a string."""
-    config_dir = os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")
+    from ts4k import state
+
+    cfg = state.get_config_dir()
     all_cfg = _ensure_sources()
     wm = watermarks.all()
     lines: list[str] = []
@@ -579,7 +581,7 @@ def get_status() -> str:
         lines.append(f"  Disk: {estimate_size(cs['index_bytes'] + cs['bodies_bytes'])}")
 
     lines.append("")
-    lines.append(f"Config: {config_dir}")
+    lines.append(f"Config: {cfg.path}  ({cfg.reason})")
 
     return "\n".join(lines)
 
@@ -912,7 +914,9 @@ def spawn_background_preload(
     job_id = batch.create_job(prefix, effective_query)
 
     # Log directory
-    config_dir = Path(os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")).expanduser()
+    from ts4k import state
+
+    config_dir = state.get_config_dir().path
     log_dir = config_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{job_id}.log"
@@ -941,8 +945,12 @@ def spawn_background_preload(
     else:
         kwargs["start_new_session"] = True
 
+    # Propagate resolved config dir to child process
+    child_env = os.environ.copy()
+    child_env["TS4K_CONFIG_DIR"] = str(config_dir)
+
     proc = subprocess.Popen(
-        argv, stdout=log_fh, stderr=subprocess.STDOUT, **kwargs
+        argv, stdout=log_fh, stderr=subprocess.STDOUT, env=child_env, **kwargs
     )
 
     batch.update_job(job_id, pid=proc.pid, log_file=str(log_path))

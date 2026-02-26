@@ -31,7 +31,7 @@ import os
 import sys
 from typing import Any
 
-from ts4k import commands
+from ts4k import commands, state
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.state import sources, watermarks
 from ts4k.state.refs import RefTable
@@ -46,8 +46,7 @@ def _refs_path() -> Path:
     """Path to the CLI refs file."""
     from pathlib import Path
 
-    config_dir = Path(os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")).expanduser()
-    return config_dir / "refs.json"
+    return state.get_config_dir().path / "refs.json"
 
 
 def _new_ref_table() -> RefTable:
@@ -135,7 +134,7 @@ async def _cmd_list(args: argparse.Namespace) -> None:
 
 def _cmd_help(args: argparse.Namespace) -> None:
     """Handle the help / h command — show status and quick reference."""
-    config_dir = os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")
+    cfg = state.get_config_dir()
     all_cfg = sources.list_all()
     wm = watermarks.all()
 
@@ -171,7 +170,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     else:
         print("  (none — run: ts4k src add <prefix> <provider> ...)")
     print()
-    print(f"Config: {config_dir}")
+    print(f"Config: {cfg.path}  ({cfg.reason})")
 
 
 def _cmd_contacts(args: argparse.Namespace) -> None:
@@ -503,6 +502,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Use .ts4k/ in current directory (created if missing)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -688,6 +692,20 @@ def main(argv: list[str] | None = None) -> None:
         logging.basicConfig(level=logging.DEBUG, format="%(name)s: %(message)s")
     else:
         logging.basicConfig(level=logging.WARNING)
+
+    # --- Config directory resolution ---
+    from pathlib import Path
+
+    if args.local:
+        local_dir = Path.cwd() / ".ts4k"
+        local_dir.mkdir(exist_ok=True)
+        gitignore = local_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("# Ignore all ts4k state (tokens, cache, etc.)\n*\n")
+        state.set_config_dir(local_dir, reason="local-flag")
+    else:
+        resolved = state.get_config_dir()
+        state.set_config_dir(resolved.path, reason=resolved.reason)
 
     if not hasattr(args, "func") or args.func is None:
         parser.print_help()

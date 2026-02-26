@@ -22,7 +22,18 @@ logger = logging.getLogger(__name__)
 
 GMAIL_READONLY_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
-_DEFAULT_CONFIG_DIR = Path.home() / ".config" / "ts4k"
+def _default_config_dir() -> Path:
+    """Resolve auth config dir: env var → global default.
+
+    Auth intentionally ignores ``.ts4k/`` in cwd — credentials stay global
+    unless ``TS4K_CONFIG_DIR`` is explicitly set (e.g. Docker).
+    """
+    import os
+
+    env = os.environ.get("TS4K_CONFIG_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".config" / "ts4k"
 
 
 def _resolve_client_secret(email: str, config_dir: Path) -> Path | None:
@@ -57,7 +68,7 @@ def get_credentials(
     Raises ``RuntimeError`` if the auth flow fails.
     """
     scopes = scopes or GMAIL_READONLY_SCOPES
-    config_dir = config_dir or _DEFAULT_CONFIG_DIR
+    config_dir = config_dir or _default_config_dir()
 
     token_file = _token_path(email, config_dir)
     creds: Credentials | None = None

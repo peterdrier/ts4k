@@ -22,7 +22,18 @@ logger = logging.getLogger(__name__)
 
 GRAPH_MAIL_READ_SCOPES = ["https://graph.microsoft.com/Mail.Read"]
 
-_DEFAULT_CONFIG_DIR = Path.home() / ".config" / "ts4k"
+def _default_config_dir() -> Path:
+    """Resolve auth config dir: env var → global default.
+
+    Auth intentionally ignores ``.ts4k/`` in cwd — credentials stay global
+    unless ``TS4K_CONFIG_DIR`` is explicitly set (e.g. Docker).
+    """
+    import os
+
+    env = os.environ.get("TS4K_CONFIG_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".config" / "ts4k"
 
 
 def _cache_path(client_id: str, config_dir: Path) -> Path:
@@ -50,7 +61,7 @@ def get_credentials(
         raise ValueError("client_id is required for Microsoft auth")
 
     scopes = scopes or GRAPH_MAIL_READ_SCOPES
-    config_dir = config_dir or _DEFAULT_CONFIG_DIR
+    config_dir = config_dir or _default_config_dir()
 
     # Load or create token cache.
     cache_file = _cache_path(client_id, config_dir)

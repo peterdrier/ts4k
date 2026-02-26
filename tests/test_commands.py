@@ -129,27 +129,25 @@ class TestManageFilters:
 class TestGetStatus:
     def test_status_no_data(self, tmp_path, monkeypatch):
         """Status with no sources or stats should not crash."""
+        from ts4k import state
         from ts4k.state import contacts as c
         from ts4k.state import filters as f
         from ts4k.state import sources as src
         from ts4k.state import stats as st
         from ts4k.state import watermarks as wm
 
-        for mod in (c, f, src, st, wm):
-            monkeypatch.setattr(mod, "_CONFIG_DIR", tmp_path)
-
-        monkeypatch.setattr(src, "_SOURCES_FILE", tmp_path / "sources.json")
-        monkeypatch.setattr(c, "_CONTACTS_FILE", tmp_path / "contacts.json")
-        monkeypatch.setattr(f, "_FILTERS_FILE", tmp_path / "filters.json")
-        monkeypatch.setattr(st, "_STATS_FILE", tmp_path / "stats.json")
-        monkeypatch.setattr(wm, "_WM_FILE", tmp_path / "watermarks.json")
+        state.set_config_dir(tmp_path, reason="test")
 
         out = commands.get_status()
         assert "Sources:" in out
         assert "Contacts:" in out
         assert "Filters:" in out
         assert "Stats:" in out
+        assert str(tmp_path) in out
+        assert "(test)" in out
         assert isinstance(out, str)
+
+        state.reset()
 
 
 # ---------------------------------------------------------------------------

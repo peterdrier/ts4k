@@ -271,10 +271,11 @@ def _apply_context(context: str) -> None:
 
     Sources, contacts, and filters remain in the global config dir.
     """
+    from ts4k import state
     from ts4k.state import stats as stats_mod
     from ts4k.state import watermarks as wm_mod
 
-    base = Path(os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")).expanduser()
+    base = state.get_config_dir().path
     ctx_dir = base / "contexts" / context
 
     # Patch the module-level config dir and derived file paths
@@ -314,6 +315,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Resolve and propagate config dir to all state modules
+    from ts4k import state
+
+    resolved = state.get_config_dir()
+    state.set_config_dir(resolved.path, reason=resolved.reason)
 
     if args.context:
         _apply_context(args.context)
