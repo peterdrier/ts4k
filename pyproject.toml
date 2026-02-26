@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [
-    { name = "Test User" },
+    { name = "Peter Drier" },
 ]
 dependencies = [
     "beautifulsoup4>=4.12",
@@ -22,6 +22,11 @@ dependencies = [
     "mcp>=1.0",
     "msal>=1.28",
 ]
+
+[project.urls]
+Homepage = "https://github.com/peterdrier/ts4k"
+Repository = "https://github.com/peterdrier/ts4k"
+Issues = "https://github.com/peterdrier/ts4k/issues"
 
 [project.optional-dependencies]
 dev = [
