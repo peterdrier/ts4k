@@ -116,7 +116,11 @@ def get_credentials(
         print("After signing in, your browser will try to redirect to a page that won't load.")
         print("Copy the FULL URL from your browser's address bar and paste it here:\n")
         redirect_url = input("> ").strip()
+        # Allow http://localhost — safe for local OAuth, required by oauthlib
+        import os
+        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
         flow.fetch_token(authorization_response=redirect_url)
+        del os.environ["OAUTHLIB_INSECURE_TRANSPORT"]
         creds = flow.credentials
 
     if creds is None:
