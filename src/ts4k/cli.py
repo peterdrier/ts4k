@@ -199,6 +199,9 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             if "=" in kv:
                 k, v = kv.split("=", 1)
                 kwargs[k.strip()] = v.strip()
+            elif "@" in kv:
+                # Bare email address — treat as email=value
+                kwargs["email"] = kv.strip()
 
         entry = sources.add(prefix, provider=provider, **kwargs)
         print(f"Added source {prefix!r}:")
