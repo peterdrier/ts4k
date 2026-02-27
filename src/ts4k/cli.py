@@ -170,7 +170,8 @@ def _cmd_help(args: argparse.Namespace) -> None:
     else:
         print("  (none — run: ts4k src add <prefix> <provider> ...)")
     print()
-    print(f"Config: {cfg.path}  ({cfg.reason})")
+    config_dir = state.get_config_dir()
+    print(f"Config: {config_dir.path}  ({config_dir.reason})")
 
 
 def _cmd_contacts(args: argparse.Namespace) -> None:
