@@ -487,7 +487,7 @@ def get_status() -> str:
     """Return operational status summary as a string."""
     from ts4k import state
 
-    cfg = state.get_config_dir()
+    config_dir = state.get_config_dir()
     all_cfg = _ensure_sources()
     wm = watermarks.all()
     lines: list[str] = []
@@ -581,7 +581,7 @@ def get_status() -> str:
         lines.append(f"  Disk: {estimate_size(cs['index_bytes'] + cs['bodies_bytes'])}")
 
     lines.append("")
-    lines.append(f"Config: {cfg.path}  ({cfg.reason})")
+    lines.append(f"Config: {config_dir.path}  ({config_dir.reason})")
 
     return "\n".join(lines)
 
