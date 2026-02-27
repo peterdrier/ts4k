@@ -551,10 +551,21 @@ def _build_parser() -> argparse.ArgumentParser:
         sr = subparsers.add_parser(cmd_name, help="Manage source config")
         sr_sub = sr.add_subparsers(dest="action")
 
-        sr_add = sr_sub.add_parser("add", help="Add a source")
+        sr_add = sr_sub.add_parser(
+            "add",
+            help="Add a source",
+            epilog=(
+                "provider keys:\n"
+                "  gmail:    email (required), mcp_url, transport\n"
+                "  whatsapp: mcp_cwd (required), server_command\n"
+                "\n"
+                "A bare email (user@example.com) is treated as email=user@example.com"
+            ),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
         sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-        sr_add.add_argument("provider", help="Provider: gmail, whatsapp, o365")
-        sr_add.add_argument("params", nargs="*", help="Key=value pairs (e.g. email=x@y.com mcp_url=...)")
+        sr_add.add_argument("provider", help="Provider: gmail, whatsapp")
+        sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
         sr_rm = sr_sub.add_parser("rm", help="Remove a source")
         sr_rm.add_argument("prefix", help="Source prefix to remove")
