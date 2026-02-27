@@ -104,17 +104,20 @@ def get_credentials(
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), scopes)
     try:
-        creds = flow.run_local_server(port=0, open_browser=False)
+        # Desktop with browser — just works
+        creds = flow.run_local_server(port=8085, open_browser=True)
     except Exception:
-        # run_local_server can fail if no display / no browser at all.
-        # Retry with a fixed port so the user can forward it via SSH.
-        logger.info("Local server flow failed, retrying on fixed port (headless mode)")
-        print(
-            "\nCould not open a browser automatically.\n"
-            "A local server will start on port 8085.\n"
-            "Open the URL below in any browser (SSH tunnel: ssh -L 8085:localhost:8085 host):\n"
-        )
-        creds = flow.run_local_server(port=8085, open_browser=False)
+        # Headless fallback: user opens URL in remote browser, pastes redirect URL back
+        logger.info("Local server flow failed, falling back to URL paste flow")
+        flow.redirect_uri = "http://localhost:8085/"
+        auth_url, _ = flow.authorization_url(prompt="consent")
+        print("\nNo browser available. Open this URL in any browser:\n")
+        print(f"  {auth_url}\n")
+        print("After signing in, your browser will try to redirect to a page that won't load.")
+        print("Copy the FULL URL from your browser's address bar and paste it here:\n")
+        redirect_url = input("> ").strip()
+        flow.fetch_token(authorization_response=redirect_url)
+        creds = flow.credentials
 
     if creds is None:
         raise RuntimeError(f"OAuth flow returned no credentials for {email}")

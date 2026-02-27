@@ -82,6 +82,34 @@ This opens your browser for Google's OAuth consent flow. Sign in, grant read-onl
 
 The token refreshes automatically on subsequent uses. You won't need to re-authenticate unless you revoke access or the token expires after extended inactivity.
 
+## Headless / Remote Server
+
+If you're running ts4k on a headless machine (e.g. a NUC over SSH), the browser can't open automatically. ts4k will fall back to a copy-paste flow:
+
+```
+$ ts4k auth gmail alice@gmail.com
+No browser available. Open this URL in any browser:
+
+  https://accounts.google.com/o/oauth2/auth?client_id=...&scope=...&redirect_uri=http://localhost:8085/&...
+
+After signing in, your browser will try to redirect to a page that won't load.
+Copy the FULL URL from your browser's address bar and paste it here:
+
+> http://localhost:8085/?state=abc&code=4/0AQ...&scope=...
+Saved new token for alice@gmail.com
+```
+
+What's happening:
+
+1. ts4k prints a Google OAuth URL
+2. You open that URL in any browser (on any machine — your laptop, phone, etc.)
+3. You sign in and grant access
+4. Google redirects to `http://localhost:8085/?code=...` — this page won't load (that's expected)
+5. Copy the full URL from your browser's address bar and paste it back into the terminal
+6. ts4k extracts the authorization code and saves the token
+
+No SSH tunnels, no file transfers, no extra flags needed.
+
 ## Step 7: Verify It Works
 
 ```bash
