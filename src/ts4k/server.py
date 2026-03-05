@@ -15,7 +15,11 @@ the same source config, contacts, and filters.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
+import io
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -155,84 +159,23 @@ async def status(
 
 
 @mcp.tool()
-def contacts(
-    action: str = "list",
-    alias: str | None = None,
-    identifiers: list[str] | None = None,
-    term: str | None = None,
-) -> str:
-    """Manage the cross-platform contact identity map.
+async def admin(cmd: str) -> str:
+    """Run an admin/setup command. Pass CLI syntax as a single string.
 
-    Args:
-        action: One of "link", "unlink", "find", "list".
-        alias: Contact alias (required for link/unlink).
-        identifiers: Platform IDs to link/unlink (e.g. ["g:sarah@gmail.com"]).
-        term: Search term (required for find).
+    Commands:
+      contacts list|link|unlink|find    Cross-platform identity map
+      filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|reset
+      cache stats|clear [--source S]    Manage message cache
+      preload -s SOURCE [--query Q] [--since 30d] [--bg]
+      preload --status|--cancel JOB_ID
+
+    Examples:
+      "contacts link sarah g:sarah@gmail.com w:447@wa"
+      "filter add-sender spammer@example.com"
+      "cache stats"
+      "preload -s g --since 30d"
     """
-    return commands.manage_contacts(
-        action=action, alias=alias, identifiers=identifiers, term=term
-    )
-
-
-@mcp.tool()
-def cache(action: str = "stats", source: str | None = None, stale: bool = False) -> str:
-    """Manage the message cache.
-
-    Args:
-        action: "stats" (show cache info) or "clear" (purge cached messages).
-        source: For clear, limit to this source prefix (e.g. "g", "o"). Default: all.
-        stale: For clear, only remove entries from an older schema version.
-    """
-    return commands.manage_cache(action=action, source=source, stale=stale)
-
-
-@mcp.tool()
-async def preload(
-    source: str,
-    query: str | None = None,
-    contact: str | None = None,
-    since: str | None = None,
-    pages: int = 10,
-    bodies: bool = False,
-    resume: str | None = None,
-    background: bool = False,
-) -> str:
-    """Preload messages into cache by paginating through history.
-
-    Args:
-        source: Source prefix (e.g. "g") or provider name ("gmail").
-        query: Search query (provider-specific). Optional.
-        contact: Contact alias — auto-expands to bidirectional query.
-        since: Start date: ISO timestamp or "Nd" shorthand (e.g. "30d").
-        pages: Maximum pages to fetch (default 10, lower for MCP).
-        bodies: Also fetch full message bodies (slower).
-        resume: Job ID to resume an interrupted preload.
-        background: Run in background (returns job ID immediately).
-    """
-    if background:
-        return commands.spawn_background_preload(
-            source=source,
-            query=query,
-            contact=contact,
-            since=since,
-            pages=pages,
-            bodies=bodies,
-        )
-    return await commands.preload(
-        source=source,
-        query=query,
-        contact=contact,
-        since=since,
-        pages=pages,
-        bodies=bodies,
-        resume=resume,
-    )
-
-
-@mcp.tool()
-def preload_status() -> str:
-    """Show status of all preload jobs."""
-    return commands.manage_preload("status")
+    return await _run_cli_command(cmd)
 
 
 @mcp.tool()
@@ -262,16 +205,59 @@ def overview(
     )
 
 
-@mcp.tool(name="filter")
-def filter_tool(action: str = "show", value: str | None = None) -> str:
-    """Manage message skip filters.
+# ---------------------------------------------------------------------------
+# Admin CLI router
+# ---------------------------------------------------------------------------
 
-    Args:
-        action: One of "show", "add-sender", "rm-sender", "add-domain",
-                "rm-domain", "add-pattern", "rm-pattern", "skip-groups", "reset".
-        value: Value for add/rm/set actions.
+# Commands allowed through the admin tool
+_ADMIN_COMMANDS = {"contacts", "c", "filter", "f", "cache", "preload"}
+
+
+async def _run_cli_command(cmd: str) -> str:
+    """Route a CLI command string through the ts4k parser.
+
+    Parses *cmd* with the CLI parser, captures stdout/stderr, and returns
+    the output.  Handles both sync and async command handlers.
     """
-    return commands.manage_filters(action=action, value=value)
+    from ts4k.cli import _build_parser
+
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as exc:
+        return f"Error: bad quoting in command: {exc}"
+
+    if not argv:
+        return "Error: empty command. Try: contacts list, cache stats, filter show"
+
+    if argv[0] not in _ADMIN_COMMANDS:
+        return (
+            f"Error: '{argv[0]}' is not an admin command. "
+            "Available: contacts, filter, cache, preload"
+        )
+
+    parser = _build_parser()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            args = parser.parse_args(argv)
+
+            if not hasattr(args, "func") or args.func is None:
+                return f"Error: incomplete command. Try: {argv[0]} --help"
+
+            if asyncio.iscoroutinefunction(args.func):
+                await args.func(args)
+            else:
+                args.func(args)
+
+    except SystemExit:
+        # argparse or handler called sys.exit — return whatever was printed
+        err = stderr.getvalue().strip()
+        out = stdout.getvalue().strip()
+        return err or out or f"Error: command failed: {cmd}"
+
+    return stdout.getvalue().strip() or stderr.getvalue().strip()
 
 
 # ---------------------------------------------------------------------------

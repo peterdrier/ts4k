@@ -18,8 +18,7 @@ pytestmark = pytest.mark.skipif(
 
 MODEL = "claude-sonnet-4-20250514"
 
-# preload_status is a compound name (4 tokens) — accepted tradeoff for clarity
-TOOL_NAME_EXCEPTIONS = {"preload_status": 4}
+TOOL_NAME_EXCEPTIONS: dict[str, int] = {}
 
 
 def _make_client():
@@ -143,7 +142,7 @@ class TestTokenEfficiency:
             messages=[{"role": "user", "content": "hello"}],
         )
         tool_cost = with_tools.input_tokens - without_tools.input_tokens
-        assert tool_cost < 3000, f"MCP context is {tool_cost} tokens (budget: 3000)"
+        assert tool_cost < 2300, f"MCP context is {tool_cost} tokens (budget: 2300)"
 
     def test_skill_reference_under_200(self):
         """Skill self-doc output should be under 200 tokens."""

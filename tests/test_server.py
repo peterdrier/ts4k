@@ -1,7 +1,8 @@
 """Tests for the ts4k MCP server (server.py).
 
-Verifies that all 11 tools are registered with correct names and parameter
-schemas, and that context scoping patches the right module paths.
+Verifies that all 7 tools are registered with correct names and parameter
+schemas, that the admin tool routes commands through the CLI parser,
+and that context scoping patches the right module paths.
 """
 
 from __future__ import annotations
@@ -21,12 +22,8 @@ EXPECTED_TOOLS = {
     "thread",
     "list",
     "status",
-    "contacts",
-    "cache",
-    "filter",
-    "preload",
-    "preload_status",
     "overview",
+    "admin",
 }
 
 
@@ -38,13 +35,13 @@ class TestToolRegistration:
         return set(manager._tools.keys())
 
     def test_all_tools_registered(self):
-        """All 11 expected tools are registered."""
+        """All 7 expected tools are registered."""
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_eleven_tools(self):
+    def test_exactly_seven_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 11
+        assert len(self._get_tool_names()) == 7
 
     def test_updates_params(self):
         """updates has expected parameters."""
@@ -80,37 +77,6 @@ class TestToolRegistration:
         assert "query" in props
         assert "count" in props
 
-    def test_contacts_params(self):
-        """contacts has action, alias, identifiers, term."""
-        tool = mcp._tool_manager._tools["contacts"]
-        schema = tool.parameters
-        props = schema.get("properties", {})
-        assert "action" in props
-        assert "alias" in props
-        assert "identifiers" in props
-        assert "term" in props
-
-    def test_filter_params(self):
-        """filter has action and value."""
-        tool = mcp._tool_manager._tools["filter"]
-        schema = tool.parameters
-        props = schema.get("properties", {})
-        assert "action" in props
-        assert "value" in props
-
-    def test_preload_params(self):
-        """preload has source, query, contact, background, etc."""
-        tool = mcp._tool_manager._tools["preload"]
-        schema = tool.parameters
-        props = schema.get("properties", {})
-        assert "source" in props
-        assert "query" in props
-        assert "contact" in props
-        assert "pages" in props
-        assert "bodies" in props
-        assert "resume" in props
-        assert "background" in props
-
     def test_overview_params(self):
         """overview has source, contact, period, fmt, top."""
         tool = mcp._tool_manager._tools["overview"]
@@ -122,13 +88,6 @@ class TestToolRegistration:
         assert "fmt" in props
         assert "top" in props
 
-    def test_preload_status_no_params(self):
-        """preload_status takes no parameters."""
-        tool = mcp._tool_manager._tools["preload_status"]
-        schema = tool.parameters
-        props = schema.get("properties", {})
-        assert len(props) == 0
-
     def test_status_has_optional_params(self):
         """status has optional live/source/fmt params (all defaulted)."""
         tool = mcp._tool_manager._tools["status"]
@@ -139,6 +98,71 @@ class TestToolRegistration:
         assert "live" in props
         assert "source" in props
         assert "fmt" in props
+
+    def test_admin_has_cmd_param(self):
+        """admin has a single required cmd parameter."""
+        tool = mcp._tool_manager._tools["admin"]
+        schema = tool.parameters
+        props = schema.get("properties", {})
+        assert "cmd" in props
+        assert len(props) == 1
+        required = schema.get("required", [])
+        assert "cmd" in required
+
+
+# ---------------------------------------------------------------------------
+# Admin tool routing
+# ---------------------------------------------------------------------------
+
+
+class TestAdminRouting:
+    @pytest.mark.asyncio
+    async def test_admin_routes_contacts_list(self, tmp_path, monkeypatch):
+        """admin('contacts list') returns contact list output."""
+        monkeypatch.setenv("TS4K_CONFIG_DIR", str(tmp_path))
+        from ts4k import state
+        state.set_config_dir(tmp_path, reason="test")
+
+        from ts4k.server import _run_cli_command
+        result = await _run_cli_command("contacts list")
+        # Should succeed (empty list is fine, no error)
+        assert "Error" not in result or "error" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_admin_routes_cache_stats(self, tmp_path, monkeypatch):
+        """admin('cache stats') returns cache stats."""
+        monkeypatch.setenv("TS4K_CONFIG_DIR", str(tmp_path))
+        from ts4k import state
+        state.set_config_dir(tmp_path, reason="test")
+
+        from ts4k.server import _run_cli_command
+        result = await _run_cli_command("cache stats")
+        assert "Error" not in result
+
+    @pytest.mark.asyncio
+    async def test_admin_routes_filter_show(self, tmp_path, monkeypatch):
+        """admin('filter show') returns filter config."""
+        monkeypatch.setenv("TS4K_CONFIG_DIR", str(tmp_path))
+        from ts4k import state
+        state.set_config_dir(tmp_path, reason="test")
+
+        from ts4k.server import _run_cli_command
+        result = await _run_cli_command("filter show")
+        assert "Error" not in result
+
+    @pytest.mark.asyncio
+    async def test_admin_rejects_non_admin_command(self):
+        """admin rejects commands not in the allow list."""
+        from ts4k.server import _run_cli_command
+        result = await _run_cli_command("updates --since 2d")
+        assert "not an admin command" in result
+
+    @pytest.mark.asyncio
+    async def test_admin_empty_command(self):
+        """admin rejects empty input."""
+        from ts4k.server import _run_cli_command
+        result = await _run_cli_command("")
+        assert "empty command" in result
 
 
 # ---------------------------------------------------------------------------
