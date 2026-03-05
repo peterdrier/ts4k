@@ -196,10 +196,16 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         prefix = args.prefix
         provider = args.provider.lower()
         kwargs: dict[str, Any] = {}
+        # Fields that must be stored as lists (space-split from CLI string)
+        _LIST_FIELDS = {"server_command"}
         for kv in (args.params or []):
             if "=" in kv:
                 k, v = kv.split("=", 1)
-                kwargs[k.strip()] = v.strip()
+                k, v = k.strip(), v.strip()
+                if k in _LIST_FIELDS:
+                    kwargs[k] = v.split()
+                else:
+                    kwargs[k] = v
             elif "@" in kv:
                 # Bare email address — treat as email=value
                 kwargs["email"] = kv.strip()
@@ -558,8 +564,14 @@ def _build_parser() -> argparse.ArgumentParser:
                 "provider keys:\n"
                 "  gmail:    email (required), mcp_url, transport\n"
                 "  whatsapp: mcp_cwd (required), server_command\n"
+                "  o365:     client_id (required), tenant_id, mailbox\n"
                 "\n"
-                "A bare email (user@example.com) is treated as email=user@example.com"
+                "examples:\n"
+                '  ts4k src add g gmail email=you@gmail.com\n'
+                '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
+                "\n"
+                "List fields (server_command) are auto-split on spaces.\n"
+                "A bare email (user@example.com) is treated as email=user@example.com."
             ),
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )

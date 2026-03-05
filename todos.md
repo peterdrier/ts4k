@@ -6,7 +6,7 @@ Last synced: 2026-03-05T12:00
 - [ ] **Deploy plan drift** — docs/deploy-plan.md describes bundled Docker/s6/connectors architecture not present in repo. Sync docs to reality or build what's described. (codex-issues #3)
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
 - [ ] **CLI help needs work** [#4](https://github.com/peterdrier/ts4k/issues/4) — `-h` lists aliases as separate commands; `help` crashes with no sources (cfg.path bug); auth errors don't link to setup docs; first-run UX is poor.
-- [ ] **src add breaks WhatsApp** [#6](https://github.com/peterdrier/ts4k/issues/6) — `server_command` stored as string not list (Pydantic validation error at runtime); no way to pass list values via CLI; no WhatsApp-specific setup guidance in help.
+- [x] ~~**src add breaks WhatsApp**~~ [#6](https://github.com/peterdrier/ts4k/issues/6) — `server_command` auto-split on spaces in CLI; coerced from string in adapter; help updated with examples and o365 keys.
 - [ ] **Usage log: remaining items** [#10](https://github.com/peterdrier/ts4k/issues/10) — WhatsApp raw JIDs instead of contact names; stderr noise forcing `2>&1`; filter flag underused. *(5 of 10 items fixed: relative `--since`, empty results, `0b` size, non-interactive auth, wrong syntax errors.)*
 
 ## P2 — Token Optimization / UX (GitHub Issues)

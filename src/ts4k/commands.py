@@ -84,6 +84,8 @@ def _make_adapter(
         if not cwd or not os.path.isdir(cwd):
             return None
         cmd = cfg.get("server_command", ["uv", "run", "main.py"])
+        if isinstance(cmd, str):
+            cmd = cmd.split()
         return WhatsAppAdapter(
             WhatsAppAdapterConfig(server_command=cmd, server_cwd=cwd),
             prefix=prefix,
