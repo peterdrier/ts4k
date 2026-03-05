@@ -140,7 +140,13 @@ def _prefix_from_id(prefixed_id: str, all_cfg: dict[str, dict[str, Any]]) -> str
             return prefix
     if ":" in prefixed_id:
         return prefixed_id.split(":")[0]
-    return ""
+    # No colon found — likely wrong syntax (e.g. 'ts4k g inbox')
+    known = ", ".join(sorted(all_cfg.keys())) if all_cfg else "none configured"
+    raise ValueError(
+        f"Invalid message ID {prefixed_id!r} — expected format like 'g:abc123'.\n"
+        f"  Configured sources: {known}\n"
+        f"  Did you mean: ts4k updates --source {prefixed_id}?"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +199,7 @@ def _since_to_gmail_query(since: str | None, prefix: str = "g") -> str:
                 return "newer_than:1d"
         return "newer_than:1d"
 
-    if since.endswith("d") and since[:-1].isdigit():
+    if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
         return f"newer_than:{since}"
 
     try:
@@ -212,11 +218,13 @@ def _since_to_iso(since: str | None, prefix: str) -> str | None:
     if since is None:
         return watermarks.get(prefix)
 
-    if since.endswith("d") and since[:-1].isdigit():
-        from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta, timezone
 
-        days = int(since[:-1])
-        dt = datetime.now(timezone.utc) - timedelta(days=days)
+    # Support relative time: Nd (days) and Nh (hours)
+    if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
+        n = int(since[:-1])
+        delta = timedelta(days=n) if since[-1] == "d" else timedelta(hours=n)
+        dt = datetime.now(timezone.utc) - delta
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return since
@@ -380,7 +388,10 @@ async def get_message(
         return CommandResult(output=output, messages_processed=1)
 
     all_cfg = _ensure_sources()
-    prefix = _prefix_from_id(id, all_cfg)
+    try:
+        prefix = _prefix_from_id(id, all_cfg)
+    except ValueError as exc:
+        return CommandResult(error=str(exc))
     cfg = all_cfg.get(prefix)
 
     if not cfg:
@@ -406,7 +417,10 @@ async def get_thread(
     """Read a thread/conversation by prefixed ID or short ref (``#3``)."""
     tid = _resolve_ref(tid, ref_table)
     all_cfg = _ensure_sources()
-    prefix = _prefix_from_id(tid, all_cfg)
+    try:
+        prefix = _prefix_from_id(tid, all_cfg)
+    except ValueError as exc:
+        return CommandResult(error=str(exc))
     cfg = all_cfg.get(prefix)
 
     if not cfg:

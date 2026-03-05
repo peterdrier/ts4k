@@ -1,22 +1,25 @@
 # ts4k — Open Work
-Last synced: 2026-02-25T16:00
+Last synced: 2026-03-05T12:00
 
 ## P1 — Bugs / Reliability
 
 - [ ] **Deploy plan drift** — docs/deploy-plan.md describes bundled Docker/s6/connectors architecture not present in repo. Sync docs to reality or build what's described. (codex-issues #3)
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
 - [ ] **CLI help needs work** [#4](https://github.com/peterdrier/ts4k/issues/4) — `-h` lists aliases as separate commands; `help` crashes with no sources (cfg.path bug); auth errors don't link to setup docs; first-run UX is poor.
+- [ ] **src add breaks WhatsApp** [#6](https://github.com/peterdrier/ts4k/issues/6) — `server_command` stored as string not list (Pydantic validation error at runtime); no way to pass list values via CLI; no WhatsApp-specific setup guidance in help.
+- [ ] **Usage log: remaining items** [#10](https://github.com/peterdrier/ts4k/issues/10) — WhatsApp raw JIDs instead of contact names; stderr noise forcing `2>&1`; filter flag underused. *(5 of 10 items fixed: relative `--since`, empty results, `0b` size, non-interactive auth, wrong syntax errors.)*
 
-## P2 — Token Optimization (GitHub Issues)
+## P2 — Token Optimization / UX (GitHub Issues)
 
-- [ ] **Optimize token usage** [#1](https://github.com/peterdrier/ts4k/issues/1) — Use Anthropic Python API to measure actual in/out token counts. Trim timestamps and message IDs where possible. Cache slim versions.
 - [ ] **Trim MCP surface** [#2](https://github.com/peterdrier/ts4k/issues/2) — Collapse lesser-used MCP functions into single call routed through CLI parser. Track call frequency to inform decisions. Balance savings vs LLM usability.
+- [ ] **LLM-oriented help mode** [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` for structured agent reference. Setup workflows as step sequences, error→fix mappings, context-aware output. Builds on #4.
+- [ ] **Mailbox stats** [#9](https://github.com/peterdrier/ts4k/issues/9) — Label/folder counts for inbox-zero tracking. Gmail `labels.list()` API is efficient. Enhance `status` or `overview` with live inbox/unread/category counts.
 
 ## P3 — Architecture / Quality
 
-- [ ] **Local project config with global fallback** [#3](https://github.com/peterdrier/ts4k/issues/3) — Resolution order: env var → `.ts4k/` in cwd → `~/.config/ts4k/`. Add `--local` flag to config commands. Replace per-module `_CONFIG_DIR` with shared resolver.
 - [ ] **MCP lifecycle ownership** — Unclear who owns restart/failure semantics. Resolve before production. (codex-issues #6)
 - [ ] **Observability plan** — No concrete logging/metrics/alerting/tracing plan beyond status output. (codex-issues #7)
+- [ ] **Bundle whatsapp-mcp-server** [#7](https://github.com/peterdrier/ts4k/issues/7) — Single-command WhatsApp setup: clone, install deps, generate config, register source, guide auth. Managed service directory at `~/.config/ts4k/services/`. Phase 2+ work.
 
 ## Phase 5 — Send + Docker + Release (incomplete)
 
@@ -47,6 +50,8 @@ Last synced: 2026-02-25T16:00
 
 ## Recently Completed
 
+- [x] **Optimize token usage** [#1](https://github.com/peterdrier/ts4k/issues/1) — Measured actual token counts, trimmed timestamps/IDs. (closed)
+- [x] **Local project config** [#3](https://github.com/peterdrier/ts4k/issues/3) — Resolution order: env var → `.ts4k/` in cwd → `~/.config/ts4k/`. `--local` flag added. (closed)
 - [x] **Atomic state writes** — Fixed state corruption risk under concurrent use (666f3e3)
 - [x] **Batch cache optimization** — Reduced O(n^2) cache rewrite overhead (666f3e3)
 - [x] **Preload cancel fix** — `--cancel` now actually stops spawned processes (666f3e3)

@@ -11,6 +11,7 @@ Resolution chain for client_secret.json (first found wins):
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -108,6 +109,11 @@ def get_credentials(
         creds = flow.run_local_server(port=8085, open_browser=True)
     except Exception:
         # Headless fallback: user opens URL in remote browser, pastes redirect URL back
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                f"Gmail auth needs browser interaction for {email} "
+                f"— run 'ts4k auth g' in a terminal."
+            )
         logger.info("Local server flow failed, falling back to URL paste flow")
         flow.redirect_uri = "http://localhost:8085/"
         auth_url, _ = flow.authorization_url(prompt="consent")

@@ -157,7 +157,9 @@ def _msg_to_headers(msg: dict, prefix: str) -> dict:
     msg_id = msg.get("id", "")
     thread_id = msg.get("threadId", "")
 
-    return {
+    size_estimate = msg.get("sizeEstimate")
+
+    result = {
         "id": f"{prefix}:{msg_id}",
         "raw_id": msg_id,
         "thread_id": f"{prefix}:{thread_id}",
@@ -168,6 +170,10 @@ def _msg_to_headers(msg: dict, prefix: str) -> dict:
         "snippet": msg.get("snippet", ""),
         "source": prefix,
     }
+    if size_estimate:
+        from ts4k.core.format import estimate_size
+        result["size"] = estimate_size(size_estimate)
+    return result
 
 
 def _msg_to_full(msg: dict, prefix: str) -> dict:

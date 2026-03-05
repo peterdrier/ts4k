@@ -231,6 +231,8 @@ class WhatsAppAdapter(BaseAdapter):
 
         texts = [c.text for c in result.content if hasattr(c, "text")]
         if not texts:
+            if name in ("list_messages", "list_chats"):
+                return ""
             raise RuntimeError(
                 f"Upstream tool {name!r} returned no text content"
             )
