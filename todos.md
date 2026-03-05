@@ -3,7 +3,7 @@ Last synced: 2026-03-05T12:00
 
 ## P1 — Bugs / Reliability
 
-- [ ] **Deploy plan drift** — docs/deploy-plan.md describes bundled Docker/s6/connectors architecture not present in repo. Sync docs to reality or build what's described. (codex-issues #3)
+- [x] ~~**Deploy plan drift**~~ — deploy-plan.md updated: connector table reflects direct APIs for Gmail/O365, submodule scope reduced, s6 justification revised. Intentions doc created at `docs/intentions.md`. (codex-issues #3)
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
 - [x] ~~**CLI help cleanup**~~ [#4](https://github.com/peterdrier/ts4k/issues/4) — `-h` deduplicated with `aliases=`; cross-references `help`; auth errors link to setup docs; first-run `help` shows quick setup guide.
 - [x] ~~**src add breaks WhatsApp**~~ [#6](https://github.com/peterdrier/ts4k/issues/6) — `server_command` auto-split on spaces in CLI; coerced from string in adapter; help updated with examples and o365 keys.

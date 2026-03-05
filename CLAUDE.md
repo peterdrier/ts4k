@@ -8,13 +8,13 @@ ts4k (Token Saver 4000) is a Python CLI + MCP server that gives LLM agents token
 
 ## Project Plan
 
-Read `docs/rip/ts4k-rip.md` for the RIP (Rapid Implementation Plan) — the consolidated architecture, design principles, prototype strategy, and phased implementation roadmap. Phase working docs are in `docs/rip/phase-*.md`. The original design doc is `docs/plan-v1.md`.
+Read `docs/intentions.md` for the stable vision — what ts4k aims to be, independent of implementation status. This is the canonical reference for capabilities, anti-goals, design rules, and success criteria.
 
-The RIP is the source of truth for what ts4k should become.
+Read `docs/rip/ts4k-rip.md` for the RIP (Rapid Implementation Plan) — the consolidated architecture, design principles, prototype strategy, and phased implementation roadmap. Phase working docs are in `docs/rip/phase-*.md`. The original design doc is `docs/plan-v1.md`.
 
 ## Architecture at a Glance
 
-- **Adapters** wrap existing tools (gog CLI for Gmail, WhatsApp MCP, Telegram API). ts4k does not reimplement platform APIs.
+- **Adapters** wrap platform APIs (direct Google API for Gmail, Microsoft Graph for O365, WhatsApp MCP bridge). ts4k does not reimplement platform protocols.
 - **Normalize → Filter → Format** pipeline processes every message before output.
 - **Output formats**: pipe-delimited for listings, mini XML for message bodies. Optimized for LLM token efficiency.
 - **State**: JSON files (watermarks, contact identity map, filter config). Git-friendly, human-readable.

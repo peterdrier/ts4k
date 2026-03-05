@@ -2,24 +2,26 @@
 
 **Status:** Planning (pre-Phase 5)
 **Date:** 2026-02-24
+**Updated:** 2026-03-05 -- Connector table updated to reflect direct API adapters for Gmail/O365. Submodule and s6 scope revised.
 
 ---
 
 ## Problem
 
-ts4k wraps ~5-10 external connector tools (CLI apps, MCP servers, long-running daemons). Some are patched forks. For ts4k to be "super easy" for others to set up, all of these need to ship and run as a unit.
+ts4k needs a deployment path that bundles everything users need. The scope of "external dependencies" has shrunk significantly since the original plan: two of three day-one adapters (Gmail, O365) now use direct API calls within the ts4k Python process, eliminating the need for external MCP bridges or CLI tools for those platforms.
 
 ### Connector Mix
 
-| Connector | Type | Runtime | Lifecycle | Patched? |
-|-----------|------|---------|-----------|----------|
-| google_workspace_mcp | MCP server | Node.js | Spawned by ts4k or long-lived | Yes (fork) |
-| whatsapp-mcp | MCP server + daemon | Node.js | Long-running (persistent session) | Yes (fork) |
-| gog (Gmail CLI) | CLI tool | Go binary | On-demand, exits when done | TBD |
-| O365 MCP | MCP server | TBD | Spawned or long-lived | TBD |
-| Telegram adapter | TBD | TBD | TBD | TBD |
+| Connector | Type | Runtime | Lifecycle | External Process? |
+|-----------|------|---------|-----------|-------------------|
+| Gmail | Direct Google API (Python) | ts4k process | In-process | No |
+| O365 | Direct Microsoft Graph API (httpx) | ts4k process | In-process | No |
+| WhatsApp | Go MCP bridge (whatsapp-mcp-server) | Go binary | Long-running daemon | Yes |
+| Telegram | TBD (likely direct via python-telegram-bot) | ts4k process | TBD | TBD |
+| Slack | TBD (likely direct via slack_sdk) | ts4k process | TBD | TBD |
+| Others | TBD | TBD | TBD | TBD |
 
-More connectors will be added over time. The packaging approach must handle all three lifecycle types.
+The shift to direct APIs for Gmail and O365 means far fewer external processes to manage. Only WhatsApp (and potentially future adapters) requires a separate daemon.
 
 ---
 
@@ -39,15 +41,15 @@ One Docker image containing ts4k and all its connectors, with [s6-overlay](https
 - Purpose-built for multi-process Docker containers.
 - Handles long-running services (WhatsApp bridge), one-shot init scripts (config setup), and readiness dependencies between services.
 - Clean process supervision with auto-restart for daemons.
-- CLI tools (gog) don't need supervision — just installed on PATH, ts4k shells out.
+
+**Note (2026-03-05):** With direct APIs for Gmail and O365, the only external process today is the WhatsApp bridge. s6-overlay may be overkill for supervising a single daemon. However, it remains the right choice if we add more external-process adapters in the future. For a WhatsApp-only deployment, a simpler approach (e.g., a shell wrapper or docker-compose with two services) could suffice.
 
 ### How Each Connector Type Fits
 
 | Lifecycle | s6 handles as | Example |
 |-----------|--------------|---------|
-| CLI tool (on-demand) | Not supervised — installed on PATH, ts4k invokes directly | gog |
-| MCP server (spawned) | ts4k spawns as subprocess, OR run as s6 longrun service | google_workspace_mcp |
-| Long-running daemon | s6 longrun service with auto-restart | whatsapp-mcp bridge |
+| In-process (direct API) | Not supervised — runs within ts4k Python process | Gmail, O365 |
+| Long-running daemon | s6 longrun service with auto-restart | WhatsApp bridge |
 
 ---
 
@@ -58,11 +60,9 @@ ts4k/
 ├── Dockerfile
 ├── docker-compose.yml          # Thin wrapper: volumes, ports, env
 ├── .env.example                # Template for user credentials
-├── connectors/                 # Git submodules pinned to our forks
-│   ├── google-workspace-mcp/   # → peterdrier/google_workspace_mcp@<commit>
-│   ├── whatsapp-mcp/           # → fork@<commit>
-│   ├── gog/                    # → fork or upstream@<commit>
-│   └── ...
+├── connectors/                 # Git submodules for external-process adapters
+│   ├── whatsapp-mcp/           # → fork@<commit> (only external process today)
+│   └── ...                     # Future external-process adapters
 ├── rootfs/
 │   └── etc/
 │       └── s6-overlay/s6-rc.d/
@@ -90,19 +90,9 @@ ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLA
 RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
     tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz
 
-# --- Connector runtimes ---
-RUN apt-get update && apt-get install -y nodejs npm
-
-# --- gog CLI (Go binary from builder stage) ---
-COPY --from=golang:1.22-alpine AS gog-builder
-# ... build gog, copy binary to /usr/local/bin/gog
-
-# --- Node.js connectors (from submodules, with our patches) ---
-COPY connectors/google-workspace-mcp /opt/connectors/google-mcp
-RUN cd /opt/connectors/google-mcp && npm ci --production
-
-COPY connectors/whatsapp-mcp /opt/connectors/whatsapp
-RUN cd /opt/connectors/whatsapp && npm ci --production
+# --- WhatsApp bridge (Go binary, only external-process connector) ---
+COPY --from=golang:1.22-alpine AS wa-builder
+# ... build whatsapp-mcp-server, copy binary to /usr/local/bin/whatsapp-mcp
 
 # --- ts4k itself ---
 COPY . /opt/ts4k
@@ -140,13 +130,14 @@ volumes:
 
 ## Patched Forks Strategy
 
-Use **git submodules** pinned to specific commits on our forks:
+Use **git submodules** pinned to specific commits on our forks for external-process connectors:
 
 ```bash
-git submodule add https://github.com/peterdrier/google_workspace_mcp connectors/google-workspace-mcp
 git submodule add https://github.com/<fork>/whatsapp-mcp connectors/whatsapp-mcp
-# etc.
+# Future external-process connectors would be added similarly
 ```
+
+**Scope reduction (2026-03-05):** The original plan anticipated submodules for Gmail (google_workspace_mcp), WhatsApp, gog, and O365 connectors. With Gmail and O365 now using direct API calls within the ts4k Python process, only WhatsApp (and future external-process adapters) needs a submodule. The `google_workspace_mcp` fork and `gog` CLI are no longer used.
 
 This ensures:
 - `git clone --recurse-submodules` pulls everything in one command.
@@ -206,10 +197,11 @@ Each connector in its own container. Rejected because:
 ## Open Questions
 
 1. **WhatsApp headless auth in Docker** — WhatsApp typically needs QR code scan on first run. Need to research headless/persistent session options inside a container.
-2. **Credential management** — .env file vs mounted secrets vs interactive setup wizard on first run.
-3. **Image size budget** — Python + Node.js + Go binary + s6 will be chunky. Multi-stage build helps but the final image will be non-trivial.
+2. **Credential management** — .env file vs mounted secrets vs interactive setup wizard on first run. Still unresolved.
+3. **Image size budget** — Much improved. With direct APIs for Gmail/O365, the image no longer needs Node.js. Just Python + Go binary (WhatsApp) + s6. Multi-stage build should yield a reasonable image.
 4. **Pre-built image vs build-from-source** — Decision 29 in the RIP says "no pre-built image" (credentials baked in risk). Revisit: credentials can be volume-mounted, so a pre-built image on Docker Hub/GHCR may be viable.
 5. **Connector enable/disable** — Should users be able to skip connectors they don't need? (e.g., no WhatsApp). Environment variable flags or a config file.
+6. **Is s6-overlay still justified?** — With only one external process (WhatsApp), a simpler supervision approach may suffice. Revisit when more external-process adapters are added.
 
 ---
 
