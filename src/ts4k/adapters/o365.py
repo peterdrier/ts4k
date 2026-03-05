@@ -337,6 +337,47 @@ class O365Adapter(BaseAdapter):
             "messages": messages,
         }
 
+    # -- Mailbox stats ------------------------------------------------------
+
+    _FOLDER_NAMES = {"Inbox", "Sent Items", "Drafts", "Junk Email", "Deleted Items"}
+
+    async def mailbox_stats(self) -> dict | None:
+        """Return live folder counts via mailFolders API."""
+        data = await self._get(
+            f"{self._base_url()}/mailFolders",
+            {"$top": "50"},
+        )
+
+        items = data.get("value", []) if isinstance(data, dict) else []
+        labels = []
+        for folder in items:
+            name = folder.get("displayName", "")
+            if name in self._FOLDER_NAMES:
+                labels.append({
+                    "name": name,
+                    "total": folder.get("totalItemCount", 0),
+                    "unread": folder.get("unreadItemCount", 0),
+                })
+
+        # Try Focused/Other via Inbox childFolders
+        try:
+            inbox_children = await self._get(
+                f"{self._base_url()}/mailFolders/Inbox/childFolders",
+                {"$top": "10"},
+            )
+            for child in inbox_children.get("value", []):
+                name = child.get("displayName", "")
+                if name in ("Focused", "Other"):
+                    labels.append({
+                        "name": name,
+                        "total": child.get("totalItemCount", 0),
+                        "unread": child.get("unreadItemCount", 0),
+                    })
+        except Exception:
+            pass  # Focused Inbox not available
+
+        return {"provider": "o365", "labels": labels}
+
     # -- Discovery ----------------------------------------------------------
 
     async def discover_mailboxes(self) -> dict:

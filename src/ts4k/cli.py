@@ -199,7 +199,18 @@ def _cmd_contacts(args: argparse.Namespace) -> None:
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
-    print(commands.get_status())
+    if getattr(args, "live", False):
+        mbox = asyncio.run(
+            commands.get_mailbox_stats(
+                source=getattr(args, "source", None),
+            )
+        )
+        print(commands.get_status(
+            mailbox_stats_data=mbox,
+            fmt=getattr(args, "format", "pipe") or "pipe",
+        ))
+    else:
+        print(commands.get_status())
 
 
 def _cmd_sources(args: argparse.Namespace) -> None:
@@ -678,6 +689,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- status / st ---
     st = subparsers.add_parser("status", aliases=["st"], help="Operational status, stats, efficiency")
+    st.add_argument("--live", "-L", action="store_true", help="Include live mailbox label/folder counts")
+    st.add_argument("--source", "-s", help="Limit live stats to this source prefix")
+    st.add_argument("-f", "--format", default="pipe", help="Format for mailbox section: pipe, json, xml")
     st.set_defaults(func=_cmd_status)
 
     # --- help / h ---

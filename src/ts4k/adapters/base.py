@@ -88,3 +88,14 @@ class BaseAdapter(ABC):
         ``subject``, ``message_count``, ``messages`` (list of message
         dicts as returned by :meth:`read_message`).
         """
+
+    async def mailbox_stats(self) -> dict | None:
+        """Return live mailbox label/folder counts, or None if unsupported.
+
+        Only email adapters need to override this.  Returns a dict like::
+
+            {"provider": "gmail", "labels": [
+                {"name": "Inbox", "total": 142, "unread": 23}, ...
+            ]}
+        """
+        return None

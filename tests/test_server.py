@@ -129,13 +129,16 @@ class TestToolRegistration:
         props = schema.get("properties", {})
         assert len(props) == 0
 
-    def test_status_no_required_params(self):
-        """status takes no parameters."""
+    def test_status_has_optional_params(self):
+        """status has optional live/source/fmt params (all defaulted)."""
         tool = mcp._tool_manager._tools["status"]
         schema = tool.parameters
+        required = schema.get("required", [])
+        assert len(required) == 0  # all optional
         props = schema.get("properties", {})
-        # status has no user-facing params
-        assert len(props) == 0
+        assert "live" in props
+        assert "source" in props
+        assert "fmt" in props
 
 
 # ---------------------------------------------------------------------------

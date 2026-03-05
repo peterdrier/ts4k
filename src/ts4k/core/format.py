@@ -103,6 +103,29 @@ def format_overview(data: dict, fmt: str = "pipe") -> str:
         raise ValueError(f"Unknown format: {fmt!r}")
 
 
+def format_mailbox_stats(
+    stats: dict[str, dict | None],
+    fmt: str = "pipe",
+) -> str:
+    """Format mailbox stats from multiple sources.
+
+    *stats*: ``{prefix: {"provider": "...", "labels": [...]} | None}``.
+    ``None`` means the source was unreachable.
+
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    """
+    fmt = _resolve_fmt(fmt)
+
+    if fmt == "pipe":
+        return _mailbox_stats_pipe(stats)
+    elif fmt == "json":
+        return _mailbox_stats_json(stats)
+    elif fmt == "xml":
+        return _mailbox_stats_xml(stats)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
 def estimate_size(text_or_bytes: str | int) -> str:
     """Human-readable size estimate.
 
@@ -683,4 +706,63 @@ def _overview_xml(data: dict) -> str:
             )
         lines.append("</overview>")
 
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Mailbox stats formatters
+# ---------------------------------------------------------------------------
+
+
+def _mailbox_stats_pipe(stats: dict[str, dict | None]) -> str:
+    lines: list[str] = []
+    for prefix, data in sorted(stats.items()):
+        if data is None:
+            lines.append(f"Mailbox ({prefix}): (offline)")
+            continue
+        provider = data.get("provider", prefix)
+        lines.append(f"Mailbox ({prefix}, {provider}):")
+        lines.append("  LABEL|TOTAL|UNREAD")
+        for label in data.get("labels", []):
+            lines.append(
+                f"  {label['name']}|{label['total']}|{label['unread']}"
+            )
+    return "\n".join(lines)
+
+
+def _mailbox_stats_json(stats: dict[str, dict | None]) -> str:
+    mailbox_list = []
+    for prefix, data in sorted(stats.items()):
+        if data is None:
+            mailbox_list.append({"source": prefix, "error": "offline"})
+        else:
+            mailbox_list.append({
+                "source": prefix,
+                "provider": data.get("provider", prefix),
+                "labels": data.get("labels", []),
+            })
+    return json.dumps({"mailbox": mailbox_list}, separators=(",", ":"))
+
+
+def _mailbox_stats_xml(stats: dict[str, dict | None]) -> str:
+    lines = ["<mailbox>"]
+    for prefix, data in sorted(stats.items()):
+        if data is None:
+            lines.append(
+                f'<src prefix={xml_quoteattr(prefix)} error="offline"/>'
+            )
+            continue
+        provider = data.get("provider", prefix)
+        lines.append(
+            f'<src prefix={xml_quoteattr(prefix)}'
+            f' provider={xml_quoteattr(provider)}>'
+        )
+        for label in data.get("labels", []):
+            lines.append(
+                f'<label name={xml_quoteattr(label["name"])}'
+                f' total="{label["total"]}"'
+                f' unread="{label["unread"]}"/>'
+            )
+        lines.append("</src>")
+    lines.append("</mailbox>")
     return "\n".join(lines)

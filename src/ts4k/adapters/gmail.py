@@ -415,6 +415,56 @@ class GmailAdapter(BaseAdapter):
         )
         return _thread_to_dict(thread, self._prefix)
 
+    # -- Mailbox stats -------------------------------------------------------
+
+    _STATS_LABELS = [
+        ("INBOX", "Inbox"),
+        ("CATEGORY_PERSONAL", "Primary"),
+        ("CATEGORY_SOCIAL", "Social"),
+        ("CATEGORY_PROMOTIONS", "Promotions"),
+        ("CATEGORY_UPDATES", "Updates"),
+        ("CATEGORY_FORUMS", "Forums"),
+        ("SPAM", "Spam"),
+        ("TRASH", "Trash"),
+    ]
+
+    async def mailbox_stats(self) -> dict | None:
+        """Return live label counts via batch labels.get() calls."""
+        service = self._require_service()
+
+        results: dict[str, dict] = {}
+        errors: list[str] = []
+
+        def _batch_callback(request_id, response, exception):
+            if exception is not None:
+                errors.append(f"{request_id}: {exception}")
+            else:
+                results[request_id] = response
+
+        batch = service.new_batch_http_request(callback=_batch_callback)
+        for label_id, _display in self._STATS_LABELS:
+            batch.add(
+                service.users().labels().get(userId="me", id=label_id),
+                request_id=label_id,
+            )
+        await asyncio.to_thread(batch.execute)
+
+        if errors:
+            for err in errors:
+                logger.warning("Label stats fetch error: %s", err)
+
+        labels = []
+        for label_id, display_name in self._STATS_LABELS:
+            if label_id in results:
+                resp = results[label_id]
+                labels.append({
+                    "name": display_name,
+                    "total": resp.get("messagesTotal", 0),
+                    "unread": resp.get("messagesUnread", 0),
+                })
+
+        return {"provider": "gmail", "labels": labels}
+
     # -- Helpers -------------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:

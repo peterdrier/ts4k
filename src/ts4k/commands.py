@@ -24,6 +24,7 @@ from ts4k.core.filter import apply_filters
 from ts4k.core.format import (
     estimate_size,
     format_listing,
+    format_mailbox_stats,
     format_message,
     format_overview,
     format_thread,
@@ -505,8 +506,55 @@ async def list_messages(
     )
 
 
-def get_status() -> str:
-    """Return operational status summary as a string."""
+async def get_mailbox_stats(source: str | None = None) -> dict[str, dict | None]:
+    """Fetch live mailbox stats from email adapters.
+
+    Returns ``{prefix: stats_dict | None}`` — ``None`` means unreachable.
+    """
+    all_cfg = _ensure_sources()
+    prefixes = _resolve_prefixes(source)
+    results: dict[str, dict | None] = {}
+
+    for prefix in prefixes:
+        cfg = all_cfg.get(prefix)
+        if not cfg:
+            continue
+        provider = cfg.get("provider", "").lower()
+        if provider not in ("gmail", "o365"):
+            continue  # only email adapters support mailbox_stats
+
+        adapter = _make_adapter(prefix, cfg)
+        if adapter is None:
+            results[prefix] = None
+            continue
+
+        try:
+            await adapter.connect()
+            stats_data = await asyncio.wait_for(
+                adapter.mailbox_stats(), timeout=10
+            )
+            results[prefix] = stats_data
+        except Exception as exc:
+            logger.warning("mailbox_stats failed for %s: %s", prefix, exc)
+            results[prefix] = None
+        finally:
+            try:
+                await adapter.disconnect()
+            except Exception:
+                pass
+
+    return results
+
+
+def get_status(
+    mailbox_stats_data: dict[str, dict | None] | None = None,
+    fmt: str = "pipe",
+) -> str:
+    """Return operational status summary as a string.
+
+    When *mailbox_stats_data* is provided (from ``get_mailbox_stats()``),
+    appends a Mailbox section after Sources.
+    """
     from ts4k import state
 
     config_dir = state.get_config_dir()
@@ -526,12 +574,17 @@ def get_status() -> str:
                 ok = bool(cwd) and os.path.isdir(cwd)
             elif provider == "o365":
                 ok = bool(cfg.get("mailbox") or cfg.get("client_id"))
-            status = "ok" if ok else "not found"
+            status_str = "ok" if ok else "not found"
             wm_ts = wm.get(prefix, "")
             wm_str = f"  wm: {wm_ts}" if wm_ts else ""
-            lines.append(f"  {prefix}: {provider} [{status}] ({detail}){wm_str}")
+            lines.append(f"  {prefix}: {provider} [{status_str}] ({detail}){wm_str}")
     else:
         lines.append("  (none — run: ts4k src add <prefix> <provider> ...)")
+
+    # Mailbox stats (live, when provided)
+    if mailbox_stats_data:
+        lines.append("")
+        lines.append(format_mailbox_stats(mailbox_stats_data, fmt=fmt))
 
     # Contacts
     all_contacts = contacts.list_all()

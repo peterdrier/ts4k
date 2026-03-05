@@ -136,9 +136,22 @@ async def list_tool(
 
 
 @mcp.tool()
-def status() -> str:
-    """Show operational status: sources, watermarks, contacts, filters, stats."""
-    return commands.get_status()
+async def status(
+    live: bool = False,
+    source: str | None = None,
+    fmt: str = "pipe",
+) -> str:
+    """Show operational status: sources, watermarks, contacts, filters, stats.
+
+    Args:
+        live: Include live mailbox label/folder counts (default off).
+        source: Limit live stats to this source prefix (e.g. "g").
+        fmt: Format for mailbox section — "pipe" (default), "json", or "xml".
+    """
+    mbox = None
+    if live:
+        mbox = await commands.get_mailbox_stats(source=source)
+    return commands.get_status(mailbox_stats_data=mbox, fmt=fmt)
 
 
 @mcp.tool()
