@@ -211,6 +211,7 @@ def overview(
 
 # Commands allowed through the admin tool
 _ADMIN_COMMANDS = {"contacts", "c", "filter", "f", "cache", "preload"}
+_admin_lock = asyncio.Lock()
 
 
 async def _run_cli_command(cmd: str) -> str:
@@ -239,23 +240,28 @@ async def _run_cli_command(cmd: str) -> str:
     stdout = io.StringIO()
     stderr = io.StringIO()
 
-    try:
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            args = parser.parse_args(argv)
+    # Lock protects the process-global redirect_stdout/redirect_stderr so
+    # concurrent MCP requests (possible on HTTP transport) don't interleave.
+    async with _admin_lock:
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                stderr
+            ):
+                args = parser.parse_args(argv)
 
-            if not hasattr(args, "func") or args.func is None:
-                return f"Error: incomplete command. Try: {argv[0]} --help"
+                if not hasattr(args, "func") or args.func is None:
+                    return f"Error: incomplete command. Try: {argv[0]} --help"
 
-            if asyncio.iscoroutinefunction(args.func):
-                await args.func(args)
-            else:
-                args.func(args)
+                if asyncio.iscoroutinefunction(args.func):
+                    await args.func(args)
+                else:
+                    args.func(args)
 
-    except SystemExit:
-        # argparse or handler called sys.exit — return whatever was printed
-        err = stderr.getvalue().strip()
-        out = stdout.getvalue().strip()
-        return err or out or f"Error: command failed: {cmd}"
+        except SystemExit:
+            # argparse or handler called sys.exit — return whatever was printed
+            err = stderr.getvalue().strip()
+            out = stdout.getvalue().strip()
+            return err or out or f"Error: command failed: {cmd}"
 
     return stdout.getvalue().strip() or stderr.getvalue().strip()
 

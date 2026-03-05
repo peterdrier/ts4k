@@ -510,40 +510,44 @@ async def get_mailbox_stats(source: str | None = None) -> dict[str, dict | None]
     """Fetch live mailbox stats from email adapters.
 
     Returns ``{prefix: stats_dict | None}`` — ``None`` means unreachable.
+    Fetches from all sources concurrently.
     """
     all_cfg = _ensure_sources()
     prefixes = _resolve_prefixes(source)
-    results: dict[str, dict | None] = {}
 
-    for prefix in prefixes:
+    async def _fetch_one(prefix: str) -> tuple[str, dict | None]:
         cfg = all_cfg.get(prefix)
         if not cfg:
-            continue
+            return prefix, None
         provider = cfg.get("provider", "").lower()
         if provider not in ("gmail", "o365"):
-            continue  # only email adapters support mailbox_stats
+            return prefix, None  # only email adapters support mailbox_stats
 
         adapter = _make_adapter(prefix, cfg)
         if adapter is None:
-            results[prefix] = None
-            continue
+            return prefix, None
 
         try:
             await adapter.connect()
             stats_data = await asyncio.wait_for(
                 adapter.mailbox_stats(), timeout=10
             )
-            results[prefix] = stats_data
+            return prefix, stats_data
         except Exception as exc:
             logger.warning("mailbox_stats failed for %s: %s", prefix, exc)
-            results[prefix] = None
+            return prefix, None
         finally:
             try:
                 await adapter.disconnect()
             except Exception:
                 pass
 
-    return results
+    email_prefixes = [
+        p for p in prefixes
+        if all_cfg.get(p, {}).get("provider", "").lower() in ("gmail", "o365")
+    ]
+    pairs = await asyncio.gather(*[_fetch_one(p) for p in email_prefixes])
+    return dict(pairs)
 
 
 def get_status(

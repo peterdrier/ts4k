@@ -601,7 +601,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-    sr_add.add_argument("provider", help="Provider: gmail, whatsapp")
+    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp")
     sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
     sr_rm = sr_sub.add_parser("rm", help="Remove a source")
