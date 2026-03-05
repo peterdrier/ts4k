@@ -202,4 +202,5 @@ class TestBuildGraphClient:
         build_graph_client("cid", config_dir=Path("/custom"))
         mock_get_creds.assert_called_once_with(
             "cid", tenant_id="common", scopes=None, config_dir=Path("/custom"),
+            username=None,
         )

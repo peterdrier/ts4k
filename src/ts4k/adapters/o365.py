@@ -7,16 +7,15 @@ Supports both personal (``/me/``) and shared mailbox access.  When
 ``mailbox`` is set in config, the adapter targets ``/users/{mailbox}/``
 instead of ``/me/``.
 
-Multi-mailbox setup::
+Multi-mailbox setup (client_id/tenant_id inherited from first source)::
 
     # sources.json
     {
-        "oa": {"provider": "o365", "mailbox": "user@contoso.com",
-               "client_id": "<id>", "tenant_id": "<tid>"},
-        "ob": {"provider": "o365", "mailbox": "hello@example.org",
-               "client_id": "<id>"},
-        "oh": {"provider": "o365", "mailbox": "support@example.org",
-               "client_id": "<id>"}
+        "o":  {"provider": "o365", "client_id": "<id>", "tenant_id": "<tid>"},
+        "ow": {"provider": "o365", "client_id": "<id>", "tenant_id": "<tid>",
+               "mailbox": "hello@example.org"},
+        "os": {"provider": "o365", "client_id": "<id>", "tenant_id": "<tid>",
+               "mailbox": "support@example.org"}
     }
 
 Usage::
@@ -220,6 +219,7 @@ class O365Adapter(BaseAdapter):
             self._config.client_id,
             tenant_id=self._config.tenant_id,
             config_dir=self._config.config_dir,
+            username=self._config.mailbox,
         )
         mailbox_str = f" ({self._config.mailbox})" if self._config.mailbox else ""
         logger.info("O365Adapter connected via Graph API%s", mailbox_str)

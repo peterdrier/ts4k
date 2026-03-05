@@ -46,11 +46,16 @@ def get_credentials(
     tenant_id: str = "common",
     scopes: list[str] | None = None,
     config_dir: Path | None = None,
+    username: str | None = None,
 ) -> dict:
     """Load or create OAuth credentials for the given app registration.
 
     Tries ``acquire_token_silent()`` first.  Falls back to device code flow
     (prints instructions to stderr so they don't pollute stdout/pipe output).
+
+    When *username* is provided (e.g. a mailbox email), the cached account
+    matching that username is preferred.  This matters when multiple Microsoft
+    accounts are authenticated under the same app registration.
 
     Returns a dict with at least ``access_token``.
 
@@ -81,10 +86,13 @@ def get_credentials(
     # Try silent acquisition first.
     accounts = app.get_accounts()
     if accounts:
-        result = app.acquire_token_silent(scopes, account=accounts[0])
+        # Pick the account matching the requested username, or fall back
+        # to the first account if no username was specified.
+        account = _find_account(accounts, username)
+        result = app.acquire_token_silent(scopes, account=account)
         if result and "access_token" in result:
             _persist_cache(cache, cache_file)
-            logger.debug("Token acquired silently for %s", accounts[0].get("username", "?"))
+            logger.debug("Token acquired silently for %s", account.get("username", "?"))
             return result
 
     # Fall back to device code flow.
@@ -108,6 +116,16 @@ def get_credentials(
     return result
 
 
+def _find_account(accounts: list[dict], username: str | None) -> dict:
+    """Find the MSAL account matching *username*, or return the first one."""
+    if username and len(accounts) > 1:
+        needle = username.lower()
+        for acct in accounts:
+            if acct.get("username", "").lower() == needle:
+                return acct
+    return accounts[0]
+
+
 def _persist_cache(cache: msal.SerializableTokenCache, cache_file: Path) -> None:
     """Write the token cache to disk if it has changed."""
     if cache.has_state_changed:
@@ -120,17 +138,22 @@ def build_graph_client(
     tenant_id: str = "common",
     config_dir: Path | None = None,
     scopes: list[str] | None = None,
+    username: str | None = None,
 ) -> httpx.AsyncClient:
     """Build an authenticated ``httpx.AsyncClient`` for Microsoft Graph.
 
     The client has ``base_url`` set to ``https://graph.microsoft.com/v1.0``
     and a default ``Authorization: Bearer <token>`` header.
 
+    When *username* is provided, the matching cached account is preferred
+    (relevant when multiple Microsoft accounts share one app registration).
+
     This is a synchronous call (token acquisition may block for device code
     flow).  The returned client is async and must be used with ``await``.
     """
     creds = get_credentials(
-        client_id, tenant_id=tenant_id, scopes=scopes, config_dir=config_dir
+        client_id, tenant_id=tenant_id, scopes=scopes, config_dir=config_dir,
+        username=username,
     )
     token = creds["access_token"]
 

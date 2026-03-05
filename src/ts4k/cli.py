@@ -235,6 +235,28 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 # Bare email address — treat as email=value
                 kwargs["email"] = kv.strip()
 
+        # For O365: inherit client_id/tenant_id from existing O365 source
+        # if not explicitly provided (same app registration for all mailboxes).
+        if provider == "o365":
+            _INHERITABLE = ("client_id", "tenant_id")
+            missing = [f for f in _INHERITABLE if f not in kwargs]
+            if missing:
+                existing = sources.by_provider("o365")
+                if existing:
+                    donor = next(iter(existing.values()))
+                    for f in missing:
+                        if f in donor:
+                            kwargs[f] = donor[f]
+                    inherited = [f for f in missing if f in donor]
+                    if inherited:
+                        donor_prefix = next(iter(existing))
+                        print(f"Inherited {', '.join(inherited)} from source {donor_prefix!r}.")
+
+            if "client_id" not in kwargs:
+                print(f"Error: client_id is required for the first O365 source.")
+                print(f"Usage: ts4k src add {prefix} o365 client_id=<id> tenant_id=<tid>")
+                return
+
         entry = sources.add(prefix, provider=provider, **kwargs)
         print(f"Added source {prefix!r}:")
         for k, v in sorted(entry.items()):
@@ -321,17 +343,30 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
     used_prefixes = set(all_cfg.keys())
 
     print()
-    print("Add as sources? (Each gets its own prefix)")
 
+    # Generate suggested commands for mailboxes not yet configured.
     next_suffix = ord("a")
+    suggestions: list[str] = []
     for email in all_emails:
+        if email.lower() in existing_mailboxes:
+            continue
         while True:
             candidate = f"o{chr(next_suffix)}"
             next_suffix += 1
             if candidate not in used_prefixes:
                 break
-        already = "  [already configured]" if email.lower() in existing_mailboxes else ""
-        print(f"  {candidate} → {email}{already}")
+        suggestions.append(
+            f"  ts4k src add {candidate} o365 mailbox={email}"
+        )
+
+    if suggestions:
+        print("To add these mailboxes, run:")
+        for s in suggestions:
+            print(s)
+        print()
+        print("No extra sign-in needed — your existing auth covers all of them.")
+    else:
+        print("All discovered mailboxes are already configured.")
 
 
 async def _cmd_preload(args: argparse.Namespace) -> None:
@@ -484,14 +519,38 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             print(f"Authentication failed: {exc}")
             sys.exit(1)
     elif platform == "o365":
-        client_id = getattr(args, "client_id", None)
+        source_prefix = getattr(args, "source", None)
+
+        from ts4k.state import sources as src_mod
+
+        if source_prefix:
+            cfg = src_mod.get(source_prefix)
+            if not cfg or cfg.get("provider") != "o365":
+                print(f"Error: source {source_prefix!r} is not an O365 source.")
+                print("Check your sources: ts4k src list")
+                sys.exit(1)
+        else:
+            o365_sources = src_mod.by_provider("o365")
+            if not o365_sources:
+                print("Error: no O365 sources configured.")
+                print("Add one first: ts4k src add o o365 client_id=<id> tenant_id=<tid>")
+                sys.exit(1)
+            source_prefix = next(iter(o365_sources))
+            cfg = o365_sources[source_prefix]
+            if len(o365_sources) > 1:
+                print(f"Multiple O365 sources found, using {source_prefix!r}.")
+                print(f"Specify one explicitly: ts4k auth o365 <prefix>")
+
+        client_id = cfg.get("client_id", "")
+        tenant_id = cfg.get("tenant_id", "common") or "common"
+
         if not client_id:
-            print("Error: --client-id is required.")
+            print(f"Error: source {source_prefix!r} is missing client_id.")
+            print(f"Fix it: ts4k src add {source_prefix} o365 client_id=<id> tenant_id=<tid>")
             sys.exit(1)
 
         from ts4k.auth.microsoft import get_credentials as get_ms_credentials
 
-        tenant_id = getattr(args, "tenant_id", "common") or "common"
         check_only = getattr(args, "check", False)
 
         try:
@@ -509,7 +568,8 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             sys.exit(1)
     else:
         print("Usage: ts4k auth gmail <email>")
-        print("       ts4k auth o365 --client-id <id> [--tenant-id <id>]")
+        print("       ts4k auth o365          (authenticates first O365 source)")
+        print("       ts4k auth o365 <prefix> (authenticates a specific O365 source)")
         sys.exit(1)
 
 
@@ -708,8 +768,7 @@ def _build_parser() -> argparse.ArgumentParser:
     au_gmail.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
 
     au_o365 = au_sub.add_parser("o365", help="Authenticate with Microsoft 365 (device code flow)")
-    au_o365.add_argument("--client-id", required=True, help="Azure AD app registration client ID")
-    au_o365.add_argument("--tenant-id", default="common", help="Azure AD tenant ID (default: common)")
+    au_o365.add_argument("source", nargs="?", default=None, help="Source prefix to authenticate (e.g. 'o'). Uses first O365 source if omitted.")
     au_o365.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
 
     au.set_defaults(func=_cmd_auth)

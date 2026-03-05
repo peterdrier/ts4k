@@ -1449,7 +1449,7 @@ def llm_help() -> str:
                 if provider == "gmail":
                     lines.append(f"  ts4k auth gmail {cfg.get('email', '<email>')}")
                 elif provider == "o365":
-                    lines.append(f"  ts4k auth o365 --client-id {cfg.get('client_id', '<id>')}")
+                    lines.append(f"  ts4k auth o365 {prefix}")
             lines.append("")
 
         _append_commands(lines)
@@ -1517,7 +1517,7 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("  O365:")
     lines.append("    1. Register app: Azure Portal > App registrations > New > add Mail.Read permission")
     lines.append("    2. ts4k src add o o365 client_id=<id> tenant_id=<tid>")
-    lines.append("    3. ts4k auth o365 --client-id <id>          (device code flow)")
+    lines.append("    3. ts4k auth o365                           (device code flow)")
     lines.append("    4. ts4k src discover                        (find mailboxes)")
     lines.append("    5. ts4k updates --source o                  (verify)")
     lines.append("  WhatsApp:")
