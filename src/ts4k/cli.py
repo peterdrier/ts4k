@@ -168,7 +168,17 @@ def _cmd_help(args: argparse.Namespace) -> None:
             wm_str = f"  wm:{wm_ts}" if wm_ts else ""
             print(f"  {prefix}: {provider} ({detail}){wm_str}")
     else:
-        print("  (none — run: ts4k src add <prefix> <provider> ...)")
+        print("  (none configured)")
+        print()
+        print("Quick setup:")
+        print("  1. ts4k src add g gmail email=you@gmail.com")
+        print("  2. ts4k auth gmail you@gmail.com")
+        print("  3. ts4k updates")
+        print()
+        print("Setup guides:")
+        print("  Gmail:    https://github.com/peterdrier/ts4k/blob/main/docs/setup-gmail.md")
+        print("  O365:     https://github.com/peterdrier/ts4k/blob/main/docs/setup-o365.md")
+        print("  WhatsApp: https://github.com/peterdrier/ts4k/blob/main/docs/setup-whatsapp.md")
     print()
     config_dir = state.get_config_dir()
     print(f"Config: {config_dir.path}  ({config_dir.reason})")
@@ -506,6 +516,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ts4k",
         description="Token-efficient messaging gateway for LLM agents.",
+        epilog="Run 'ts4k help' for a quick reference with live source status.",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -521,114 +532,107 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- whatsnew / wn / updates ---
-    for cmd_name in ("updates", "whatsnew", "wn"):
-        wn = subparsers.add_parser(cmd_name, help="Show new messages (updates watermark)")
-        wn.add_argument("--since", help="Time range: 2d, 7d, ISO timestamp, or Gmail query")
-        wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-        wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
-        _add_common_args(wn)
-        wn.set_defaults(func=_cmd_whatsnew)
+    wn = subparsers.add_parser("updates", aliases=["whatsnew", "wn"], help="Show new messages (updates watermark)")
+    wn.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
+    wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+    wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    _add_common_args(wn)
+    wn.set_defaults(func=_cmd_whatsnew)
 
     # --- get / g ---
-    for cmd_name in ("get", "g"):
-        get = subparsers.add_parser(cmd_name, help="Read a single message")
-        get.add_argument("id", help="Message ID (e.g. g:abc123 or w:3EB05C)")
-        _add_common_args(get)
-        get.set_defaults(func=_cmd_get)
+    get = subparsers.add_parser("get", aliases=["g"], help="Read a single message")
+    get.add_argument("id", help="Message ID (e.g. g:abc123 or w:3EB05C)")
+    _add_common_args(get)
+    get.set_defaults(func=_cmd_get)
 
     # --- thread / t ---
-    for cmd_name in ("thread", "t"):
-        th = subparsers.add_parser(cmd_name, help="Read a thread or chat")
-        th.add_argument("id", help="Thread/chat ID (e.g. g:abc123 or w:jid@s.whatsapp.net)")
-        _add_common_args(th)
-        th.set_defaults(func=_cmd_thread)
+    th = subparsers.add_parser("thread", aliases=["t"], help="Read a thread or chat")
+    th.add_argument("id", help="Thread/chat ID (e.g. g:abc123 or w:jid@s.whatsapp.net)")
+    _add_common_args(th)
+    th.set_defaults(func=_cmd_thread)
 
     # --- list / l ---
-    for cmd_name in ("list", "l"):
-        ls = subparsers.add_parser(cmd_name, help="List messages matching a query")
-        ls.add_argument("--query", "-q", help="Search query")
-        ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-        ls.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
-        _add_common_args(ls)
-        ls.set_defaults(func=_cmd_list)
+    ls = subparsers.add_parser("list", aliases=["l"], help="List messages matching a query")
+    ls.add_argument("--query", "-q", help="Search query")
+    ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+    ls.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    _add_common_args(ls)
+    ls.set_defaults(func=_cmd_list)
 
     # --- sources / src ---
-    for cmd_name in ("sources", "src"):
-        sr = subparsers.add_parser(cmd_name, help="Manage source config")
-        sr_sub = sr.add_subparsers(dest="action")
+    sr = subparsers.add_parser("sources", aliases=["src"], help="Manage source config")
+    sr_sub = sr.add_subparsers(dest="action")
 
-        sr_add = sr_sub.add_parser(
-            "add",
-            help="Add a source",
-            epilog=(
-                "provider keys:\n"
-                "  gmail:    email (required), mcp_url, transport\n"
-                "  whatsapp: mcp_cwd (required), server_command\n"
-                "  o365:     client_id (required), tenant_id, mailbox\n"
-                "\n"
-                "examples:\n"
-                '  ts4k src add g gmail email=you@gmail.com\n'
-                '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
-                "\n"
-                "List fields (server_command) are auto-split on spaces.\n"
-                "A bare email (user@example.com) is treated as email=user@example.com."
-            ),
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-        )
-        sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-        sr_add.add_argument("provider", help="Provider: gmail, whatsapp")
-        sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
+    sr_add = sr_sub.add_parser(
+        "add",
+        help="Add a source",
+        epilog=(
+            "provider keys:\n"
+            "  gmail:    email (required), mcp_url, transport\n"
+            "  whatsapp: mcp_cwd (required), server_command\n"
+            "  o365:     client_id (required), tenant_id, mailbox\n"
+            "\n"
+            "examples:\n"
+            '  ts4k src add g gmail email=you@gmail.com\n'
+            '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
+            "\n"
+            "List fields (server_command) are auto-split on spaces.\n"
+            "A bare email (user@example.com) is treated as email=user@example.com."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
+    sr_add.add_argument("provider", help="Provider: gmail, whatsapp")
+    sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
-        sr_rm = sr_sub.add_parser("rm", help="Remove a source")
-        sr_rm.add_argument("prefix", help="Source prefix to remove")
+    sr_rm = sr_sub.add_parser("rm", help="Remove a source")
+    sr_rm.add_argument("prefix", help="Source prefix to remove")
 
-        sr_sub.add_parser("list", help="List all configured sources")
+    sr_sub.add_parser("list", help="List all configured sources")
 
-        sr_sub.add_parser("discover", help="Discover O365 mailboxes for authenticated user")
+    sr_sub.add_parser("discover", help="Discover O365 mailboxes for authenticated user")
 
-        sr.set_defaults(func=_cmd_sources)
+    sr.set_defaults(func=_cmd_sources)
 
     # --- contacts / c ---
-    for cmd_name in ("contacts", "c"):
-        ct = subparsers.add_parser(cmd_name, help="Cross-platform contact identity map")
-        ct_sub = ct.add_subparsers(dest="action")
+    ct = subparsers.add_parser("contacts", aliases=["c"], help="Cross-platform contact identity map")
+    ct_sub = ct.add_subparsers(dest="action")
 
-        ct_link = ct_sub.add_parser("link", help="Link identifiers to an alias")
-        ct_link.add_argument("alias", help="Contact alias (e.g. sarah)")
-        ct_link.add_argument("identifiers", nargs="+", help="Platform IDs (e.g. g:sarah@gmail.com w:123@wa)")
+    ct_link = ct_sub.add_parser("link", help="Link identifiers to an alias")
+    ct_link.add_argument("alias", help="Contact alias (e.g. sarah)")
+    ct_link.add_argument("identifiers", nargs="+", help="Platform IDs (e.g. g:sarah@gmail.com w:123@wa)")
 
-        ct_unlink = ct_sub.add_parser("unlink", help="Unlink identifiers or remove alias")
-        ct_unlink.add_argument("alias", help="Contact alias")
-        ct_unlink.add_argument("identifiers", nargs="*", help="IDs to remove (omit to delete alias)")
+    ct_unlink = ct_sub.add_parser("unlink", help="Unlink identifiers or remove alias")
+    ct_unlink.add_argument("alias", help="Contact alias")
+    ct_unlink.add_argument("identifiers", nargs="*", help="IDs to remove (omit to delete alias)")
 
-        ct_sub.add_parser("list", help="List all contacts")
+    ct_sub.add_parser("list", help="List all contacts")
 
-        ct_find = ct_sub.add_parser("find", help="Search contacts")
-        ct_find.add_argument("term", help="Search term (matches alias or identifier)")
+    ct_find = ct_sub.add_parser("find", help="Search contacts")
+    ct_find.add_argument("term", help="Search term (matches alias or identifier)")
 
-        ct.set_defaults(func=_cmd_contacts)
+    ct.set_defaults(func=_cmd_contacts)
 
     # --- filter / f ---
-    for cmd_name in ("filter", "f"):
-        fl = subparsers.add_parser(cmd_name, help="Manage skip filters (off by default)")
-        fl_sub = fl.add_subparsers(dest="action")
+    fl = subparsers.add_parser("filter", aliases=["f"], help="Manage skip filters (off by default)")
+    fl_sub = fl.add_subparsers(dest="action")
 
-        for action_name, help_text in [
-            ("add-sender", "Add sender to skip list"),
-            ("rm-sender", "Remove sender from skip list"),
-            ("add-domain", "Add domain to skip list"),
-            ("rm-domain", "Remove domain from skip list"),
-            ("add-pattern", "Add regex pattern to skip"),
-            ("rm-pattern", "Remove pattern from skip list"),
-            ("skip-groups", "Set group chat skip (true/false)"),
-        ]:
-            sub = fl_sub.add_parser(action_name, help=help_text)
-            sub.add_argument("value", help="Value to add/remove/set")
+    for action_name, help_text in [
+        ("add-sender", "Add sender to skip list"),
+        ("rm-sender", "Remove sender from skip list"),
+        ("add-domain", "Add domain to skip list"),
+        ("rm-domain", "Remove domain from skip list"),
+        ("add-pattern", "Add regex pattern to skip"),
+        ("rm-pattern", "Remove pattern from skip list"),
+        ("skip-groups", "Set group chat skip (true/false)"),
+    ]:
+        sub = fl_sub.add_parser(action_name, help=help_text)
+        sub.add_argument("value", help="Value to add/remove/set")
 
-        fl_sub.add_parser("show", help="Show current filter config")
-        fl_sub.add_parser("reset", help="Reset filters to defaults")
+    fl_sub.add_parser("show", help="Show current filter config")
+    fl_sub.add_parser("reset", help="Reset filters to defaults")
 
-        fl.set_defaults(func=_cmd_filter)
+    fl.set_defaults(func=_cmd_filter)
 
     # --- preload ---
     pl = subparsers.add_parser("preload", help="Paginate through history into cache")
@@ -647,14 +651,13 @@ def _build_parser() -> argparse.ArgumentParser:
     pl.set_defaults(func=_cmd_preload)
 
     # --- overview / o ---
-    for cmd_name in ("overview", "o"):
-        ov = subparsers.add_parser(cmd_name, help="Hierarchical overview of cached messages")
-        ov.add_argument("--source", "-s", help="Drill down into a specific source prefix")
-        ov.add_argument("--contact", "-c", help="Drill down into a specific contact")
-        ov.add_argument("--period", "-p", help="Filter by period: YYYY, YYYY-QN, YYYY-MM, or YYYY-MM..YYYY-MM")
-        ov.add_argument("--top", "-n", type=int, default=10, help="Number of top senders/threads (default: 10)")
-        _add_common_args(ov)
-        ov.set_defaults(func=_cmd_overview)
+    ov = subparsers.add_parser("overview", aliases=["o"], help="Hierarchical overview of cached messages")
+    ov.add_argument("--source", "-s", help="Drill down into a specific source prefix")
+    ov.add_argument("--contact", "-c", help="Drill down into a specific contact")
+    ov.add_argument("--period", "-p", help="Filter by period: YYYY, YYYY-QN, YYYY-MM, or YYYY-MM..YYYY-MM")
+    ov.add_argument("--top", "-n", type=int, default=10, help="Number of top senders/threads (default: 10)")
+    _add_common_args(ov)
+    ov.set_defaults(func=_cmd_overview)
 
     # --- cache ---
     ca = subparsers.add_parser("cache", help="Manage message cache")
@@ -666,14 +669,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ca.set_defaults(func=_cmd_cache)
 
     # --- status / st ---
-    for cmd_name in ("status", "st"):
-        st = subparsers.add_parser(cmd_name, help="Operational status, stats, efficiency")
-        st.set_defaults(func=_cmd_status)
+    st = subparsers.add_parser("status", aliases=["st"], help="Operational status, stats, efficiency")
+    st.set_defaults(func=_cmd_status)
 
     # --- help / h ---
-    for cmd_name in ("help", "h"):
-        hp = subparsers.add_parser(cmd_name, help="Show status and quick reference")
-        hp.set_defaults(func=_cmd_help)
+    hp = subparsers.add_parser("help", aliases=["h"], help="Show status and quick reference")
+    hp.set_defaults(func=_cmd_help)
 
     # --- auth ---
     au = subparsers.add_parser("auth", help="Authenticate with a platform")

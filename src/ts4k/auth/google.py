@@ -100,7 +100,8 @@ def get_credentials(
         raise FileNotFoundError(
             f"No client_secret.json found for {email}. "
             f"Place it at {config_dir / 'google' / email / 'client_secret.json'} "
-            f"or {config_dir / 'google' / 'client_secret.json'}"
+            f"or {config_dir / 'google' / 'client_secret.json'}. "
+            f"Setup guide: https://github.com/peterdrier/ts4k/blob/main/docs/setup-gmail.md"
         )
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), scopes)

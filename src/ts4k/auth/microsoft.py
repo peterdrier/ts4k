@@ -58,7 +58,10 @@ def get_credentials(
     Raises ``RuntimeError`` if the auth flow fails.
     """
     if not client_id:
-        raise ValueError("client_id is required for Microsoft auth")
+        raise ValueError(
+            "client_id is required for Microsoft auth. "
+            "Setup guide: https://github.com/peterdrier/ts4k/blob/main/docs/setup-o365.md"
+        )
 
     scopes = scopes or GRAPH_MAIL_READ_SCOPES
     config_dir = config_dir or _default_config_dir()
