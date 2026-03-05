@@ -12,9 +12,9 @@ from abc import ABC, abstractmethod
 class BaseAdapter(ABC):
     """Interface that all platform adapters must implement.
 
-    Adapters wrap existing MCP servers or CLIs — ts4k never reimplements
-    platform APIs directly.  Each adapter translates between the upstream
-    tool's native response format and the normalised dicts that the
+    Adapters wrap platform APIs (direct or via MCP bridges).  Each adapter
+    translates between the upstream tool's native response format and the
+    normalised dicts that the
     ts4k pipeline (normalize -> filter -> format) expects.
 
     The *source_prefix* is set at construction time — it's the user-chosen

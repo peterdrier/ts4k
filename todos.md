@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-05T12:00
+Last synced: 2026-03-05T18:00
 
 ## P1 — Bugs / Reliability
 
@@ -61,3 +61,5 @@ Last synced: 2026-03-05T12:00
 - [x] **Direct Gmail API** — Replaced MCP bridge with Google API calls (fe6420f)
 - [x] **Direct O365 API** — Replaced MCP bridge with Microsoft Graph calls (74ffaeb)
 - [x] **Public release docs** — README, contributing guide, etc. (73543c3)
+- [x] **Intentions doc + deploy plan refresh** — Created `docs/intentions.md` as stable vision doc. Updated deploy-plan.md for direct API reality. (4b3769a)
+- [x] **Code review fixes** — O365 token filename mismatch, CLAUDE.md repo layout/platform list, base.py docstring, WhatsApp architecture in deploy-plan.

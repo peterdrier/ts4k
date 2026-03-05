@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-ts4k (Token Saver 4000) is a Python CLI + MCP server that gives LLM agents token-efficient, unified access to messages across Gmail, WhatsApp, Telegram, and future platforms. It normalizes, filters, and compactly formats messages so downstream agents spend hundreds of tokens instead of thousands per interaction.
+ts4k (Token Saver 4000) is a Python CLI + MCP server that gives LLM agents token-efficient, unified access to messages across Gmail, WhatsApp, O365, and future platforms. It normalizes, filters, and compactly formats messages so downstream agents spend hundreds of tokens instead of thousands per interaction.
 
 **ts4k does not analyze or act on messages.** It retrieves, normalizes, and delivers. All intelligence belongs to the consuming agent.
 
@@ -62,9 +62,9 @@ ts4k/
 │   │   └── format.py        # Pipe-delimited, mini XML, mixed output
 │   ├── adapters/
 │   │   ├── base.py          # BaseAdapter interface
-│   │   ├── gmail.py         # Gmail adapter (wraps gog CLI)
-│   │   ├── whatsapp.py      # WhatsApp adapter
-│   │   └── telegram.py      # Telegram adapter
+│   │   ├── gmail.py         # Gmail adapter (direct Google API)
+│   │   ├── o365.py          # O365 adapter (direct Microsoft Graph API)
+│   │   └── whatsapp.py      # WhatsApp adapter (MCP bridge)
 │   └── state/
 │       ├── watermarks.py    # Per-platform processing timestamps
 │       ├── contacts.py      # Cross-platform identity map

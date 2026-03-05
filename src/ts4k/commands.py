@@ -1479,7 +1479,7 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
                 needs.append(prefix)
         elif provider == "o365":
             client_id = cfg.get("client_id", "")
-            token = config_dir / "microsoft" / client_id / "token.json"
+            token = config_dir / "microsoft" / client_id / "token_cache.json"
             if not token.is_file():
                 needs.append(prefix)
         # WhatsApp doesn't have a token file — auth is session-based

@@ -16,7 +16,7 @@ ts4k needs a deployment path that bundles everything users need. The scope of "e
 |-----------|------|---------|-----------|-------------------|
 | Gmail | Direct Google API (Python) | ts4k process | In-process | No |
 | O365 | Direct Microsoft Graph API (httpx) | ts4k process | In-process | No |
-| WhatsApp | Go MCP bridge (whatsapp-mcp-server) | Go binary | Long-running daemon | Yes |
+| WhatsApp | Python FastMCP server over stdio (reads from SQLite populated by Go bridge) | Python + Go | Long-running daemon | Yes |
 | Telegram | TBD (likely direct via python-telegram-bot) | ts4k process | TBD | TBD |
 | Slack | TBD (likely direct via slack_sdk) | ts4k process | TBD | TBD |
 | Others | TBD | TBD | TBD | TBD |
@@ -90,9 +90,11 @@ ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLA
 RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
     tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz
 
-# --- WhatsApp bridge (Go binary, only external-process connector) ---
+# --- WhatsApp bridge (Go bridge + Python FastMCP server) ---
 COPY --from=golang:1.22-alpine AS wa-builder
-# ... build whatsapp-mcp-server, copy binary to /usr/local/bin/whatsapp-mcp
+# ... build Go bridge binary, copy to /usr/local/bin/whatsapp-bridge
+COPY connectors/whatsapp-mcp /opt/connectors/whatsapp
+RUN cd /opt/connectors/whatsapp && pip install --no-cache-dir .
 
 # --- ts4k itself ---
 COPY . /opt/ts4k
