@@ -12,7 +12,7 @@ Last synced: 2026-03-05T12:00
 ## P2 — Token Optimization / UX (GitHub Issues)
 
 - [ ] **Trim MCP surface** [#2](https://github.com/peterdrier/ts4k/issues/2) — Collapse lesser-used MCP functions into single call routed through CLI parser. Track call frequency to inform decisions. Balance savings vs LLM usability.
-- [ ] **LLM-oriented help mode** [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` for structured agent reference. Setup workflows as step sequences, error→fix mappings, context-aware output. Builds on #4.
+- [x] ~~**LLM-oriented help mode**~~ [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` and `ts4k skill setup`: structured agent reference with context-aware output, setup sequences per provider, error→fix mappings.
 - [ ] **Mailbox stats** [#9](https://github.com/peterdrier/ts4k/issues/9) — Label/folder counts for inbox-zero tracking. Gmail `labels.list()` API is efficient. Enhance `status` or `overview` with live inbox/unread/category counts.
 
 ## P3 — Architecture / Quality

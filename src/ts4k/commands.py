@@ -1341,6 +1341,136 @@ def manage_cache(
     return "\n".join(lines)
 
 
+def llm_help() -> str:
+    """Return context-aware, agent-optimized help reference.
+
+    Adapts output based on current state:
+    - No sources → lead with setup
+    - Sources but missing auth → lead with auth
+    - Healthy → lead with commands
+    """
+    from ts4k import state
+
+    all_cfg = sources.list_all()
+    wm = watermarks.all()
+    lines: list[str] = []
+
+    lines.append("ts4k — Token Saver 4000 (agent reference)")
+    lines.append("")
+
+    # --- Context-aware lead section ---
+    if not all_cfg:
+        lines.append("STATUS: No sources configured. Complete setup first.")
+        lines.append("")
+        _append_setup(lines)
+        lines.append("")
+        _append_commands(lines)
+    else:
+        # Check for sources that might need auth
+        needs_auth = _sources_needing_auth(all_cfg)
+        lines.append("SOURCES:")
+        for prefix, cfg in sorted(all_cfg.items()):
+            provider = cfg.get("provider", "?")
+            detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
+            wm_ts = wm.get(prefix, "")
+            auth_status = " [needs auth]" if prefix in needs_auth else ""
+            wm_str = f" wm:{wm_ts}" if wm_ts else ""
+            lines.append(f"  {prefix}: {provider} ({detail}){auth_status}{wm_str}")
+        lines.append("")
+
+        if needs_auth:
+            lines.append("ACTION REQUIRED: Re-authenticate stale sources:")
+            for prefix in needs_auth:
+                cfg = all_cfg[prefix]
+                provider = cfg.get("provider", "")
+                if provider == "gmail":
+                    lines.append(f"  ts4k auth gmail {cfg.get('email', '<email>')}")
+                elif provider == "o365":
+                    lines.append(f"  ts4k auth o365 --client-id {cfg.get('client_id', '<id>')}")
+            lines.append("")
+
+        _append_commands(lines)
+        lines.append("")
+        _append_setup(lines)
+
+    lines.append("")
+    _append_errors(lines)
+    lines.append("")
+    config_dir = state.get_config_dir()
+    lines.append(f"CONFIG: {config_dir.path}")
+    lines.append("DOCS: https://github.com/peterdrier/ts4k/tree/main/docs")
+
+    return "\n".join(lines)
+
+
+def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
+    """Return prefixes of sources that likely need (re-)authentication."""
+    from ts4k import state
+
+    config_dir = state.get_config_dir().path
+    needs: list[str] = []
+    for prefix, cfg in all_cfg.items():
+        provider = cfg.get("provider", "").lower()
+        if provider == "gmail":
+            email = cfg.get("email", "")
+            token = config_dir / "google" / email / "token.json"
+            if not token.is_file():
+                needs.append(prefix)
+        elif provider == "o365":
+            client_id = cfg.get("client_id", "")
+            token = config_dir / "microsoft" / client_id / "token.json"
+            if not token.is_file():
+                needs.append(prefix)
+        # WhatsApp doesn't have a token file — auth is session-based
+    return needs
+
+
+def _append_commands(lines: list[str]) -> None:
+    """Append command reference to lines."""
+    lines.append("COMMANDS:")
+    lines.append("  ts4k updates [--source S] [--since T] [--count N]  New messages (updates watermark)")
+    lines.append("  ts4k list [--query Q] [--source S] [--count N]     Search messages")
+    lines.append("  ts4k get <prefix:id>                               Read single message body")
+    lines.append("  ts4k thread <prefix:id>                            Read thread/conversation")
+    lines.append("  ts4k overview [--source S] [--contact C]           Cache summary drill-down")
+    lines.append("  ts4k status                                        Health, stats, efficiency")
+    lines.append("  Source is a flag, not a subcommand: --source g, not 'ts4k g list'")
+    lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
+    lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
+    lines.append("  Filters (off by default): add -F to apply skip filters")
+
+
+def _append_setup(lines: list[str]) -> None:
+    """Append setup instructions to lines."""
+    lines.append("SETUP (per provider):")
+    lines.append("  Gmail:")
+    lines.append("    1. Get client_secret.json: Google Cloud Console > APIs & Services > Credentials > OAuth 2.0 > Download JSON")
+    lines.append("    2. mkdir -p ~/.config/ts4k/google/<email>/ && cp client_secret.json there")
+    lines.append("    3. ts4k src add g gmail email=<email>")
+    lines.append("    4. ts4k auth gmail <email>                  (opens browser for OAuth)")
+    lines.append("    5. ts4k updates --source g                  (verify)")
+    lines.append("  O365:")
+    lines.append("    1. Register app: Azure Portal > App registrations > New > add Mail.Read permission")
+    lines.append("    2. ts4k src add o o365 client_id=<id> tenant_id=<tid>")
+    lines.append("    3. ts4k auth o365 --client-id <id>          (device code flow)")
+    lines.append("    4. ts4k src discover                        (find mailboxes)")
+    lines.append("    5. ts4k updates --source o                  (verify)")
+    lines.append("  WhatsApp:")
+    lines.append('    1. ts4k src add w whatsapp mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
+    lines.append("    2. ts4k updates --source w                  (verify)")
+
+
+def _append_errors(lines: list[str]) -> None:
+    """Append error→fix mappings to lines."""
+    lines.append("ERRORS:")
+    lines.append('  "No client_secret.json" -> get OAuth JSON from Google Cloud Console, place in ~/.config/ts4k/google/<email>/')
+    lines.append('  "No sources configured" -> ts4k src add <prefix> <provider> ...')
+    lines.append('  "adapter not connected" -> ts4k status, then re-run ts4k auth')
+    lines.append('  "auth expired" -> ts4k auth gmail <email> (in a terminal with browser)')
+    lines.append('  "Invalid message ID" -> use prefix:id format, e.g. g:abc123')
+    lines.append('  WhatsApp validation error -> check server_command is a list in sources.json')
+
+
 def skill_reference(level: str = "basic") -> str:
     """Return compact command reference for skill mode.
 

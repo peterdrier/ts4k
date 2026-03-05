@@ -134,6 +134,10 @@ async def _cmd_list(args: argparse.Namespace) -> None:
 
 def _cmd_help(args: argparse.Namespace) -> None:
     """Handle the help / h command — show status and quick reference."""
+    if getattr(args, "llm", False):
+        print(commands.llm_help())
+        return
+
     cfg = state.get_config_dir()
     all_cfg = sources.list_all()
     wm = watermarks.all()
@@ -416,6 +420,10 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
         print(commands.skill_reference("more"))
         return
 
+    if subcmd == "setup":
+        print(commands.llm_help())
+        return
+
     argv = [subcmd] + (getattr(args, "skill_args", None) or [])
     # Force pipe format unless explicitly overridden
     if "-f" not in argv and "--format" not in argv:
@@ -674,6 +682,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- help / h ---
     hp = subparsers.add_parser("help", aliases=["h"], help="Show status and quick reference")
+    hp.add_argument("--llm", action="store_true", help="Agent-optimized reference (structured, context-aware)")
     hp.set_defaults(func=_cmd_help)
 
     # --- auth ---
