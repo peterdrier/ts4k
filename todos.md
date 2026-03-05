@@ -7,7 +7,7 @@ Last synced: 2026-03-05T12:00
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
 - [x] ~~**CLI help cleanup**~~ [#4](https://github.com/peterdrier/ts4k/issues/4) — `-h` deduplicated with `aliases=`; cross-references `help`; auth errors link to setup docs; first-run `help` shows quick setup guide.
 - [x] ~~**src add breaks WhatsApp**~~ [#6](https://github.com/peterdrier/ts4k/issues/6) — `server_command` auto-split on spaces in CLI; coerced from string in adapter; help updated with examples and o365 keys.
-- [ ] **Usage log: remaining items** [#10](https://github.com/peterdrier/ts4k/issues/10) — WhatsApp raw JIDs instead of contact names; stderr noise forcing `2>&1`; filter flag underused. *(5 of 10 items fixed: relative `--since`, empty results, `0b` size, non-interactive auth, wrong syntax errors.)*
+- [x] ~~**Usage log improvements**~~ [#10](https://github.com/peterdrier/ts4k/issues/10) — All 10 items addressed: relative `--since`, empty results, `0b` size, non-interactive auth, wrong syntax errors, WhatsApp JID→name fallback, stderr→stdout for command results, thread from message ID via cache, common mistakes in help, filter discoverability via skill/llm-help.
 
 ## P2 — Token Optimization / UX (GitHub Issues)
 

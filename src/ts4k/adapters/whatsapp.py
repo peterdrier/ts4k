@@ -53,8 +53,21 @@ def _wa_msg_to_dict(msg: dict, prefix: str) -> dict:
     # Ensure ISO 8601 T separator
     ts_iso = ts_raw.replace(" ", "T", 1) if ts_raw and "T" not in ts_raw else ts_raw
 
-    sender_name = msg.get("sender_name") or msg.get("sender_jid") or ""
+    sender_jid = msg.get("sender_jid") or ""
+    sender_name = msg.get("sender_name") or ""
     is_from_me = msg.get("is_from_me", False)
+
+    # Upstream MCP resolves most names via its SQLite DB.
+    # Fallback: ts4k contacts map, then chat_name for 1:1 chats, then raw JID.
+    if not sender_name and sender_jid:
+        from ts4k.state import contacts
+        alias = contacts.resolve(f"{prefix}:{sender_jid}")
+        if alias:
+            sender_name = alias
+        elif msg.get("chat_name") and not sender_jid.endswith("@g.us"):
+            sender_name = msg["chat_name"]
+        else:
+            sender_name = sender_jid
 
     result: dict[str, Any] = {
         "id": f"{prefix}:{msg.get('id', '')}",
@@ -66,6 +79,8 @@ def _wa_msg_to_dict(msg: dict, prefix: str) -> dict:
         "is_from_me": is_from_me,
     }
 
+    if sender_jid:
+        result["sender_jid"] = sender_jid
     if msg.get("chat_name"):
         result["chat_name"] = msg["chat_name"]
     if msg.get("chat_jid"):

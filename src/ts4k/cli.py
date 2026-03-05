@@ -77,7 +77,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
         ref_table=refs,
     )
     if result.error:
-        print(result.error, file=sys.stderr)
+        print(result.error)
         return
     refs.save(_refs_path())
     print(result.output)
@@ -86,7 +86,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
 async def _cmd_get(args: argparse.Namespace) -> None:
     refs = _load_ref_table() if args.id.startswith("#") else None
     if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
-        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.", file=sys.stderr)
+        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.")
         sys.exit(1)
     result = await commands.get_message(
         id=args.id,
@@ -94,7 +94,7 @@ async def _cmd_get(args: argparse.Namespace) -> None:
         ref_table=refs,
     )
     if result.error:
-        print(result.error, file=sys.stderr)
+        print(result.error)
         sys.exit(1)
     print(result.output)
 
@@ -102,7 +102,7 @@ async def _cmd_get(args: argparse.Namespace) -> None:
 async def _cmd_thread(args: argparse.Namespace) -> None:
     refs = _load_ref_table() if args.id.startswith("#") else None
     if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
-        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.", file=sys.stderr)
+        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.")
         sys.exit(1)
     result = await commands.get_thread(
         tid=args.id,
@@ -110,7 +110,7 @@ async def _cmd_thread(args: argparse.Namespace) -> None:
         ref_table=refs,
     )
     if result.error:
-        print(result.error, file=sys.stderr)
+        print(result.error)
         sys.exit(1)
     print(result.output)
 
@@ -126,7 +126,7 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         ref_table=refs,
     )
     if result.error:
-        print(result.error, file=sys.stderr)
+        print(result.error)
         return
     refs.save(_refs_path())
     print(result.output)
@@ -234,12 +234,12 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         if sources.remove(prefix):
             print(f"Removed source {prefix!r}.")
         else:
-            print(f"Source {prefix!r} not found.", file=sys.stderr)
+            print(f"Source {prefix!r} not found.")
 
     elif action == "list":
         all_cfg = sources.list_all()
         if not all_cfg:
-            print("No sources configured.", file=sys.stderr)
+            print("No sources configured.")
             print("Add one:  ts4k src add g gmail email=you@gmail.com")
             return
         for prefix, cfg in sorted(all_cfg.items()):
@@ -270,7 +270,7 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
                 break
 
     if not client_id:
-        print("Error: No O365 source with client_id configured.", file=sys.stderr)
+        print("Error: No O365 source with client_id configured.")
         sys.exit(1)
 
     adapter = O365Adapter(
@@ -283,7 +283,7 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
         async with adapter:
             result = await adapter.discover_mailboxes()
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {exc}")
         sys.exit(1)
 
     primary = result.get("primary", "")
@@ -291,7 +291,7 @@ async def _cmd_discover_o365(args: argparse.Namespace) -> None:
     display_name = result.get("display_name", "")
 
     if not primary:
-        print("  No mailbox found.", file=sys.stderr)
+        print("  No mailbox found.")
         return
 
     print(f"  User:     {display_name}")
@@ -336,12 +336,12 @@ async def _cmd_preload(args: argparse.Namespace) -> None:
 
     source = getattr(args, "source", None)
     if not source and not getattr(args, "resume", None):
-        print("Error: --source is required (or --resume to continue a job).", file=sys.stderr)
+        print("Error: --source is required (or --resume to continue a job).")
         sys.exit(1)
 
     if getattr(args, "bg", False):
         if not source:
-            print("Error: --source is required with --bg.", file=sys.stderr)
+            print("Error: --source is required with --bg.")
             sys.exit(1)
         result = commands.spawn_background_preload(
             source=source,
@@ -432,7 +432,7 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
     sub_args = parser.parse_args(argv)
 
     if not hasattr(sub_args, "func") or sub_args.func is None:
-        print(f"Unknown skill subcommand: {subcmd}", file=sys.stderr)
+        print(f"Unknown skill subcommand: {subcmd}. Run 'ts4k skill' for command reference.")
         sys.exit(1)
 
     await sub_args.func(sub_args)
@@ -445,7 +445,7 @@ def _cmd_auth(args: argparse.Namespace) -> None:
     if platform == "gmail":
         email = getattr(args, "email", None)
         if not email:
-            print("Error: email is required.", file=sys.stderr)
+            print("Error: email is required.")
             sys.exit(1)
 
         from ts4k.auth.google import get_credentials
@@ -458,24 +458,24 @@ def _cmd_auth(args: argparse.Namespace) -> None:
                 if creds.valid:
                     print(f"Credentials valid for {email}.")
                 else:
-                    print(f"Credentials exist but are not valid for {email}.", file=sys.stderr)
+                    print(f"Credentials exist but are not valid for {email}.")
                     sys.exit(1)
             else:
                 print(f"Authenticated {email} successfully.")
         except FileNotFoundError as exc:
             if check_only:
-                print(f"No credentials found for {email}.", file=sys.stderr)
+                print(f"No credentials found for {email}.")
                 print(f"Run: ts4k auth gmail {email}")
             else:
-                print(f"Error: {exc}", file=sys.stderr)
+                print(f"Error: {exc}")
             sys.exit(1)
         except Exception as exc:
-            print(f"Authentication failed: {exc}", file=sys.stderr)
+            print(f"Authentication failed: {exc}")
             sys.exit(1)
     elif platform == "o365":
         client_id = getattr(args, "client_id", None)
         if not client_id:
-            print("Error: --client-id is required.", file=sys.stderr)
+            print("Error: --client-id is required.")
             sys.exit(1)
 
         from ts4k.auth.microsoft import get_credentials as get_ms_credentials
@@ -489,16 +489,16 @@ def _cmd_auth(args: argparse.Namespace) -> None:
                 if "access_token" in creds:
                     print(f"Credentials valid for client {client_id}.")
                 else:
-                    print(f"Credentials exist but are not valid for client {client_id}.", file=sys.stderr)
+                    print(f"Credentials exist but are not valid for client {client_id}.")
                     sys.exit(1)
             else:
                 print(f"Authenticated client {client_id} successfully.")
         except Exception as exc:
-            print(f"Authentication failed: {exc}", file=sys.stderr)
+            print(f"Authentication failed: {exc}")
             sys.exit(1)
     else:
-        print("Usage: ts4k auth gmail <email>", file=sys.stderr)
-        print("       ts4k auth o365 --client-id <id> [--tenant-id <id>]", file=sys.stderr)
+        print("Usage: ts4k auth gmail <email>")
+        print("       ts4k auth o365 --client-id <id> [--tenant-id <id>]")
         sys.exit(1)
 
 
@@ -647,7 +647,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--source", "-s", help="Source prefix or provider name")
     pl.add_argument("--query", "-q", help="Search query (provider-specific)")
     pl.add_argument("--contact", help="Contact alias — auto-expands to bidirectional query")
-    pl.add_argument("--since", help="Start date: ISO timestamp or Nd shorthand")
+    pl.add_argument("--since", help="Start date: 2d, 6h, or ISO timestamp")
     pl.add_argument("--max-pages", type=int, default=100, help="Max pages to fetch (default: 100)")
     pl.add_argument("--page-size", type=int, default=50, help="Messages per page (default: 50)")
     pl.add_argument("--bodies", action="store_true", help="Fetch full message bodies (slower)")

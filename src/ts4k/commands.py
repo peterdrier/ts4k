@@ -432,6 +432,12 @@ async def get_thread(
     if adapter is None:
         return CommandResult(error=f"Source {prefix!r} not available.")
 
+    # If the ID looks like a message ID (not a thread ID), try resolving
+    # via cache — the cached message may have a thread_id field.
+    cached_msg = cache.get_message(tid)
+    if cached_msg and cached_msg.get("thread_id"):
+        tid = cached_msg["thread_id"]
+
     async with adapter:
         thread = await adapter.read_thread(tid)
         thread = _normalize_thread(thread)
@@ -1394,6 +1400,8 @@ def llm_help() -> str:
         _append_setup(lines)
 
     lines.append("")
+    _append_mistakes(lines)
+    lines.append("")
     _append_errors(lines)
     lines.append("")
     config_dir = state.get_config_dir()
@@ -1471,6 +1479,16 @@ def _append_errors(lines: list[str]) -> None:
     lines.append('  WhatsApp validation error -> check server_command is a list in sources.json')
 
 
+def _append_mistakes(lines: list[str]) -> None:
+    """Append common agent mistakes to lines."""
+    lines.append("COMMON MISTAKES:")
+    lines.append("  WRONG: ts4k g inbox              -> RIGHT: ts4k updates --source g")
+    lines.append("  WRONG: ts4k updates --hours 24   -> RIGHT: ts4k updates --since 24h")
+    lines.append("  WRONG: ts4k gmail whatsnew        -> RIGHT: ts4k updates --source gmail")
+    lines.append("  WRONG: ts4k list g                -> RIGHT: ts4k list --source g")
+    lines.append("  WRONG: ts4k get abc123            -> RIGHT: ts4k get g:abc123")
+
+
 def skill_reference(level: str = "basic") -> str:
     """Return compact command reference for skill mode.
 
@@ -1491,12 +1509,13 @@ def skill_reference(level: str = "basic") -> str:
         )
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
-        "updates [--source S] [--since T] [-n N]|What's new\n"
+        "updates [--source S] [--since T] [-n N]|What's new (e.g. updates --source g --since 6h)\n"
         "list [-q Q] [--source S] [-n N]|Search messages\n"
-        "get ID|Read message\n"
-        "thread TID|Read thread\n"
+        "get PREFIX:ID|Read message (e.g. get g:abc123)\n"
+        "thread PREFIX:ID|Read thread (e.g. thread g:abc123)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
         "status|Health + stats\n"
-        "IDs: g:xxx o:xxx w:xxx. Formats: -f p|j|x. Filters: -F.\n"
-        "More: ts4k skill more"
+        "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, ISO. -f p|j|x. -F filters.\n"
+        "Source is a FLAG (--source g), not a subcommand.\n"
+        "More: ts4k skill more | Setup: ts4k skill setup"
     )
