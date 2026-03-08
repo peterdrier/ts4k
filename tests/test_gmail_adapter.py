@@ -534,7 +534,7 @@ class TestGmailAdapterListMessages:
                 self.callback = callback
                 self.requests = []
 
-            def add(self, request):
+            def add(self, request, **kwargs):
                 self.requests.append(request)
 
             def execute(self):
@@ -576,7 +576,7 @@ class TestGmailAdapterListMessages:
             def __init__(self, callback):
                 self.callback = callback
                 self.requests = []
-            def add(self, request):
+            def add(self, request, **kwargs):
                 self.requests.append(request)
             def execute(self):
                 for i, _req in enumerate(self.requests):
@@ -769,6 +769,172 @@ class TestGmailAdapterIdStripping:
     def test_leaves_other_prefix(self):
         adapter = _make_adapter()
         assert adapter._strip_prefix("w:abc123") == "w:abc123"
+
+
+class TestGmailAdapterCacheAwareListing:
+    """Test that list_messages uses cache to skip API calls."""
+
+    @pytest.mark.asyncio
+    async def test_cached_messages_skip_batch_fetch(self, tmp_path, monkeypatch):
+        """Messages already in cache should not be re-fetched via batch."""
+        adapter = _make_adapter()
+
+        # Seed cache with msg1's header.
+        import ts4k.state.cache as cache_mod
+        monkeypatch.setattr(cache_mod, "_INDEX_FILE", tmp_path / "index.json")
+        monkeypatch.setattr(cache_mod, "_BODIES_DIR", tmp_path / "bodies")
+        monkeypatch.setattr(cache_mod, "_CACHE_DIR", tmp_path)
+        (tmp_path / "bodies").mkdir()
+
+        cached_header = {
+            "id": "g:msg1",
+            "raw_id": "msg1",
+            "thread_id": "g:t1",
+            "raw_thread_id": "t1",
+            "from": "Cached Sender <cached@test.com>",
+            "subject": "Cached Subject",
+            "date": "2026-02-20T09:15:00Z",
+            "snippet": "cached snippet",
+            "source": "g",
+        }
+        cache_mod.store_header("g:msg1", cached_header)
+
+        # Mock messages.list to return 2 IDs (msg1 cached, msg2 not).
+        list_result = {"messages": [{"id": "msg1"}, {"id": "msg2"}]}
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value=list_result
+        )
+
+        # Mock batch — should only fetch msg2.
+        fetched_ids = []
+
+        class MockBatch:
+            def __init__(self, callback):
+                self.callback = callback
+                self.requests = []
+            def add(self, request, **kwargs):
+                self.requests.append(request)
+            def execute(self):
+                for i, _req in enumerate(self.requests):
+                    fetched_ids.append("msg2")  # only msg2 should appear
+                    resp = _make_api_message(
+                        msg_id="msg2", subject="Fetched Subject",
+                        internal_date=EPOCH_MS_2026_02_19_14_30, format="metadata",
+                    )
+                    self.callback(str(i), resp, None)
+
+        adapter._service.new_batch_http_request = lambda callback: MockBatch(callback)
+
+        results = await adapter.list_messages("newer_than:1d")
+
+        assert len(results) == 2
+        assert len(fetched_ids) == 1  # Only msg2 was batch-fetched
+        # Cached msg should appear in results with cached data.
+        cached_result = [r for r in results if r.get("raw_id") == "msg1"][0]
+        assert cached_result["from"] == "Cached Sender <cached@test.com>"
+
+    @pytest.mark.asyncio
+    async def test_large_listing_chunked(self, tmp_path, monkeypatch):
+        """50 messages should be fetched in 2 chunks of 25, not one batch of 50."""
+        import ts4k.state.cache as cache_mod
+        monkeypatch.setattr(cache_mod, "_INDEX_FILE", tmp_path / "index.json")
+        monkeypatch.setattr(cache_mod, "_BODIES_DIR", tmp_path / "bodies")
+        monkeypatch.setattr(cache_mod, "_CACHE_DIR", tmp_path)
+        (tmp_path / "bodies").mkdir()
+
+        adapter = _make_adapter()
+
+        # 50 message IDs.
+        list_result = {"messages": [{"id": f"msg{i}"} for i in range(50)]}
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value=list_result
+        )
+
+        batch_call_count = [0]
+        batch_sizes = []
+
+        class MockBatch:
+            def __init__(self, callback):
+                self.callback = callback
+                self.requests = []
+            def add(self, request, **kwargs):
+                self.requests.append(request)
+            def execute(self):
+                batch_call_count[0] += 1
+                batch_sizes.append(len(self.requests))
+                for i, _req in enumerate(self.requests):
+                    idx = sum(batch_sizes[:-1]) + i
+                    resp = _make_api_message(
+                        msg_id=f"msg{idx}",
+                        subject=f"Subject {idx}",
+                        internal_date=str(1771578900000 - idx * 60000),
+                        format="metadata",
+                    )
+                    self.callback(str(i), resp, None)
+
+        adapter._service.new_batch_http_request = lambda callback: MockBatch(callback)
+
+        results = await adapter.list_messages("newer_than:7d", count=50)
+
+        assert len(results) == 50
+        assert batch_call_count[0] == 2  # 2 chunks
+        assert batch_sizes == [25, 25]
+
+    @pytest.mark.asyncio
+    async def test_429_errors_retried(self, tmp_path, monkeypatch):
+        """Messages that get 429'd in the first batch should be retried."""
+        import ts4k.state.cache as cache_mod
+        monkeypatch.setattr(cache_mod, "_INDEX_FILE", tmp_path / "index.json")
+        monkeypatch.setattr(cache_mod, "_BODIES_DIR", tmp_path / "bodies")
+        monkeypatch.setattr(cache_mod, "_CACHE_DIR", tmp_path)
+        (tmp_path / "bodies").mkdir()
+
+        adapter = _make_adapter()
+
+        list_result = {"messages": [{"id": "msg1"}, {"id": "msg2"}, {"id": "msg3"}]}
+        adapter._service.users().messages().list.return_value.execute = MagicMock(
+            return_value=list_result
+        )
+
+        from googleapiclient.errors import HttpError
+        mock_resp = MagicMock()
+        mock_resp.status = 429
+        mock_resp.reason = "Too Many Requests"
+        error_429 = HttpError(mock_resp, b'{"error": {"message": "Rate limit"}}')
+
+        call_count = [0]
+
+        class MockBatch:
+            def __init__(self, callback):
+                self.callback = callback
+                self.requests = []
+            def add(self, request, **kwargs):
+                self.requests.append(request)
+            def execute(self):
+                call_count[0] += 1
+                for i, _req in enumerate(self.requests):
+                    if call_count[0] == 1 and i == 1:
+                        # msg2 gets 429 on first attempt
+                        self.callback(str(i), None, error_429)
+                    else:
+                        idx = i if call_count[0] == 1 else 1  # retry batch has msg2
+                        msg_id = ["msg1", "msg2", "msg3"][idx] if call_count[0] == 1 else "msg2"
+                        resp = _make_api_message(
+                            msg_id=msg_id,
+                            subject=f"Subject {msg_id}",
+                            internal_date=str(1771578900000 - i * 60000),
+                            format="metadata",
+                        )
+                        self.callback(str(i), resp, None)
+
+        adapter._service.new_batch_http_request = lambda callback: MockBatch(callback)
+
+        results = await adapter.list_messages("newer_than:1d")
+
+        assert len(results) == 3  # All 3 returned, none silently dropped
+        assert call_count[0] == 2  # Original batch + 1 retry batch
+        result_ids = {r["raw_id"] for r in results}
+        assert result_ids == {"msg1", "msg2", "msg3"}
 
 
 # ---------------------------------------------------------------------------

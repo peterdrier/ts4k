@@ -303,6 +303,10 @@ class GmailAdapter(BaseAdapter):
             )
         return self._service
 
+    _BATCH_CHUNK_SIZE = 25
+    _BATCH_PAUSE_SECS = 0.2
+    _RETRY_PAUSE_SECS = 0.5
+
     # -- BaseAdapter data methods -------------------------------------------
 
     async def whatsnew(self, since: str | None = None) -> list[dict]:
@@ -325,10 +329,13 @@ class GmailAdapter(BaseAdapter):
     ) -> list[dict]:
         """Search Gmail and return a list of message-header dicts.
 
-        Two-step efficient fetch:
+        Three-step efficient fetch:
         1. messages.list() -> IDs only
-        2. Batch messages.get(format=metadata) -> headers + snippet for all IDs
+        2. Check cache — hits go straight to results
+        3. Chunked batch messages.get(format=metadata) for cache misses
         """
+        from ts4k.state import cache
+
         service = self._require_service()
 
         # Step 1: Get message IDs.
@@ -348,34 +355,22 @@ class GmailAdapter(BaseAdapter):
         if not message_ids:
             return []
 
-        # Step 2: Batch fetch metadata for all IDs.
-        results: list[dict] = []
-        errors: list[str] = []
+        # Step 2: Check cache — hits skip the batch fetch.
+        header_dicts: list[dict] = []
+        uncached_ids: list[str] = []
 
-        def _batch_callback(request_id, response, exception):
-            if exception is not None:
-                errors.append(f"{request_id}: {exception}")
-            else:
-                results.append(response)
-
-        batch = service.new_batch_http_request(callback=_batch_callback)
         for msg_id in message_ids:
-            batch.add(
-                service.users().messages().get(
-                    userId="me",
-                    id=msg_id,
-                    format="metadata",
-                    metadataHeaders=["Subject", "From", "Date", "To"],
-                )
-            )
-        await asyncio.to_thread(batch.execute)
+            prefixed = f"{self._prefix}:{msg_id}"
+            cached = cache.get_header(prefixed)
+            if cached is not None:
+                header_dicts.append(cached)
+            else:
+                uncached_ids.append(msg_id)
 
-        if errors:
-            for err in errors:
-                logger.warning("Batch metadata fetch error: %s", err)
-
-        # Convert to header dicts.
-        header_dicts = [_msg_to_headers(msg, self._prefix) for msg in results]
+        # Step 3: Chunked batch fetch for cache misses.
+        if uncached_ids:
+            fetched = await self._chunked_batch_fetch(service, uncached_ids)
+            header_dicts.extend(fetched)
 
         # Sort by date descending (internalDate order).
         header_dicts.sort(key=lambda m: m.get("date", ""), reverse=True)
@@ -386,6 +381,90 @@ class GmailAdapter(BaseAdapter):
             header_dicts[-1]["_next_page_token"] = next_token
 
         return header_dicts
+
+    async def _chunked_batch_fetch(
+        self, service: Any, msg_ids: list[str]
+    ) -> list[dict]:
+        """Fetch message metadata in chunks, with retry on 429 errors.
+
+        Splits *msg_ids* into chunks of ``_BATCH_CHUNK_SIZE``, pausing
+        between chunks to stay under rate limits.  Messages that receive
+        a 429 response are retried once after a longer pause.
+        """
+        all_headers: list[dict] = []
+
+        for chunk_idx in range(0, len(msg_ids), self._BATCH_CHUNK_SIZE):
+            if chunk_idx > 0:
+                await asyncio.sleep(self._BATCH_PAUSE_SECS)
+
+            chunk = msg_ids[chunk_idx : chunk_idx + self._BATCH_CHUNK_SIZE]
+            headers, failed_ids = await self._batch_fetch_chunk(service, chunk)
+            all_headers.extend(headers)
+
+            # Retry 429-failed IDs once.
+            if failed_ids:
+                logger.info(
+                    "Retrying %d message(s) after 429: %s",
+                    len(failed_ids),
+                    failed_ids,
+                )
+                await asyncio.sleep(self._RETRY_PAUSE_SECS)
+                retry_headers, still_failed = await self._batch_fetch_chunk(
+                    service, failed_ids
+                )
+                all_headers.extend(retry_headers)
+                if still_failed:
+                    logger.warning(
+                        "Failed to fetch %d message(s) after retry: %s",
+                        len(still_failed),
+                        still_failed,
+                    )
+
+        return all_headers
+
+    async def _batch_fetch_chunk(
+        self, service: Any, msg_ids: list[str]
+    ) -> tuple[list[dict], list[str]]:
+        """Fetch a single batch chunk of message metadata.
+
+        Returns ``(header_dicts, failed_ids)`` where *failed_ids* are
+        message IDs that received a 429 response and should be retried.
+        """
+        results: list[dict] = []
+        failed_ids: list[str] = []
+        id_map: dict[str, str] = {}
+
+        def _batch_callback(request_id, response, exception):
+            if exception is not None:
+                resp = getattr(exception, "resp", None)
+                if resp is not None and resp.status == 429:
+                    failed_ids.append(id_map[request_id])
+                else:
+                    logger.warning(
+                        "Batch metadata fetch error for %s: %s",
+                        id_map.get(request_id, request_id),
+                        exception,
+                    )
+            else:
+                results.append(response)
+
+        batch = service.new_batch_http_request(callback=_batch_callback)
+        for i, msg_id in enumerate(msg_ids):
+            req_id = str(i)
+            id_map[req_id] = msg_id
+            batch.add(
+                service.users().messages().get(
+                    userId="me",
+                    id=msg_id,
+                    format="metadata",
+                    metadataHeaders=["Subject", "From", "Date", "To"],
+                ),
+                request_id=req_id,
+            )
+        await asyncio.to_thread(batch.execute)
+
+        header_dicts = [_msg_to_headers(msg, self._prefix) for msg in results]
+        return header_dicts, failed_ids
 
     async def read_message(self, msg_id: str) -> dict:
         """Fetch a single message by its ts4k prefixed ID (``g:XXXX``)."""
