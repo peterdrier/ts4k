@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-08T12:00
+Last synced: 2026-03-08 (v0.1.9)
 
 ## P1 — Bugs / Reliability
 
@@ -54,6 +54,7 @@ Last synced: 2026-03-08T12:00
 
 ## Recently Completed
 
+- [x] **CLI `--version` flag** — `ts4k --version` now shows version from package metadata; removed stale hardcoded `__version__` in `__init__.py`.
 - [x] **Trim MCP surface** [#2](https://github.com/peterdrier/ts4k/issues/2) — 11→7 tools, 29% token savings. (closed)
 - [x] **LLM-oriented help mode** [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` + `ts4k skill setup`. (closed)
 - [x] **Mailbox stats** [#9](https://github.com/peterdrier/ts4k/issues/9) — `ts4k status --live` with label/folder counts. (closed)

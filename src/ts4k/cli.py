@@ -592,10 +592,17 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for the ts4k CLI."""
+    from ts4k import __version__
+
     parser = argparse.ArgumentParser(
         prog="ts4k",
         description="Token-efficient messaging gateway for LLM agents.",
         epilog="Run 'ts4k help' for a quick reference with live source status.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "-v", "--verbose",
