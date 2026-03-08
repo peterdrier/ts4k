@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-05T18:00
+Last synced: 2026-03-08T12:00
 
 ## P1 — Bugs / Reliability
 
@@ -11,15 +11,19 @@ Last synced: 2026-03-05T18:00
 
 ## P2 — Token Optimization / UX (GitHub Issues)
 
-- [x] ~~**Trim MCP surface**~~ [#2](https://github.com/peterdrier/ts4k/issues/2) — Collapsed 5 admin tools (contacts, filter, cache, preload, preload_status) into single `admin` tool routing through CLI parser. 11→7 tools, 2963→2100 tokens (−863, 29.1% savings).
-- [x] ~~**LLM-oriented help mode**~~ [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` and `ts4k skill setup`: structured agent reference with context-aware output, setup sequences per provider, error→fix mappings.
-- [x] ~~**Mailbox stats**~~ [#9](https://github.com/peterdrier/ts4k/issues/9) — `ts4k status --live` with label/folder counts for inbox-zero tracking. Gmail `labels.list()` API integration.
+- [ ] **Setup doc deep links** [#5](https://github.com/peterdrier/ts4k/issues/5) — Add direct console/portal URLs to Gmail/O365 setup docs so users don't have to navigate by menu path. Gmail needs 4 deep links; O365 sidebar hints. Partially addressed by O365 doc improvements (c948c36, ea07f3d).
 
 ## P3 — Architecture / Quality
 
 - [ ] **MCP lifecycle ownership** — Unclear who owns restart/failure semantics. Resolve before production. (codex-issues #6)
 - [ ] **Observability plan** — No concrete logging/metrics/alerting/tracing plan beyond status output. (codex-issues #7)
 - [ ] **Bundle whatsapp-mcp-server** [#7](https://github.com/peterdrier/ts4k/issues/7) — Single-command WhatsApp setup: clone, install deps, generate config, register source, guide auth. Managed service directory at `~/.config/ts4k/services/`. Phase 2+ work.
+- [ ] [MEDIUM/Security] **OAuth token files lack restrictive permissions** — Token files written without `0o600`; readable by other users on shared systems. `auth/google.py:90,138`, `auth/microsoft.py:137`. (found by: security audit, 2026-03-08)
+- [ ] [MEDIUM/Security] **O365 input validation** — Message IDs and mailbox not validated before URL interpolation; path traversal and OData injection possible. `adapters/o365.py:205,305,319`. (found by: security audit, 2026-03-08)
+- [ ] [MEDIUM/Security] **MCP HTTP transport has no auth** — Anyone who can reach the port gets full tool access. `server.py:333-336`. (found by: security audit, 2026-03-08)
+- [ ] [MEDIUM/Quality] **`commands.py` decomposition** — 1578 lines; Gemini identified 7 extractable module groups + 2 consolidation patterns. (found by: complexity scan, 2026-03-08)
+- [ ] [LOW/Security] Cache body filename sanitization only replaces `:` → `_`; crafted IDs could write outside cache dir. `state/cache.py:69`. (found by: security audit, 2026-03-08)
+- [ ] [LOW/Infra] `.pytest_tmp` with broken NTFS permissions — blocks Gemini CLI folder scanning. Remove via `cmd /c rmdir .pytest_tmp`. (found by: maintenance scan, 2026-03-08)
 
 ## Phase 5 — Send + Docker + Release (incomplete)
 
@@ -50,6 +54,12 @@ Last synced: 2026-03-05T18:00
 
 ## Recently Completed
 
+- [x] **Trim MCP surface** [#2](https://github.com/peterdrier/ts4k/issues/2) — 11→7 tools, 29% token savings. (closed)
+- [x] **LLM-oriented help mode** [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` + `ts4k skill setup`. (closed)
+- [x] **Mailbox stats** [#9](https://github.com/peterdrier/ts4k/issues/9) — `ts4k status --live` with label/folder counts. (closed)
+- [x] **Usage log improvements** [#10](https://github.com/peterdrier/ts4k/issues/10) — All 10 friction points addressed. (closed)
+- [x] **CLI help cleanup** [#4](https://github.com/peterdrier/ts4k/issues/4) — Deduplicated aliases, fixed crash, added setup links. (closed)
+- [x] **src add fixes** [#6](https://github.com/peterdrier/ts4k/issues/6) — server_command auto-split, coercion, help updates. (closed)
 - [x] **Optimize token usage** [#1](https://github.com/peterdrier/ts4k/issues/1) — Measured actual token counts, trimmed timestamps/IDs. (closed)
 - [x] **Local project config** [#3](https://github.com/peterdrier/ts4k/issues/3) — Resolution order: env var → `.ts4k/` in cwd → `~/.config/ts4k/`. `--local` flag added. (closed)
 - [x] **Atomic state writes** — Fixed state corruption risk under concurrent use (666f3e3)
