@@ -462,6 +462,50 @@ async def updates(
     )
 
 
+async def whatsnew(
+    key: str,
+    source: str | None = None,
+    count: int = 20,
+    fmt: str = "pipe",
+    filter: bool = False,
+    ref_table: RefTable | None = None,
+) -> CommandResult:
+    """Fetch new messages using keyed watermarks."""
+    from ts4k.state import keyed_watermarks
+
+    active_prefixes = _resolve_prefixes(source)
+    saved = keyed_watermarks.get_all(key)
+
+    default_since = (
+        datetime.now(timezone.utc) - timedelta(days=7)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    since_map = {p: saved.get(p, default_since) for p in active_prefixes}
+
+    result = await _fetch_messages(
+        since=since_map,
+        count=count,
+        source=source,
+        fmt=fmt,
+        filter=filter,
+        ref_table=ref_table,
+        stat_cmd="wn",
+    )
+
+    # Advance watermarks per source to newest returned message
+    if result._messages:
+        new_watermarks: dict[str, str] = {}
+        for msg in result._messages:
+            src = msg.get("source", "")
+            date = msg.get("date", "")
+            if src and date and date > new_watermarks.get(src, ""):
+                new_watermarks[src] = date
+        if new_watermarks:
+            keyed_watermarks.update(key, new_watermarks)
+
+    return result
+
+
 async def get_message(
     id: str, fmt: str = "pipe", ref_table: RefTable | None = None
 ) -> CommandResult:

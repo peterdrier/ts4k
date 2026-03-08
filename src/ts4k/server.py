@@ -80,6 +80,36 @@ async def updates(
 
 
 @mcp.tool()
+async def whatsnew(
+    key: str,
+    source: str = "all",
+    count: int = 20,
+    fmt: str = "pipe",
+    filter: bool = False,
+) -> str:
+    """Check for new messages using keyed watermarks.
+
+    Each key (e.g. "life", "peter") tracks independent read positions
+    per source. First run checks last 7 days. Subsequent runs pick up
+    where the previous call left off.
+
+    Args:
+        key: Watermark key name (e.g. "life", "peter").
+        source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
+        count: Maximum messages to return (default 20).
+        fmt: Output format — "pipe" (default, most compact), "json", or "xml".
+        filter: Apply configured skip filters (default off).
+    """
+    result = await commands.whatsnew(
+        key=key, source=source, count=count, fmt=fmt,
+        filter=filter, ref_table=_refs,
+    )
+    if result.error:
+        return result.error
+    return result.output
+
+
+@mcp.tool()
 async def get(id: str, fmt: str = "pipe") -> str:
     """Read a single message by its prefixed ID or short ref.
 

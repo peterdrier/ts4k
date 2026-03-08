@@ -83,6 +83,23 @@ async def _cmd_updates(args: argparse.Namespace) -> None:
     print(result.output)
 
 
+async def _cmd_whatsnew(args: argparse.Namespace) -> None:
+    refs = _new_ref_table()
+    result = await commands.whatsnew(
+        key=args.key,
+        source=getattr(args, "source", None),
+        count=getattr(args, "count", 20) or 20,
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        filter=getattr(args, "filter", False),
+        ref_table=refs,
+    )
+    if result.error:
+        print(result.error)
+        return
+    refs.save(_refs_path())
+    print(result.output)
+
+
 async def _cmd_get(args: argparse.Namespace) -> None:
     refs = _load_ref_table() if args.id.startswith("#") else None
     if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
@@ -611,6 +628,14 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
     _add_common_args(up)
     up.set_defaults(func=_cmd_updates)
+
+    # --- whatsnew / wn ---
+    wn = subparsers.add_parser("whatsnew", aliases=["wn"], help="Check for new messages (keyed watermarks)")
+    wn.add_argument("key", help="Watermark key (e.g. life, peter)")
+    wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+    wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all")
+    _add_common_args(wn)
+    wn.set_defaults(func=_cmd_whatsnew)
 
     # --- get / g ---
     get = subparsers.add_parser("get", aliases=["g"], help="Read a single message")
