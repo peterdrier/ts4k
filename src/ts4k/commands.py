@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +237,40 @@ def _since_to_iso(since: str | None, prefix: str) -> str | None:
     return since
 
 
+def _utc_to_gmail_query(since: str | None) -> str:
+    """Convert a UTC ISO timestamp to a Gmail ``after:EPOCH`` query fragment.
+
+    Returns ``"newer_than:1d"`` if *since* is None.
+    """
+    if since is None:
+        return "newer_than:1d"
+    try:
+        dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        return f"after:{int(dt.timestamp())}"
+    except ValueError:
+        return "newer_than:1d"
+
+
+def _resolve_since_to_utc(since: str | None) -> str | None:
+    """Convert a relative time or ISO string to a UTC ISO timestamp.
+
+    Accepts ``"2d"``, ``"6h"``, an ISO timestamp, or ``"all"`` (returns None).
+    Returns None if *since* is None (caller decides default).
+    """
+    if since is None:
+        return None
+    if since.lower() == "all":
+        return None
+    # Relative: Nd or Nh
+    if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
+        n = int(since[:-1])
+        delta = timedelta(days=n) if since[-1] == "d" else timedelta(hours=n)
+        dt = datetime.now(timezone.utc) - delta
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Assume ISO already
+    return since
+
+
 def _raw_bytes(messages: list[dict]) -> int:
     """Estimate raw bytes from message dicts (pre-format size)."""
     return sum(len(_json.dumps(m).encode("utf-8")) for m in messages)
@@ -283,10 +318,14 @@ def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_whatsnew_for_source(
+async def _fetch_for_source(
     prefix: str, cfg: dict[str, Any], since: str | None, count: int
 ) -> list[dict]:
-    """Fetch new messages from a single source. Returns normalized dicts."""
+    """Fetch new messages from a single source.
+
+    *since* must be a resolved UTC ISO timestamp (or None for no bound).
+    Returns normalized message dicts.
+    """
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
         return []
@@ -295,11 +334,10 @@ async def _fetch_whatsnew_for_source(
     try:
         async with adapter:
             if provider == "gmail":
-                query = _since_to_gmail_query(since, prefix)
+                query = _utc_to_gmail_query(since)
                 listing = await adapter.list_messages(query=query, count=count)
             else:
-                iso_since = _since_to_iso(since, prefix)
-                listing = await adapter.whatsnew(since=iso_since)
+                listing = await adapter.whatsnew(since=since)
 
             if not listing:
                 return []
@@ -316,22 +354,32 @@ async def _fetch_whatsnew_for_source(
         return []
 
 
-# ---------------------------------------------------------------------------
-# Command functions
-# ---------------------------------------------------------------------------
-
-
-async def whatsnew(
-    source: str | None = None,
-    since: str | None = None,
+async def _fetch_messages(
+    since: dict[str, str | None],
     count: int = 20,
+    source: str | None = None,
     fmt: str = "pipe",
     filter: bool = False,
     ref_table: RefTable | None = None,
+    stat_cmd: str = "wn",
 ) -> CommandResult:
-    """Fetch new messages, update watermarks, return formatted output."""
-    active_prefixes = _resolve_prefixes(source)
+    """Shared fetch layer — parallel fetch, collate, format.
+
+    Args:
+        since: Mapping of source prefix to resolved UTC ISO timestamp
+               (or None for default/no bound).
+        count: Maximum messages to return.
+        source: Original source arg (for error messages).
+        fmt: Output format (pipe, json, xml).
+        filter: Whether to apply skip filters.
+        ref_table: Optional ref table for short refs.
+        stat_cmd: Stats command label (``"wn"`` or ``"u"``).
+
+    Returns a CommandResult with ``_messages`` populated (the truncated list).
+    Does NOT touch watermarks.
+    """
     all_cfg = _ensure_sources()
+    active_prefixes = list(since.keys())
 
     tasks: list[asyncio.Task] = []
     task_prefixes: list[str] = []
@@ -341,7 +389,7 @@ async def whatsnew(
         if cfg:
             tasks.append(
                 asyncio.create_task(
-                    _fetch_whatsnew_for_source(prefix, cfg, since, count)
+                    _fetch_for_source(prefix, cfg, since[prefix], count)
                 )
             )
             task_prefixes.append(prefix)
@@ -356,28 +404,88 @@ async def whatsnew(
         all_messages.extend(msgs)
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
-    all_messages = all_messages[:count]
+
+    total_fetched = len(all_messages)
+    truncated = all_messages[:count]
+    has_more = total_fetched > count
+    remaining = total_fetched - count if has_more else 0
 
     if filter:
-        all_messages = apply_filters(all_messages, filters.get_config())
+        truncated = apply_filters(truncated, filters.get_config())
 
-    if not all_messages:
+    if not truncated:
         return CommandResult(error="No new messages.")
 
-    ref_map = ref_table.assign(all_messages) if ref_table else None
-    output = format_listing(all_messages, fmt=fmt, ref_map=ref_map)
-    _record_stats("wn", all_messages, output)
+    ref_map = ref_table.assign(truncated) if ref_table else None
+    output = format_listing(truncated, fmt=fmt, ref_map=ref_map)
 
-    # Update watermarks per source
-    for prefix, msgs in zip(task_prefixes, results):
-        if msgs:
-            newest = max(m.get("date", "") for m in msgs)
-            if newest:
-                watermarks.update(prefix, newest)
+    if has_more:
+        output += f"\n--- {remaining} more messages available ---"
+
+    _record_stats(stat_cmd, truncated, output)
 
     return CommandResult(
-        output=output, messages_processed=len(all_messages), ref_map=ref_map
+        output=output,
+        messages_processed=len(truncated),
+        ref_map=ref_map,
+        has_more=has_more,
+        remaining=remaining,
+        _messages=truncated,
     )
+
+
+# ---------------------------------------------------------------------------
+# Command functions
+# ---------------------------------------------------------------------------
+
+
+async def whatsnew(
+    source: str | None = None,
+    since: str | None = None,
+    count: int = 20,
+    fmt: str = "pipe",
+    filter: bool = False,
+    ref_table: RefTable | None = None,
+) -> CommandResult:
+    """Fetch new messages, update watermarks, return formatted output.
+
+    .. deprecated:: This function will be replaced by ``updates()`` (stateless)
+       and ``whatsnew(key)`` (keyed watermarks) in Tasks 4 and 5.
+    """
+    active_prefixes = _resolve_prefixes(source)
+
+    # Resolve since per-prefix: old behavior looked up watermarks when since=None
+    since_map: dict[str, str | None] = {}
+    for prefix in active_prefixes:
+        if since is not None:
+            since_map[prefix] = _resolve_since_to_utc(since)
+        else:
+            # Legacy: use old watermark as default
+            wm = watermarks.get(prefix)
+            since_map[prefix] = wm  # None if no watermark
+
+    result = await _fetch_messages(
+        since=since_map,
+        count=count,
+        source=source,
+        fmt=fmt,
+        filter=filter,
+        ref_table=ref_table,
+        stat_cmd="wn",
+    )
+
+    # Update watermarks per source from returned messages
+    if result._messages:
+        by_source: dict[str, str] = {}
+        for msg in result._messages:
+            src = msg.get("source", "")
+            date = msg.get("date", "")
+            if src and date and date > by_source.get(src, ""):
+                by_source[src] = date
+        for prefix, newest in by_source.items():
+            watermarks.update(prefix, newest)
+
+    return result
 
 
 async def get_message(
