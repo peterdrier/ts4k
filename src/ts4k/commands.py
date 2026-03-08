@@ -439,7 +439,7 @@ async def _fetch_messages(
 # ---------------------------------------------------------------------------
 
 
-async def whatsnew(
+async def updates(
     source: str | None = None,
     since: str | None = None,
     count: int = 20,
@@ -447,45 +447,19 @@ async def whatsnew(
     filter: bool = False,
     ref_table: RefTable | None = None,
 ) -> CommandResult:
-    """Fetch new messages, update watermarks, return formatted output.
-
-    .. deprecated:: This function will be replaced by ``updates()`` (stateless)
-       and ``whatsnew(key)`` (keyed watermarks) in Tasks 4 and 5.
-    """
+    """Fetch messages by time range. Stateless — no watermarks."""
     active_prefixes = _resolve_prefixes(source)
-
-    # Resolve since per-prefix: old behavior looked up watermarks when since=None
-    since_map: dict[str, str | None] = {}
-    for prefix in active_prefixes:
-        if since is not None:
-            since_map[prefix] = _resolve_since_to_utc(since)
-        else:
-            # Legacy: use old watermark as default
-            wm = watermarks.get(prefix)
-            since_map[prefix] = wm  # None if no watermark
-
-    result = await _fetch_messages(
+    resolved_ts = _resolve_since_to_utc(since)
+    since_map = {p: resolved_ts for p in active_prefixes}
+    return await _fetch_messages(
         since=since_map,
         count=count,
         source=source,
         fmt=fmt,
         filter=filter,
         ref_table=ref_table,
-        stat_cmd="wn",
+        stat_cmd="u",
     )
-
-    # Update watermarks per source from returned messages
-    if result._messages:
-        by_source: dict[str, str] = {}
-        for msg in result._messages:
-            src = msg.get("source", "")
-            date = msg.get("date", "")
-            if src and date and date > by_source.get(src, ""):
-                by_source[src] = date
-        for prefix, newest in by_source.items():
-            watermarks.update(prefix, newest)
-
-    return result
 
 
 async def get_message(

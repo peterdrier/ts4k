@@ -66,9 +66,9 @@ def _load_ref_table() -> RefTable:
 # ---------------------------------------------------------------------------
 
 
-async def _cmd_whatsnew(args: argparse.Namespace) -> None:
+async def _cmd_updates(args: argparse.Namespace) -> None:
     refs = _new_ref_table()
-    result = await commands.whatsnew(
+    result = await commands.updates(
         source=getattr(args, "source", None),
         since=getattr(args, "since", None),
         count=getattr(args, "count", 20) or 20,
@@ -604,13 +604,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", title="Commands", metavar="<command>")
 
-    # --- whatsnew / wn / updates ---
-    wn = subparsers.add_parser("updates", aliases=["whatsnew", "wn"], help="Show new messages (updates watermark)")
-    wn.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
-    wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-    wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
-    _add_common_args(wn)
-    wn.set_defaults(func=_cmd_whatsnew)
+    # --- updates / u ---
+    up = subparsers.add_parser("updates", aliases=["u"], help="Fetch messages by time range (stateless)")
+    up.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
+    up.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+    up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    _add_common_args(up)
+    up.set_defaults(func=_cmd_updates)
 
     # --- get / g ---
     get = subparsers.add_parser("get", aliases=["g"], help="Read a single message")

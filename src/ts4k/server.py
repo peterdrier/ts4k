@@ -55,18 +55,18 @@ async def updates(
     fmt: str = "pipe",
     filter: bool = False,
 ) -> str:
-    """Fetch new messages since the last check (updates watermark).
+    """Fetch messages by time range. Stateless — no watermarks.
 
     Listings use short refs (#1, #2, ...) — pass these to get/thread.
 
     Args:
         source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
-        since: Time range — "2d", "7d", ISO timestamp, or omit for watermark.
+        since: Time range — "2d", "7d", ISO timestamp. Defaults to 1d if omitted.
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default, most compact), "json", or "xml".
         filter: Apply configured skip filters (default off).
     """
-    result = await commands.whatsnew(
+    result = await commands.updates(
         source=source,
         since=since,
         count=count,
