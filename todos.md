@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-08 (v0.1.10)
+Last synced: 2026-03-08T23:00 (v0.1.11)
 
 ## P1 — Bugs / Reliability
 
@@ -12,9 +12,13 @@ Last synced: 2026-03-08 (v0.1.10)
 ## P1.5 — Bugs / Normalization
 
 - [ ] **WhatsApp 1-on-1 chat: wrong `from` field** — Private chats show an unrelated label (e.g. "Anker technology") in `from` instead of the contact name. Sender ends up in `subject`. Likely a WhatsApp adapter normalization bug — group vs 1-on-1 detection issue.
+- [ ] **WhatsApp group system notifications swap sender/chat** [#11](https://github.com/peterdrier/ts4k/issues/11) — "Group members have changed" notifications show group name in FROM and member in SUBJECT (reversed). Either filter out membership-change notifications or fix the mapping.
+- [x] ~~**Gmail 429 on listings**~~ [#12](https://github.com/peterdrier/ts4k/issues/12) — Fixed: chunked batch fetch (groups of 25), cache check before API calls, 429 retry.
 
 ## P2 — Token Optimization / UX (GitHub Issues)
 
+- [x] ~~**Skill text: unified whatsnew guidance**~~ [#14](https://github.com/peterdrier/ts4k/issues/14) — Fixed: whatsnew shows all-sources-by-default, `--source` as optional filter.
+- [x] ~~**Skill text: prevent piped workarounds**~~ [#13](https://github.com/peterdrier/ts4k/issues/13) — Fixed: anti-piping guidance with correct alternatives.
 - [ ] **Setup doc deep links** [#5](https://github.com/peterdrier/ts4k/issues/5) — Add direct console/portal URLs to Gmail/O365 setup docs so users don't have to navigate by menu path. Gmail needs 4 deep links; O365 sidebar hints. Partially addressed by O365 doc improvements (c948c36, ea07f3d).
 
 ## P3 — Architecture / Quality
