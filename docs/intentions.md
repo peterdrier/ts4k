@@ -34,13 +34,13 @@ One MCP server replaces N platform-specific ones. One CLI command checks all pla
 These are always-intended, defining features of ts4k:
 
 - **Normalize pipeline** -- HTML stripping, reply chain dedup, whitespace collapse, signature removal, tracking pixel removal. Raw 8000-token HTML email becomes ~400 tokens.
-- **Unified cross-platform feed** -- `whatsnew` returns merged, normalized activity across all configured sources in a single call.
+- **Unified cross-platform feed** -- `updates` returns merged, normalized activity across all configured sources in a single call. `whatsnew <key>` adds keyed watermark tracking so independent workflows (e.g. "life admin" vs "personal") maintain separate progress without conflict.
 - **Message retrieval** -- `get` (single message), `thread` (conversation), `list` (search/filter). All with normalization and metadata-first defaults.
 - **Hierarchical drill-down** -- `overview` enables cheap exploration of massive mailboxes: summary -> period -> thread -> message. Each level is token-cheap.
 - **Contact identity linking** -- Cross-platform person mapping (same person across Gmail, WhatsApp, O365). LLM-managed: ts4k stores/queries, the consuming LLM drives linking decisions.
 - **Compact output formats** -- Pipe-delimited for listings (~60% savings over JSON), mini XML for message bodies, mixed formats with clear boundaries.
 - **Three modes** -- CLI (primary agent interface, zero context cost until used), MCP server (always-loaded for dedicated comms agents), Skill (thin self-documenting stub).
-- **Watermark state management** -- Per-platform last-seen tracking. Using `whatsnew` IS the side effect -- watermarks advance on use, no separate save step.
+- **Watermark state management** -- Per-key, per-source last-seen tracking. `whatsnew <key>` advances watermarks on use (no separate save step). Each key gets its own watermark file, enabling concurrent independent workflows. `updates` is stateless -- time/count based with no watermark interaction.
 - **Efficiency stats tracking** -- Bytes in/out, tokens saved, per-platform/contact/day breakdowns. Queryable via `status`.
 - **Filter configuration** -- Skip lists, category filters, sender allowlists. Multi-layer noise filtering eliminates 80-85% of messages before any LLM processing.
 
@@ -84,6 +84,6 @@ Gmail, WhatsApp, O365.
 2. **No LLM calls inside ts4k.** This is the data layer, not the intelligence layer.
 3. **Platform failures are isolated.** If one adapter is down, others still return results. Partial results are better than no results.
 4. **Native platform IDs** prefixed with source (`g:`, `w:`, `t:`). No synthetic sequential IDs.
-5. **Using a command IS the side effect.** Watermarks update on `whatsnew`. No separate save step.
+5. **Using a command IS the side effect.** `whatsnew <key>` advances watermarks on use. No separate save step.
 6. **Format is a feature.** Pipe-delimited for listings (~60% savings over JSON), mini XML for bodies.
 7. **Adapter-agnostic output.** Downstream consumers never see platform-specific data. A WhatsApp message and a Gmail message look identical after normalization.
