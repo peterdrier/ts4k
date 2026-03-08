@@ -74,6 +74,18 @@ Whatsnew keys:
   peter: 2 sources, last run 2026-03-07T09:00:00Z
 ```
 
+### Per-key accumulating refs (CLI)
+
+Pagination requires refs that survive across calls. When `whatsnew life` returns page 1 (`#1-#20`), the agent must be able to `get #7` after page 2 (`#21-#40`) loads.
+
+- **Bare numbers, no `#` prefix.** `#7` wastes a token vs `7`. Listings show `7|g|sender@...|Subject|14:30|255b`. `get 7` resolves from the ref table. Both CLI and MCP use bare numbers.
+- **CLI `whatsnew <key>`**: per-key ref file `refs-<key>.json`. Loads existing refs, appends new ones, saves back. Refs grow infinitely (FCFS, single-use IDs). Cross-service: `7` can be `g:abc123`, `9` can be `w:456def`.
+- **CLI `updates`**: current `refs.json`, overwrite per call (stateless).
+- **CLI `get`/`thread`**: `--key`/`-k` parameter specifies which ref file to use. `get -k life 7` resolves from `refs-life.json`. Without `--key`, falls back to global `refs.json` (for `updates` refs).
+- **MCP**: session-scoped in-memory RefTable, accumulates naturally. Also uses bare numbers.
+
+Future: add clear/reset per key, or smarter eviction.
+
 ### Future extension
 
 This design naturally extends to contact-scoped history retrieval — a key per contact with watermarks spanning all sources, fetching full cross-platform history for a person. Not in scope now.
