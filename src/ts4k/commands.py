@@ -49,6 +49,9 @@ class CommandResult:
     messages_processed: int = 0
     error: str | None = None
     ref_map: dict[str, int] | None = None  # {full_id: ref_num}
+    has_more: bool = False
+    remaining: int = 0
+    _messages: list[dict] | None = None  # internal: raw messages for watermark tracking
 
 
 # ---------------------------------------------------------------------------
