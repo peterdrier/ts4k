@@ -550,6 +550,27 @@ async def get_mailbox_stats(source: str | None = None) -> dict[str, dict | None]
     return dict(pairs)
 
 
+def _resolve_o365_username(cfg: dict[str, Any]) -> str | None:
+    """Resolve the /me account username from the MSAL token cache."""
+    try:
+        import json as _json
+        client_id = cfg.get("client_id", "")
+        if not client_id:
+            return None
+        config_dir = Path(os.environ.get("TS4K_CONFIG_DIR", "~/.config/ts4k")).expanduser()
+        cache_file = config_dir / "microsoft" / client_id / "token_cache.json"
+        if not cache_file.is_file():
+            return None
+        data = _json.loads(cache_file.read_text(encoding="utf-8"))
+        accounts = data.get("Account", {})
+        if accounts:
+            first = next(iter(accounts.values()))
+            return first.get("username")
+    except Exception:
+        pass
+    return None
+
+
 def get_status(
     mailbox_stats_data: dict[str, dict | None] | None = None,
     fmt: str = "pipe",
@@ -572,6 +593,13 @@ def get_status(
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
+            # For O365 /me sources missing email, resolve once and persist
+            if provider == "o365" and not detail:
+                username = _resolve_o365_username(cfg)
+                if username:
+                    detail = username
+                    extra = {k: v for k, v in cfg.items() if k != "provider"}
+                    sources.add(prefix, provider=provider, **extra, email=username)
             ok = True
             if provider == "whatsapp":
                 cwd = cfg.get("mcp_cwd", "")
@@ -604,7 +632,7 @@ def get_status(
         + len(fconfig.get("skip_patterns", []))
         + (1 if fconfig.get("skip_groups") else 0)
     )
-    lines.append(f"Filters:  {active_rules} active rules (use -F to apply)")
+    lines.append(f"Filters:  {active_rules} active rules")
 
     # Stats
     st = stats.get_all()
@@ -612,6 +640,8 @@ def get_status(
     total_out = st.get("total_bytes_out", 0)
     total_msgs = st.get("total_messages", 0)
     pct = stats.savings_pct()
+
+    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365"}
 
     lines.append("")
     lines.append("Stats:")
@@ -621,28 +651,37 @@ def get_status(
         lines.append(f"  Bytes out: {estimate_size(total_out)} ({total_out:,})")
         lines.append(f"  Savings:   {pct}%")
 
+        # Show all configured sources, even those with 0 messages
         by_source = st.get("by_source", {})
-        if by_source:
-            lines.append("")
-            lines.append("  By source:")
-            for src, data in sorted(by_source.items()):
-                label = {"g": "Gmail", "w": "WhatsApp", "o": "O365"}.get(src, src)
-                src_in = data.get("bytes_in", 0)
-                src_pct = (
-                    round((1 - data.get("bytes_out", 0) / src_in) * 100, 1) if src_in else 0
-                )
+        lines.append("")
+        lines.append("  By source:")
+        for src in sorted(all_cfg.keys()):
+            provider = all_cfg[src].get("provider", "")
+            base_label = _provider_labels.get(provider, provider)
+            label = base_label if src == provider[0:1] else f"{base_label}({src})"
+            data = by_source.get(src, {})
+            src_in = data.get("bytes_in", 0)
+            src_msgs = data.get("messages", 0)
+            src_pct = (
+                round((1 - data.get("bytes_out", 0) / src_in) * 100, 1) if src_in else 0
+            )
+            if src_msgs:
                 lines.append(
-                    f"    {label}: {data.get('messages', 0)} msgs, "
+                    f"    {label}: {src_msgs} msgs, "
                     f"{estimate_size(src_in)} in, {src_pct}% savings"
                 )
+            else:
+                lines.append(f"    {label}: 0 msgs")
 
         by_cmd = st.get("by_command", {})
         if by_cmd:
+            _cmd_labels = {"wn": "whatsnew", "g": "get", "l": "list", "t": "thread"}
             lines.append("")
             lines.append("  By command:")
             for cmd, data in sorted(by_cmd.items()):
+                cmd_label = _cmd_labels.get(cmd, cmd)
                 lines.append(
-                    f"    {cmd}: {data.get('calls', 0)} calls, "
+                    f"    {cmd_label}: {data.get('calls', 0)} calls, "
                     f"{estimate_size(data.get('bytes_in', 0))} in -> "
                     f"{estimate_size(data.get('bytes_out', 0))} out"
                 )
@@ -651,13 +690,16 @@ def get_status(
 
     # Cache
     cs = cache.stats()
+    disk_size = estimate_size(cs['index_bytes'] + cs['bodies_bytes'])
     lines.append("")
-    lines.append(f"Cache: {cs['total']} messages, {cs['bodies']} bodies")
+    lines.append(f"Cache: {cs['total']} headers, {cs['bodies']} bodies, {disk_size} on disk")
     if cs["total"]:
         for src, n in sorted(cs["by_source"].items()):
-            label = {"g": "Gmail", "o": "O365"}.get(src, src)
+            provider = all_cfg.get(src, {}).get("provider", "")
+            label = _provider_labels.get(provider, provider) if provider else src
+            if src != provider[0:1]:
+                label = f"{label}({src})"
             lines.append(f"  {label}: {n}")
-        lines.append(f"  Disk: {estimate_size(cs['index_bytes'] + cs['bodies_bytes'])}")
 
     lines.append("")
     lines.append(f"Config: {config_dir.path}  ({config_dir.reason})")

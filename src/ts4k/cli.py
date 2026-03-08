@@ -257,6 +257,13 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 print(f"Usage: ts4k src add {prefix} o365 client_id=<id> tenant_id=<tid>")
                 return
 
+            # For /me sources (no mailbox), resolve username from MSAL cache
+            if "mailbox" not in kwargs:
+                from ts4k.commands import _resolve_o365_username
+                username = _resolve_o365_username(kwargs)
+                if username:
+                    kwargs["email"] = username
+
         entry = sources.add(prefix, provider=provider, **kwargs)
         print(f"Added source {prefix!r}:")
         for k, v in sorted(entry.items()):
