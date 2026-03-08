@@ -34,7 +34,7 @@ mcp = FastMCP(
         "ts4k (Token Saver 4000) provides token-efficient access to messages "
         "across Gmail, WhatsApp, O365, and other platforms. Use pipe format "
         "(default) for maximum token efficiency. Listings use short refs "
-        "(#1, #2, ...) — use these with get/thread instead of full IDs."
+        "(1, 2, ...) — use these with get/thread instead of full IDs."
     ),
 )
 
@@ -55,18 +55,18 @@ async def updates(
     fmt: str = "pipe",
     filter: bool = False,
 ) -> str:
-    """Fetch new messages since the last check (updates watermark).
+    """Fetch messages by time range. Stateless — no watermarks.
 
-    Listings use short refs (#1, #2, ...) — pass these to get/thread.
+    Listings use short refs (1, 2, ...) — pass these to get/thread.
 
     Args:
         source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
-        since: Time range — "2d", "7d", ISO timestamp, or omit for watermark.
+        since: Time range — "2d", "7d", ISO timestamp. Defaults to 1d if omitted.
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default, most compact), "json", or "xml".
         filter: Apply configured skip filters (default off).
     """
-    result = await commands.whatsnew(
+    result = await commands.updates(
         source=source,
         since=since,
         count=count,
@@ -80,11 +80,41 @@ async def updates(
 
 
 @mcp.tool()
+async def whatsnew(
+    key: str,
+    source: str = "all",
+    count: int = 20,
+    fmt: str = "pipe",
+    filter: bool = False,
+) -> str:
+    """Check for new messages using keyed watermarks.
+
+    Each key (e.g. "life", "peter") tracks independent read positions
+    per source. First run checks last 7 days. Subsequent runs pick up
+    where the previous call left off.
+
+    Args:
+        key: Watermark key name (e.g. "life", "peter").
+        source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
+        count: Maximum messages to return (default 20).
+        fmt: Output format — "pipe" (default, most compact), "json", or "xml".
+        filter: Apply configured skip filters (default off).
+    """
+    result = await commands.whatsnew(
+        key=key, source=source, count=count, fmt=fmt,
+        filter=filter, ref_table=_refs,
+    )
+    if result.error:
+        return result.error
+    return result.output
+
+
+@mcp.tool()
 async def get(id: str, fmt: str = "pipe") -> str:
     """Read a single message by its prefixed ID or short ref.
 
     Args:
-        id: Message ID (e.g. "g:18f6a2b3c4e5f6a7") or short ref (e.g. "#3").
+        id: Message ID (e.g. "g:18f6a2b3c4e5f6a7") or short ref (e.g. "3").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
     result = await commands.get_message(id=id, fmt=fmt, ref_table=_refs)
@@ -98,7 +128,7 @@ async def thread(tid: str, fmt: str = "pipe") -> str:
     """Read a thread or conversation by its prefixed ID or short ref.
 
     Args:
-        tid: Thread/chat ID (e.g. "g:18f6a2b3c4e5f6a8") or short ref (e.g. "#3").
+        tid: Thread/chat ID (e.g. "g:18f6a2b3c4e5f6a8") or short ref (e.g. "3").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
     result = await commands.get_thread(tid=tid, fmt=fmt, ref_table=_refs)
@@ -117,7 +147,7 @@ async def list_tool(
 ) -> str:
     """Search and list messages matching a query.
 
-    Listings use short refs (#1, #2, ...) — pass these to get/thread.
+    Listings use short refs (1, 2, ...) — pass these to get/thread.
 
     Args:
         source: Source prefix, provider name, or "all".

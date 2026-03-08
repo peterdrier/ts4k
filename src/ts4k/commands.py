@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,9 @@ class CommandResult:
     messages_processed: int = 0
     error: str | None = None
     ref_map: dict[str, int] | None = None  # {full_id: ref_num}
+    has_more: bool = False
+    remaining: int = 0
+    _messages: list[dict] | None = None  # internal: raw messages for watermark tracking
 
 
 # ---------------------------------------------------------------------------
@@ -191,23 +195,12 @@ def _normalize_thread(thread: dict) -> dict:
 def _since_to_gmail_query(since: str | None, prefix: str = "g") -> str:
     """Convert a --since value to a Gmail search query fragment."""
     if since is None:
-        wm = watermarks.get(prefix)
-        if wm:
-            from datetime import datetime
-
-            try:
-                dt = datetime.fromisoformat(wm.replace("Z", "+00:00"))
-                return f"after:{int(dt.timestamp())}"
-            except ValueError:
-                return "newer_than:1d"
         return "newer_than:1d"
 
     if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
         return f"newer_than:{since}"
 
     try:
-        from datetime import datetime
-
         dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         return f"after:{int(dt.timestamp())}"
     except ValueError:
@@ -219,9 +212,7 @@ def _since_to_gmail_query(since: str | None, prefix: str = "g") -> str:
 def _since_to_iso(since: str | None, prefix: str) -> str | None:
     """Convert a --since value to an ISO timestamp for adapters that take ISO."""
     if since is None:
-        return watermarks.get(prefix)
-
-    from datetime import datetime, timedelta, timezone
+        return None
 
     # Support relative time: Nd (days) and Nh (hours)
     if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
@@ -230,6 +221,40 @@ def _since_to_iso(since: str | None, prefix: str) -> str | None:
         dt = datetime.now(timezone.utc) - delta
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    return since
+
+
+def _utc_to_gmail_query(since: str | None) -> str:
+    """Convert a UTC ISO timestamp to a Gmail ``after:EPOCH`` query fragment.
+
+    Returns ``"newer_than:1d"`` if *since* is None.
+    """
+    if since is None:
+        return "newer_than:1d"
+    try:
+        dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        return f"after:{int(dt.timestamp())}"
+    except ValueError:
+        return "newer_than:1d"
+
+
+def _resolve_since_to_utc(since: str | None) -> str | None:
+    """Convert a relative time or ISO string to a UTC ISO timestamp.
+
+    Accepts ``"2d"``, ``"6h"``, an ISO timestamp, or ``"all"`` (returns None).
+    Returns None if *since* is None (caller decides default).
+    """
+    if since is None:
+        return None
+    if since.lower() == "all":
+        return None
+    # Relative: Nd or Nh
+    if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
+        n = int(since[:-1])
+        delta = timedelta(days=n) if since[-1] == "d" else timedelta(hours=n)
+        dt = datetime.now(timezone.utc) - delta
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Assume ISO already
     return since
 
 
@@ -267,8 +292,8 @@ def _record_stats(command: str, messages: list[dict], output: str) -> None:
 
 
 def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
-    """Translate ``#N`` to a real ID via *ref_table*, or pass through as-is."""
-    if ref_table is not None and id_or_ref.startswith("#"):
+    """Translate ``N`` or ``#N`` to a real ID via *ref_table*, or pass through."""
+    if ref_table is not None and (id_or_ref.startswith("#") or id_or_ref.isdigit()):
         resolved = ref_table.resolve(id_or_ref)
         if resolved is not None:
             return resolved
@@ -280,10 +305,14 @@ def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_whatsnew_for_source(
+async def _fetch_for_source(
     prefix: str, cfg: dict[str, Any], since: str | None, count: int
 ) -> list[dict]:
-    """Fetch new messages from a single source. Returns normalized dicts."""
+    """Fetch new messages from a single source.
+
+    *since* must be a resolved UTC ISO timestamp (or None for no bound).
+    Returns normalized message dicts.
+    """
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
         return []
@@ -292,11 +321,10 @@ async def _fetch_whatsnew_for_source(
     try:
         async with adapter:
             if provider == "gmail":
-                query = _since_to_gmail_query(since, prefix)
+                query = _utc_to_gmail_query(since)
                 listing = await adapter.list_messages(query=query, count=count)
             else:
-                iso_since = _since_to_iso(since, prefix)
-                listing = await adapter.whatsnew(since=iso_since)
+                listing = await adapter.whatsnew(since=since)
 
             if not listing:
                 return []
@@ -313,22 +341,32 @@ async def _fetch_whatsnew_for_source(
         return []
 
 
-# ---------------------------------------------------------------------------
-# Command functions
-# ---------------------------------------------------------------------------
-
-
-async def whatsnew(
-    source: str | None = None,
-    since: str | None = None,
+async def _fetch_messages(
+    since: dict[str, str | None],
     count: int = 20,
+    source: str | None = None,
     fmt: str = "pipe",
     filter: bool = False,
     ref_table: RefTable | None = None,
+    stat_cmd: str = "wn",
 ) -> CommandResult:
-    """Fetch new messages, update watermarks, return formatted output."""
-    active_prefixes = _resolve_prefixes(source)
+    """Shared fetch layer — parallel fetch, collate, format.
+
+    Args:
+        since: Mapping of source prefix to resolved UTC ISO timestamp
+               (or None for default/no bound).
+        count: Maximum messages to return.
+        source: Original source arg (for error messages).
+        fmt: Output format (pipe, json, xml).
+        filter: Whether to apply skip filters.
+        ref_table: Optional ref table for short refs.
+        stat_cmd: Stats command label (``"wn"`` or ``"u"``).
+
+    Returns a CommandResult with ``_messages`` populated (the truncated list).
+    Does NOT touch watermarks.
+    """
     all_cfg = _ensure_sources()
+    active_prefixes = list(since.keys())
 
     tasks: list[asyncio.Task] = []
     task_prefixes: list[str] = []
@@ -338,7 +376,7 @@ async def whatsnew(
         if cfg:
             tasks.append(
                 asyncio.create_task(
-                    _fetch_whatsnew_for_source(prefix, cfg, since, count)
+                    _fetch_for_source(prefix, cfg, since[prefix], count)
                 )
             )
             task_prefixes.append(prefix)
@@ -353,28 +391,106 @@ async def whatsnew(
         all_messages.extend(msgs)
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
-    all_messages = all_messages[:count]
+
+    total_fetched = len(all_messages)
+    truncated = all_messages[:count]
+    has_more = total_fetched > count
+    remaining = total_fetched - count if has_more else 0
 
     if filter:
-        all_messages = apply_filters(all_messages, filters.get_config())
+        truncated = apply_filters(truncated, filters.get_config())
 
-    if not all_messages:
+    if not truncated:
         return CommandResult(error="No new messages.")
 
-    ref_map = ref_table.assign(all_messages) if ref_table else None
-    output = format_listing(all_messages, fmt=fmt, ref_map=ref_map)
-    _record_stats("wn", all_messages, output)
+    ref_map = ref_table.assign(truncated) if ref_table else None
+    output = format_listing(truncated, fmt=fmt, ref_map=ref_map)
 
-    # Update watermarks per source
-    for prefix, msgs in zip(task_prefixes, results):
-        if msgs:
-            newest = max(m.get("date", "") for m in msgs)
-            if newest:
-                watermarks.update(prefix, newest)
+    if has_more:
+        output += f"\n--- {remaining} more messages available ---"
+
+    _record_stats(stat_cmd, truncated, output)
 
     return CommandResult(
-        output=output, messages_processed=len(all_messages), ref_map=ref_map
+        output=output,
+        messages_processed=len(truncated),
+        ref_map=ref_map,
+        has_more=has_more,
+        remaining=remaining,
+        _messages=truncated,
     )
+
+
+# ---------------------------------------------------------------------------
+# Command functions
+# ---------------------------------------------------------------------------
+
+
+async def updates(
+    source: str | None = None,
+    since: str | None = None,
+    count: int = 20,
+    fmt: str = "pipe",
+    filter: bool = False,
+    ref_table: RefTable | None = None,
+) -> CommandResult:
+    """Fetch messages by time range. Stateless — no watermarks."""
+    active_prefixes = _resolve_prefixes(source)
+    resolved_ts = _resolve_since_to_utc(since)
+    since_map = {p: resolved_ts for p in active_prefixes}
+    return await _fetch_messages(
+        since=since_map,
+        count=count,
+        source=source,
+        fmt=fmt,
+        filter=filter,
+        ref_table=ref_table,
+        stat_cmd="u",
+    )
+
+
+async def whatsnew(
+    key: str,
+    source: str | None = None,
+    count: int = 20,
+    fmt: str = "pipe",
+    filter: bool = False,
+    ref_table: RefTable | None = None,
+) -> CommandResult:
+    """Fetch new messages using keyed watermarks."""
+    from ts4k.state import keyed_watermarks
+
+    active_prefixes = _resolve_prefixes(source)
+    saved = keyed_watermarks.get_all(key)
+
+    default_since = (
+        datetime.now(timezone.utc) - timedelta(days=7)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    since_map = {p: saved.get(p, default_since) for p in active_prefixes}
+
+    result = await _fetch_messages(
+        since=since_map,
+        count=count,
+        source=source,
+        fmt=fmt,
+        filter=filter,
+        ref_table=ref_table,
+        stat_cmd="wn",
+    )
+
+    # Advance watermarks per source to newest returned message
+    if result._messages:
+        new_watermarks: dict[str, str] = {}
+        for msg in result._messages:
+            src = msg.get("source", "")
+            date = msg.get("date", "")
+            if src and date and date > new_watermarks.get(src, ""):
+                new_watermarks[src] = date
+        if new_watermarks:
+            keyed_watermarks.update(key, new_watermarks)
+
+    return result
 
 
 async def get_message(
@@ -584,7 +700,6 @@ def get_status(
 
     config_dir = state.get_config_dir()
     all_cfg = _ensure_sources()
-    wm = watermarks.all()
     lines: list[str] = []
 
     # Sources
@@ -607,9 +722,7 @@ def get_status(
             elif provider == "o365":
                 ok = bool(cfg.get("mailbox") or cfg.get("client_id"))
             status_str = "ok" if ok else "not found"
-            wm_ts = wm.get(prefix, "")
-            wm_str = f"  wm: {wm_ts}" if wm_ts else ""
-            lines.append(f"  {prefix}: {provider} [{status_str}] ({detail}){wm_str}")
+            lines.append(f"  {prefix}: {provider} [{status_str}] ({detail})")
     else:
         lines.append("  (none — run: ts4k src add <prefix> <provider> ...)")
 
@@ -617,6 +730,18 @@ def get_status(
     if mailbox_stats_data:
         lines.append("")
         lines.append(format_mailbox_stats(mailbox_stats_data, fmt=fmt))
+
+    # Whatsnew keys
+    from ts4k.state import keyed_watermarks
+    keys = keyed_watermarks.list_keys()
+    if keys:
+        lines.append("")
+        lines.append("Whatsnew keys:")
+        for key in keys:
+            wm_data = keyed_watermarks.get_all(key)
+            num_sources = len(wm_data)
+            last_run = max(wm_data.values()) if wm_data else "never"
+            lines.append(f"  {key}: {num_sources} sources, last run {last_run}")
 
     # Contacts
     all_contacts = contacts.list_all()
@@ -1457,7 +1582,6 @@ def llm_help() -> str:
     from ts4k import state
 
     all_cfg = sources.list_all()
-    wm = watermarks.all()
     lines: list[str] = []
 
     lines.append("ts4k — Token Saver 4000 (agent reference)")
@@ -1477,10 +1601,8 @@ def llm_help() -> str:
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
-            wm_ts = wm.get(prefix, "")
             auth_status = " [needs auth]" if prefix in needs_auth else ""
-            wm_str = f" wm:{wm_ts}" if wm_ts else ""
-            lines.append(f"  {prefix}: {provider} ({detail}){auth_status}{wm_str}")
+            lines.append(f"  {prefix}: {provider} ({detail}){auth_status}")
         lines.append("")
 
         if needs_auth:
@@ -1535,13 +1657,15 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
 def _append_commands(lines: list[str]) -> None:
     """Append command reference to lines."""
     lines.append("COMMANDS:")
-    lines.append("  ts4k updates [--source S] [--since T] [--count N]  New messages (updates watermark)")
-    lines.append("  ts4k list [--query Q] [--source S] [--count N]     Search messages")
-    lines.append("  ts4k get <prefix:id>                               Read single message body")
-    lines.append("  ts4k thread <prefix:id>                            Read thread/conversation")
-    lines.append("  ts4k overview [--source S] [--contact C]           Cache summary drill-down")
-    lines.append("  ts4k status                                        Health, stats, efficiency")
-    lines.append("  Source is a flag, not a subcommand: --source g, not 'ts4k g list'")
+    lines.append("  ts4k updates [--source S] [--since T] [-n N]     Fetch messages by time (stateless)")
+    lines.append("  ts4k whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)")
+    lines.append("  ts4k list [--query Q] [--source S] [-n N]       Search messages")
+    lines.append("  ts4k get [-k KEY] ID                            Read single message body")
+    lines.append("  ts4k thread [-k KEY] TID                        Read thread/conversation")
+    lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
+    lines.append("  ts4k status                                     Health, stats, efficiency")
+    lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread")
+    lines.append("  whatsnew refs accumulate per key; use 'get -k KEY N' to resolve")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
@@ -1583,9 +1707,10 @@ def _append_mistakes(lines: list[str]) -> None:
     lines.append("COMMON MISTAKES:")
     lines.append("  WRONG: ts4k g inbox              -> RIGHT: ts4k updates --source g")
     lines.append("  WRONG: ts4k updates --hours 24   -> RIGHT: ts4k updates --since 24h")
-    lines.append("  WRONG: ts4k gmail whatsnew        -> RIGHT: ts4k updates --source gmail")
+    lines.append("  WRONG: ts4k gmail whatsnew        -> RIGHT: ts4k whatsnew life --source gmail")
     lines.append("  WRONG: ts4k list g                -> RIGHT: ts4k list --source g")
     lines.append("  WRONG: ts4k get abc123            -> RIGHT: ts4k get g:abc123")
+    lines.append("  WRONG: ts4k get #7                -> RIGHT: ts4k get 7 (or get -k life 7)")
 
 
 def skill_reference(level: str = "basic") -> str:
@@ -1608,12 +1733,15 @@ def skill_reference(level: str = "basic") -> str:
         )
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
-        "updates [--source S] [--since T] [-n N]|What's new (e.g. updates --source g --since 6h)\n"
+        "updates [--source S] [--since T] [-n N]|Fetch messages by time (stateless)\n"
+        "whatsnew KEY [--source S] [-n N]|Check new messages (keyed watermarks)\n"
         "list [-q Q] [--source S] [-n N]|Search messages\n"
-        "get PREFIX:ID|Read message (e.g. get g:abc123)\n"
-        "thread PREFIX:ID|Read thread (e.g. thread g:abc123)\n"
+        "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
+        "thread [-k KEY] TID|Read thread (e.g. thread g:abc123)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
         "status|Health + stats\n"
+        "Refs: listings assign numbers (1, 2, ...). Use with get/thread.\n"
+        "whatsnew refs accumulate per key. Use 'get -k KEY N' to resolve.\n"
         "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, ISO. -f p|j|x. -F filters.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
         "More: ts4k skill more | Setup: ts4k skill setup"

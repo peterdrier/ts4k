@@ -42,11 +42,14 @@ from ts4k.state.refs import RefTable
 # ---------------------------------------------------------------------------
 
 
-def _refs_path() -> Path:
+def _refs_path(key: str | None = None) -> "Path":
     """Path to the CLI refs file."""
     from pathlib import Path
 
-    return state.get_config_dir().path / "refs.json"
+    base = state.get_config_dir().path
+    if key:
+        return base / f"refs-{key}.json"
+    return base / "refs.json"
 
 
 def _new_ref_table() -> RefTable:
@@ -54,21 +57,15 @@ def _new_ref_table() -> RefTable:
     return RefTable()
 
 
-def _load_ref_table() -> RefTable:
-    """Load the ref table from disk for CLI get/thread commands."""
-    rt = RefTable()
-    rt.load(_refs_path())
-    return rt
-
 
 # ---------------------------------------------------------------------------
 # Command handlers — thin wrappers around commands.*
 # ---------------------------------------------------------------------------
 
 
-async def _cmd_whatsnew(args: argparse.Namespace) -> None:
+async def _cmd_updates(args: argparse.Namespace) -> None:
     refs = _new_ref_table()
-    result = await commands.whatsnew(
+    result = await commands.updates(
         source=getattr(args, "source", None),
         since=getattr(args, "since", None),
         count=getattr(args, "count", 20) or 20,
@@ -83,15 +80,39 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
     print(result.output)
 
 
-async def _cmd_get(args: argparse.Namespace) -> None:
-    refs = _load_ref_table() if args.id.startswith("#") else None
-    if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
-        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.")
-        sys.exit(1)
-    result = await commands.get_message(
-        id=args.id,
+async def _cmd_whatsnew(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(args.key))  # load existing, accumulate
+    result = await commands.whatsnew(
+        key=args.key,
+        source=getattr(args, "source", None),
+        count=getattr(args, "count", 20) or 20,
         fmt=getattr(args, "format", "pipe") or "pipe",
+        filter=getattr(args, "filter", False),
         ref_table=refs,
+    )
+    if result.error:
+        print(result.error)
+        return
+    refs.save(_refs_path(args.key))  # save accumulated
+    print(result.output)
+
+
+async def _cmd_get(args: argparse.Namespace) -> None:
+    msg_id = args.id
+    key = getattr(args, "key", None)
+    if msg_id.lstrip("#").isdigit():
+        rt = RefTable()
+        rt.load(_refs_path(key))
+        resolved = rt.resolve(msg_id)
+        if resolved is None:
+            label = f"key '{key}'" if key else "global refs"
+            print(f"Ref {msg_id} not found in {label}. Run 'whatsnew' or 'updates' first.")
+            sys.exit(1)
+        msg_id = resolved
+    result = await commands.get_message(
+        id=msg_id,
+        fmt=getattr(args, "format", "pipe") or "pipe",
     )
     if result.error:
         print(result.error)
@@ -100,14 +121,20 @@ async def _cmd_get(args: argparse.Namespace) -> None:
 
 
 async def _cmd_thread(args: argparse.Namespace) -> None:
-    refs = _load_ref_table() if args.id.startswith("#") else None
-    if args.id.startswith("#") and refs is not None and refs.resolve(args.id) is None:
-        print(f"Ref {args.id} not found. Run 'wn' or 'l' first.")
-        sys.exit(1)
+    tid = args.id
+    key = getattr(args, "key", None)
+    if tid.lstrip("#").isdigit():
+        rt = RefTable()
+        rt.load(_refs_path(key))
+        resolved = rt.resolve(tid)
+        if resolved is None:
+            label = f"key '{key}'" if key else "global refs"
+            print(f"Ref {tid} not found in {label}. Run 'whatsnew' or 'updates' first.")
+            sys.exit(1)
+        tid = resolved
     result = await commands.get_thread(
-        tid=args.id,
+        tid=tid,
         fmt=getattr(args, "format", "pipe") or "pipe",
-        ref_table=refs,
     )
     if result.error:
         print(result.error)
@@ -143,22 +170,24 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("ts4k — Token Saver 4000")
     print()
     print("Commands:")
-    print("  updates [--since 2d] [--source S] [-n N]  What's new (updates watermark)  [wn]")
-    print("  list [-q QUERY] [--source S] [-n N]       Search messages              [l]")
-    print("  get ID                                    Read a message (prefix:id)   [g]")
-    print("  thread TID                                Read a thread/chat           [t]")
-    print("  overview [--source S] [--contact C]       Cache summary (drill-down)   [o]")
-    print("  status                                    Health, stats, efficiency    [st]")
+    print("  updates [--since 2d] [--source S] [-n N]   Fetch messages by time range  [u]")
+    print("  whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)  [wn]")
+    print("  list [-q QUERY] [--source S] [-n N]         Search messages              [l]")
+    print("  get [-k KEY] ID                             Read a message               [g]")
+    print("  thread [-k KEY] TID                         Read a thread/chat           [t]")
+    print("  overview [--source S] [--contact C]         Cache summary (drill-down)   [o]")
+    print("  status                                      Health, stats, efficiency    [st]")
     print()
-    print("  src list|add|rm                           Manage sources")
-    print("  contacts link|unlink|find|list            Manage contacts              [c]")
-    print("  filter show|add-*|rm-*|reset              Manage filters               [f]")
-    print("  preload --source S [--query Q] [--bg]     Paginate history into cache")
-    print("  cache stats|clear [--source S] [--stale]  Manage message cache")
-    print("  auth gmail|o365                            Authenticate with a platform")
-    print("  skill                                     Agent-oriented command reference")
+    print("  src list|add|rm                             Manage sources")
+    print("  contacts link|unlink|find|list              Manage contacts              [c]")
+    print("  filter show|add-*|rm-*|reset                Manage filters               [f]")
+    print("  preload --source S [--query Q] [--bg]       Paginate history into cache")
+    print("  cache stats|clear [--source S] [--stale]    Manage message cache")
+    print("  auth gmail|o365                              Authenticate with a platform")
+    print("  skill                                       Agent-oriented command reference")
     print()
-    print("Flags: -F applies filters (off by default), -f p|j|x sets format")
+    print("Refs:  listings assign numbers (1, 2, 3...) — use with get/thread")
+    print("       whatsnew refs accumulate per key; use get -k KEY N to resolve")
     print("IDs:   g:xxx (Gmail), o:xxx (O365), w:xxx (WhatsApp)")
 
     if not all_cfg:
@@ -604,23 +633,33 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", title="Commands", metavar="<command>")
 
-    # --- whatsnew / wn / updates ---
-    wn = subparsers.add_parser("updates", aliases=["whatsnew", "wn"], help="Show new messages (updates watermark)")
-    wn.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
+    # --- updates / u ---
+    up = subparsers.add_parser("updates", aliases=["u"], help="Fetch messages by time range (stateless)")
+    up.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
+    up.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
+    up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    _add_common_args(up)
+    up.set_defaults(func=_cmd_updates)
+
+    # --- whatsnew / wn ---
+    wn = subparsers.add_parser("whatsnew", aliases=["wn"], help="Check for new messages (keyed watermarks)")
+    wn.add_argument("key", help="Watermark key (e.g. life, peter)")
     wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-    wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all")
     _add_common_args(wn)
     wn.set_defaults(func=_cmd_whatsnew)
 
     # --- get / g ---
     get = subparsers.add_parser("get", aliases=["g"], help="Read a single message")
-    get.add_argument("id", help="Message ID (e.g. g:abc123 or w:3EB05C)")
+    get.add_argument("id", help="Message ID (e.g. g:abc123) or ref number (e.g. 7)")
+    get.add_argument("--key", "-k", help="Whatsnew key for ref lookup (e.g. life)")
     _add_common_args(get)
     get.set_defaults(func=_cmd_get)
 
     # --- thread / t ---
     th = subparsers.add_parser("thread", aliases=["t"], help="Read a thread or chat")
-    th.add_argument("id", help="Thread/chat ID (e.g. g:abc123 or w:jid@s.whatsapp.net)")
+    th.add_argument("id", help="Thread/chat ID (e.g. g:abc123) or ref number (e.g. 7)")
+    th.add_argument("--key", "-k", help="Whatsnew key for ref lookup (e.g. life)")
     _add_common_args(th)
     th.set_defaults(func=_cmd_thread)
 

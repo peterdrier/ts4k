@@ -31,6 +31,12 @@ class TestRefTableBasic:
         assert rt.resolve("#1") == "g:abc123"
         assert rt.resolve("#2") == "o:xyz"
 
+    def test_resolve_bare_number(self):
+        rt = RefTable()
+        rt.assign([{"id": "g:abc123"}, {"id": "o:xyz"}])
+        assert rt.resolve("1") == "g:abc123"
+        assert rt.resolve("2") == "o:xyz"
+
     def test_resolve_not_found(self):
         rt = RefTable()
         rt.assign([{"id": "g:abc"}])

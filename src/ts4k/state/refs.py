@@ -1,11 +1,11 @@
-"""Short reference table — maps ``#N`` → full message ID.
+"""Short reference table — maps ``N`` → full message ID.
 
-Saves ~92% tokens on message IDs in pipe listings.  ``#1`` costs 2 tokens
+Saves ~92% tokens on message IDs in pipe listings.  ``1`` costs 1 token
 vs 136 for a raw O365 ID.
 
 Two modes:
 - **MCP (accumulate)**: refs persist across tool calls within one connection.
-- **CLI (last-listing-wins)**: each listing replaces the ref file.
+- **CLI (per-key accumulate)**: whatsnew refs accumulate per key; updates/list reset.
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ import json
 import re
 from pathlib import Path
 
-_REF_PATTERN = re.compile(r"^#(\d+)$")
+_REF_PATTERN = re.compile(r"^#?(\d+)$")
 
 
 class RefTable:
-    """Short reference table mapping ``#N`` → full message ID."""
+    """Short reference table mapping ``N`` → full message ID."""
 
     def __init__(self) -> None:
         self._refs: dict[int, str] = {}  # ref_num → full_id
@@ -46,7 +46,7 @@ class RefTable:
         return result
 
     def resolve(self, ref: str) -> str | None:
-        """Resolve ``'#3'`` → full_id.  Returns ``None`` if not found."""
+        """Resolve ``'3'`` or ``'#3'`` → full_id.  Returns ``None`` if not found."""
         m = _REF_PATTERN.match(ref.strip())
         if not m:
             return None

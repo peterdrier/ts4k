@@ -196,6 +196,13 @@ class TestResolveRef:
         rt = RefTable()
         assert commands._resolve_ref("#99", rt) == "#99"
 
+    def test_resolve_bare_number(self):
+        from ts4k.state.refs import RefTable
+        rt = RefTable()
+        rt.assign([{"id": "g:abc"}])
+        assert commands._resolve_ref("1", rt) == "g:abc"
+
     def test_no_ref_table(self):
         assert commands._resolve_ref("#1", None) == "#1"
+        assert commands._resolve_ref("1", None) == "1"
         assert commands._resolve_ref("g:abc", None) == "g:abc"

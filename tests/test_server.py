@@ -18,6 +18,7 @@ from ts4k.server import mcp, _apply_context
 
 EXPECTED_TOOLS = {
     "updates",
+    "whatsnew",
     "get",
     "thread",
     "list",
@@ -39,9 +40,9 @@ class TestToolRegistration:
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_seven_tools(self):
+    def test_exactly_eight_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 7
+        assert len(self._get_tool_names()) == 8
 
     def test_updates_params(self):
         """updates has expected parameters."""
@@ -53,6 +54,19 @@ class TestToolRegistration:
         assert "count" in props
         assert "fmt" in props
         assert "filter" in props
+
+    def test_whatsnew_params(self):
+        """whatsnew has key (required) plus source, count, fmt, filter."""
+        tool = mcp._tool_manager._tools["whatsnew"]
+        schema = tool.parameters
+        props = schema.get("properties", {})
+        assert "key" in props
+        assert "source" in props
+        assert "count" in props
+        assert "fmt" in props
+        assert "filter" in props
+        required = schema.get("required", [])
+        assert "key" in required
 
     def test_get_params(self):
         """get requires id."""
