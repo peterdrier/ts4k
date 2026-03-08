@@ -634,7 +634,19 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", title="Commands", metavar="<command>")
 
     # --- updates / u ---
-    up = subparsers.add_parser("updates", aliases=["u"], help="Fetch messages by time range (stateless)")
+    up = subparsers.add_parser(
+        "updates", aliases=["u"],
+        help="Fetch messages by time range (stateless)",
+        description="Fetch messages within a time range without updating watermarks. Useful for ad-hoc searches and re-reading recent mail.",
+        epilog=(
+            "examples:\n"
+            "  ts4k updates --since 2d          # last 2 days, all sources\n"
+            "  ts4k u --since 6h -s g           # last 6 hours, Gmail only\n"
+            "  ts4k u --since 2025-01-01 -n 50  # since date, up to 50 msgs\n"
+            "  ts4k u --since 1w -f json         # last week, JSON output"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     up.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
     up.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
@@ -642,7 +654,19 @@ def _build_parser() -> argparse.ArgumentParser:
     up.set_defaults(func=_cmd_updates)
 
     # --- whatsnew / wn ---
-    wn = subparsers.add_parser("whatsnew", aliases=["wn"], help="Check for new messages (keyed watermarks)")
+    wn = subparsers.add_parser(
+        "whatsnew", aliases=["wn"],
+        help="Check for new messages (keyed watermarks)",
+        description="Show messages newer than the last watermark for a given key. Each call advances the watermark so the same messages are never shown twice. First call for a new key returns the latest batch.",
+        epilog=(
+            "examples:\n"
+            "  ts4k whatsnew life               # new msgs for 'life' key\n"
+            "  ts4k wn work -s g               # new Gmail msgs for 'work'\n"
+            "  ts4k wn life -n 50              # up to 50 new messages\n"
+            "  ts4k wn alerts -f json          # JSON output"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     wn.add_argument("key", help="Watermark key (e.g. life, peter)")
     wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all")
@@ -650,21 +674,55 @@ def _build_parser() -> argparse.ArgumentParser:
     wn.set_defaults(func=_cmd_whatsnew)
 
     # --- get / g ---
-    get = subparsers.add_parser("get", aliases=["g"], help="Read a single message")
+    get = subparsers.add_parser(
+        "get", aliases=["g"],
+        help="Read a single message",
+        description="Retrieve the full content of a single message by native ID or ref number from a whatsnew result.",
+        epilog=(
+            "examples:\n"
+            "  ts4k get g:18f3a2b1c4d5e6f7    # by native Gmail ID\n"
+            "  ts4k g 7 -k life               # ref #7 from 'life' whatsnew\n"
+            "  ts4k g w:1234@wa               # by native WhatsApp ID\n"
+            "  ts4k g 3 -k work -f json       # ref #3, JSON output"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     get.add_argument("id", help="Message ID (e.g. g:abc123) or ref number (e.g. 7)")
     get.add_argument("--key", "-k", help="Whatsnew key for ref lookup (e.g. life)")
     _add_common_args(get)
     get.set_defaults(func=_cmd_get)
 
     # --- thread / t ---
-    th = subparsers.add_parser("thread", aliases=["t"], help="Read a thread or chat")
+    th = subparsers.add_parser(
+        "thread", aliases=["t"],
+        help="Read a thread or chat",
+        description="Retrieve all messages in a thread or chat. Resolves the thread from any message ID or ref number within it.",
+        epilog=(
+            "examples:\n"
+            "  ts4k thread g:18f3a2b1c4d5e6f7  # thread containing this msg\n"
+            "  ts4k t 7 -k life                # thread for ref #7\n"
+            "  ts4k t w:chat123 --tail 5        # last 5 msgs in WhatsApp chat"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     th.add_argument("id", help="Thread/chat ID (e.g. g:abc123) or ref number (e.g. 7)")
     th.add_argument("--key", "-k", help="Whatsnew key for ref lookup (e.g. life)")
     _add_common_args(th)
     th.set_defaults(func=_cmd_thread)
 
     # --- list / l ---
-    ls = subparsers.add_parser("list", aliases=["l"], help="List messages matching a query")
+    ls = subparsers.add_parser(
+        "list", aliases=["l"],
+        help="List messages matching a query",
+        description="Search for messages using provider-native query syntax. Gmail supports full Gmail search operators; other providers support basic text search.",
+        epilog=(
+            "examples:\n"
+            "  ts4k list -q 'from:boss subject:urgent'  # Gmail search\n"
+            "  ts4k l -q invoice -s g -n 10             # Gmail, 10 results\n"
+            "  ts4k l -q 'after:2025/01/01' -f json     # date filter, JSON"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ls.add_argument("--query", "-q", help="Search query")
     ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     ls.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
@@ -672,12 +730,25 @@ def _build_parser() -> argparse.ArgumentParser:
     ls.set_defaults(func=_cmd_list)
 
     # --- sources / src ---
-    sr = subparsers.add_parser("sources", aliases=["src"], help="Manage source config")
+    sr = subparsers.add_parser(
+        "sources", aliases=["src"],
+        help="Manage source config",
+        description="Manage messaging sources. Each source has a short prefix (g, w, o) used as a namespace for message IDs.",
+        epilog=(
+            "examples:\n"
+            "  ts4k src list                    # show configured sources\n"
+            "  ts4k src add g gmail you@gmail.com\n"
+            "  ts4k src rm g                    # remove a source\n"
+            "  ts4k src discover                # find O365 mailboxes"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sr_sub = sr.add_subparsers(dest="action")
 
     sr_add = sr_sub.add_parser(
         "add",
         help="Add a source",
+        description="Register a new messaging source with a prefix and provider-specific parameters.",
         epilog=(
             "provider keys:\n"
             "  gmail:    email (required), mcp_url, transport\n"
@@ -697,36 +768,70 @@ def _build_parser() -> argparse.ArgumentParser:
     sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp")
     sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
-    sr_rm = sr_sub.add_parser("rm", help="Remove a source")
+    sr_rm = sr_sub.add_parser("rm", help="Remove a source",
+        description="Remove a configured source by its prefix.")
     sr_rm.add_argument("prefix", help="Source prefix to remove")
 
-    sr_sub.add_parser("list", help="List all configured sources")
+    sr_sub.add_parser("list", help="List all configured sources",
+        description="Show all configured sources with their prefixes, providers, and parameters.")
 
-    sr_sub.add_parser("discover", help="Discover O365 mailboxes for authenticated user")
+    sr_sub.add_parser("discover", help="Discover O365 mailboxes for authenticated user",
+        description="Query Microsoft Graph to find available mailboxes for the authenticated O365 user.")
 
     sr.set_defaults(func=_cmd_sources)
 
     # --- contacts / c ---
-    ct = subparsers.add_parser("contacts", aliases=["c"], help="Cross-platform contact identity map")
+    ct = subparsers.add_parser(
+        "contacts", aliases=["c"],
+        help="Cross-platform contact identity map",
+        description="Map identities across platforms so the same person shows one alias regardless of source. Link Gmail addresses, WhatsApp numbers, and O365 accounts to a single contact name.",
+        epilog=(
+            "examples:\n"
+            "  ts4k c link sarah g:sarah@gmail.com w:123@wa\n"
+            "  ts4k c unlink sarah w:123@wa     # remove one identifier\n"
+            "  ts4k c unlink sarah               # delete alias entirely\n"
+            "  ts4k c find sarah                 # search by alias or ID\n"
+            "  ts4k c list                       # show all contacts"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ct_sub = ct.add_subparsers(dest="action")
 
-    ct_link = ct_sub.add_parser("link", help="Link identifiers to an alias")
+    ct_link = ct_sub.add_parser("link", help="Link identifiers to an alias",
+        description="Associate one or more platform identifiers with a contact alias.")
     ct_link.add_argument("alias", help="Contact alias (e.g. sarah)")
     ct_link.add_argument("identifiers", nargs="+", help="Platform IDs (e.g. g:sarah@gmail.com w:123@wa)")
 
-    ct_unlink = ct_sub.add_parser("unlink", help="Unlink identifiers or remove alias")
+    ct_unlink = ct_sub.add_parser("unlink", help="Unlink identifiers or remove alias",
+        description="Remove specific identifiers from a contact, or delete the alias entirely if no identifiers are given.")
     ct_unlink.add_argument("alias", help="Contact alias")
     ct_unlink.add_argument("identifiers", nargs="*", help="IDs to remove (omit to delete alias)")
 
-    ct_sub.add_parser("list", help="List all contacts")
+    ct_sub.add_parser("list", help="List all contacts",
+        description="Show all contact aliases and their linked identifiers.")
 
-    ct_find = ct_sub.add_parser("find", help="Search contacts")
+    ct_find = ct_sub.add_parser("find", help="Search contacts",
+        description="Search contacts by alias name or platform identifier substring.")
     ct_find.add_argument("term", help="Search term (matches alias or identifier)")
 
     ct.set_defaults(func=_cmd_contacts)
 
     # --- filter / f ---
-    fl = subparsers.add_parser("filter", aliases=["f"], help="Manage skip filters (off by default)")
+    fl = subparsers.add_parser(
+        "filter", aliases=["f"],
+        help="Manage skip filters (off by default)",
+        description="Manage opt-in skip filters. Filters are off by default — add senders, domains, or patterns to skip. Use -F on messaging commands to apply filters.",
+        epilog=(
+            "examples:\n"
+            "  ts4k filter add-sender noreply@spam.com\n"
+            "  ts4k f add-domain newsletters.example.com\n"
+            "  ts4k f add-pattern '^Out of office'\n"
+            "  ts4k f skip-groups true          # skip group chats\n"
+            "  ts4k f show                      # show current config\n"
+            "  ts4k wn life -F                  # apply filters to whatsnew"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     fl_sub = fl.add_subparsers(dest="action")
 
     for action_name, help_text in [
@@ -747,7 +852,20 @@ def _build_parser() -> argparse.ArgumentParser:
     fl.set_defaults(func=_cmd_filter)
 
     # --- preload ---
-    pl = subparsers.add_parser("preload", help="Paginate through history into cache")
+    pl = subparsers.add_parser(
+        "preload",
+        help="Paginate through history into cache",
+        description="Paginate through message history and store results in the local cache. Supports background execution, throttling, and resumable jobs.",
+        epilog=(
+            "examples:\n"
+            "  ts4k preload -s g --since 30d             # last 30 days of Gmail\n"
+            "  ts4k preload -s g --contact sarah --bg    # background job\n"
+            "  ts4k preload --resume job_abc123           # resume interrupted\n"
+            "  ts4k preload --status                      # show all jobs\n"
+            "  ts4k preload --cancel job_abc123           # cancel a job"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     pl.add_argument("--source", "-s", help="Source prefix or provider name")
     pl.add_argument("--query", "-q", help="Search query (provider-specific)")
     pl.add_argument("--contact", help="Contact alias — auto-expands to bidirectional query")
@@ -763,7 +881,20 @@ def _build_parser() -> argparse.ArgumentParser:
     pl.set_defaults(func=_cmd_preload)
 
     # --- overview / o ---
-    ov = subparsers.add_parser("overview", aliases=["o"], help="Hierarchical overview of cached messages")
+    ov = subparsers.add_parser(
+        "overview", aliases=["o"],
+        help="Hierarchical overview of cached messages",
+        description="Show a hierarchical summary of cached messages with three drill-down levels: all sources, per-source, and per-contact. Optionally filter by time period.",
+        epilog=(
+            "examples:\n"
+            "  ts4k overview                    # top-level summary\n"
+            "  ts4k o -s g                      # drill into Gmail\n"
+            "  ts4k o -c sarah                  # drill into contact\n"
+            "  ts4k o -p 2025-Q1               # filter by quarter\n"
+            "  ts4k o -s g -p 2025-01..2025-03  # Gmail, Jan-Mar 2025"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ov.add_argument("--source", "-s", help="Drill down into a specific source prefix")
     ov.add_argument("--contact", "-c", help="Drill down into a specific contact")
     ov.add_argument("--period", "-p", help="Filter by period: YYYY, YYYY-QN, YYYY-MM, or YYYY-MM..YYYY-MM")
@@ -772,7 +903,19 @@ def _build_parser() -> argparse.ArgumentParser:
     ov.set_defaults(func=_cmd_overview)
 
     # --- cache ---
-    ca = subparsers.add_parser("cache", help="Manage message cache")
+    ca = subparsers.add_parser(
+        "cache",
+        help="Manage message cache",
+        description="Manage the local message cache. Cached messages are stored from preload jobs and previous fetches.",
+        epilog=(
+            "examples:\n"
+            "  ts4k cache stats                 # show cache size/counts\n"
+            "  ts4k cache clear                 # clear entire cache\n"
+            "  ts4k cache clear -s g            # clear Gmail cache only\n"
+            "  ts4k cache clear --stale         # clear old-schema entries"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ca_sub = ca.add_subparsers(dest="action")
     ca_sub.add_parser("stats", help="Show cache statistics")
     ca_clear = ca_sub.add_parser("clear", help="Clear cached messages")
@@ -781,19 +924,47 @@ def _build_parser() -> argparse.ArgumentParser:
     ca.set_defaults(func=_cmd_cache)
 
     # --- status / st ---
-    st = subparsers.add_parser("status", aliases=["st"], help="Operational status, stats, efficiency")
+    st = subparsers.add_parser(
+        "status", aliases=["st"],
+        help="Operational status, stats, efficiency",
+        description="Show operational status including configured sources, watermark keys, filter state, and token efficiency stats. Use --live to query mailbox label/folder counts.",
+        epilog=(
+            "examples:\n"
+            "  ts4k status                      # local status overview\n"
+            "  ts4k st --live                   # include live mailbox counts\n"
+            "  ts4k st --live -s g              # live stats for Gmail only\n"
+            "  ts4k st --live -f json           # mailbox stats as JSON"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     st.add_argument("--live", "-L", action="store_true", help="Include live mailbox label/folder counts")
     st.add_argument("--source", "-s", help="Limit live stats to this source prefix")
     st.add_argument("-f", "--format", default="pipe", help="Format for mailbox section: pipe, json, xml")
     st.set_defaults(func=_cmd_status)
 
     # --- help / h ---
-    hp = subparsers.add_parser("help", aliases=["h"], help="Quick reference for commands and flags")
+    hp = subparsers.add_parser(
+        "help", aliases=["h"],
+        help="Quick reference for commands and flags",
+        description="Show a quick-reference summary of all commands and flags. Use --llm for a structured, agent-optimized version.",
+    )
     hp.add_argument("--llm", action="store_true", help="Agent-optimized reference (structured, context-aware)")
     hp.set_defaults(func=_cmd_help)
 
     # --- auth ---
-    au = subparsers.add_parser("auth", help="Authenticate with a platform")
+    au = subparsers.add_parser(
+        "auth",
+        help="Authenticate with a platform",
+        description="Authenticate with a messaging platform. Gmail uses browser-based OAuth; O365 uses device code flow.",
+        epilog=(
+            "examples:\n"
+            "  ts4k auth gmail you@gmail.com    # OAuth in browser\n"
+            "  ts4k auth gmail you@gmail.com --check  # verify creds\n"
+            "  ts4k auth o365                   # device code flow\n"
+            "  ts4k auth o365 o --check         # verify O365 creds"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     au_sub = au.add_subparsers(dest="platform")
 
     au_gmail = au_sub.add_parser("gmail", help="Authenticate with Gmail (opens browser)")
@@ -807,7 +978,11 @@ def _build_parser() -> argparse.ArgumentParser:
     au.set_defaults(func=_cmd_auth)
 
     # --- skill ---
-    sk = subparsers.add_parser("skill", help="Compact reference for Claude Code skill integration")
+    sk = subparsers.add_parser(
+        "skill",
+        help="Compact reference for Claude Code skill integration",
+        description="Output a compact command reference for use by Claude Code skills. Agent-facing — not intended for direct human use.",
+    )
     sk.add_argument("subcmd", nargs="?", help="Subcommand: wn, l, g, t")
     sk.add_argument("skill_args", nargs="*", help="Arguments for the subcommand")
     sk.set_defaults(func=_cmd_skill)
