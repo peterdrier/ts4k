@@ -20,7 +20,11 @@ import msal
 
 logger = logging.getLogger(__name__)
 
-GRAPH_MAIL_READ_SCOPES = ["https://graph.microsoft.com/Mail.Read"]
+GRAPH_MAIL_READ_SCOPES = [
+    "https://graph.microsoft.com/Mail.Read",
+    "https://graph.microsoft.com/Mail.Read.Shared",
+    "https://graph.microsoft.com/User.Read",
+]
 
 def _default_config_dir() -> Path:
     """Resolve auth config dir: env var → global default.
