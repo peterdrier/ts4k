@@ -469,9 +469,11 @@ def _cmd_filter(args: argparse.Namespace) -> None:
 async def _cmd_skill(args: argparse.Namespace) -> None:
     """Handle the skill command — machine-readable output for Claude Code.
 
-    Three tiers:
+    Subcommands:
     - ``ts4k skill`` → tier 1 (core commands reference)
     - ``ts4k skill more`` → tier 2 (admin commands reference)
+    - ``ts4k skill setup`` → context-aware setup/troubleshooting
+    - ``ts4k skill install [--project]`` → install Claude Code skill file
     - ``ts4k skill <cmd> [args]`` → route to command with pipe format
     """
     subcmd = getattr(args, "subcmd", None)
@@ -487,6 +489,11 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
         print(commands.llm_help())
         return
 
+    if subcmd == "install":
+        project = getattr(args, "project", False)
+        _install_skill(project=project)
+        return
+
     argv = [subcmd] + (getattr(args, "skill_args", None) or [])
     # Force pipe format unless explicitly overridden
     if "-f" not in argv and "--format" not in argv:
@@ -499,6 +506,29 @@ async def _cmd_skill(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     await sub_args.func(sub_args)
+
+
+def _install_skill(project: bool = False) -> None:
+    """Install the ts4k skill file for Claude Code."""
+    from pathlib import Path
+
+    if project:
+        target_dir = Path(".claude/skills/ts")
+    else:
+        claude_dir = Path.home() / ".claude"
+        if not claude_dir.is_dir():
+            print("Error: ~/.claude/ not found. Is Claude Code installed?")
+            sys.exit(1)
+        target_dir = claude_dir / "skills" / "ts"
+
+    target_file = target_dir / "SKILL.md"
+
+    if target_file.exists():
+        print(f"Warning: {target_file} already exists. Overwriting.")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file.write_text(commands.skill_template())
+    print(f"Installed ts4k skill to {target_file}")
 
 
 def _cmd_auth(args: argparse.Namespace) -> None:
@@ -982,9 +1012,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "skill",
         help="Compact reference for Claude Code skill integration",
         description="Output a compact command reference for use by Claude Code skills. Agent-facing — not intended for direct human use.",
+        epilog=(
+            "subcommands:\n"
+            "  ts4k skill                 # core command reference\n"
+            "  ts4k skill more            # admin commands\n"
+            "  ts4k skill setup           # context-aware setup/troubleshooting\n"
+            "  ts4k skill install         # install skill to ~/.claude/skills/ts/\n"
+            "  ts4k skill install --project  # install to .claude/skills/ts/"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sk.add_argument("subcmd", nargs="?", help="Subcommand: wn, l, g, t")
+    sk.add_argument("subcmd", nargs="?", help="Subcommand: install, more, setup, or a ts4k command")
     sk.add_argument("skill_args", nargs="*", help="Arguments for the subcommand")
+    sk.add_argument("--project", action="store_true", help="Install to .claude/skills/ts/ (project-level)")
     sk.set_defaults(func=_cmd_skill)
 
     return parser

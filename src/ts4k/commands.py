@@ -1734,15 +1734,34 @@ def skill_reference(level: str = "basic") -> str:
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
         "updates [--source S] [--since T] [-n N]|Fetch messages by time (stateless)\n"
-        "whatsnew KEY [--source S] [-n N]|Check new messages (keyed watermarks)\n"
+        "whatsnew KEY [--source S] [-n N]|New messages since last check for KEY\n"
         "list [-q Q] [--source S] [-n N]|Search messages\n"
         "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
         "thread [-k KEY] TID|Read thread (e.g. thread g:abc123)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
         "status|Health + stats\n"
+        "Keys: user-defined labels (life, work). Each key tracks its own read position.\n"
+        "  whatsnew life → shows unseen msgs, advances watermark. Next call shows only newer.\n"
         "Refs: listings assign numbers (1, 2, ...). Use with get/thread.\n"
-        "whatsnew refs accumulate per key. Use 'get -k KEY N' to resolve.\n"
+        "  whatsnew refs accumulate per key. Use 'get -k KEY N' to resolve.\n"
         "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, ISO. -f p|j|x. -F filters.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
         "More: ts4k skill more | Setup: ts4k skill setup"
+    )
+
+
+def skill_template() -> str:
+    """Return the SKILL.md content for Claude Code skill installation."""
+    return (
+        '---\n'
+        'name: ts\n'
+        'description: "Token-efficient messaging gateway for reading Gmail, WhatsApp,'
+        ' and O365 messages. Use when the user asks about email, messages, inbox,'
+        ' communications, mail, or wants to check, read, search, or manage their'
+        ' messages across platforms. Always use this skill for any email or messaging'
+        ' task — even if the user doesn\'t mention ts4k by name."\n'
+        'allowed-tools: Bash(ts4k *)\n'
+        '---\n'
+        '\n'
+        'Run `ts4k skill` for commands.\n'
     )
