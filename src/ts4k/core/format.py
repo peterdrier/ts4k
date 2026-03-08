@@ -223,9 +223,9 @@ def _listing_pipe_legacy(messages: list[dict]) -> str:
     if has_snippets:
         lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET"]
         for msg in messages:
-            snippet = msg.get("snippet", "")
+            snippet = msg.get("snippet", "").strip()
             if len(snippet) > 80:
-                snippet = snippet[:77] + "..."
+                snippet = snippet[:77].rstrip() + "..."
             lines.append(
                 f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
                 f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}|{snippet}"
@@ -264,9 +264,9 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
                 ts = _compact_ts(msg.get("date", ""), "time")
                 row = f"#{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
                 if has_snippets:
-                    snippet = msg.get("snippet", "")
+                    snippet = msg.get("snippet", "").strip()
                     if len(snippet) > 80:
-                        snippet = snippet[:77] + "..."
+                        snippet = snippet[:77].rstrip() + "..."
                     row += f"|{snippet}"
                 lines.append(row)
     else:
@@ -275,9 +275,9 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
             ts = _compact_ts(msg.get("date", ""), precision)
             row = f"#{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
             if has_snippets:
-                snippet = msg.get("snippet", "")
+                snippet = msg.get("snippet", "").strip()
                 if len(snippet) > 80:
-                    snippet = snippet[:77] + "..."
+                    snippet = snippet[:77].rstrip() + "..."
                 row += f"|{snippet}"
             lines.append(row)
 
