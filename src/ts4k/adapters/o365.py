@@ -263,6 +263,7 @@ class O365Adapter(BaseAdapter):
             "$filter": f"receivedDateTime ge {since}",
             "$select": _LIST_SELECT,
             "$orderby": "receivedDateTime desc",
+            "$top": "200",
         }
 
         data = await self._get(f"{self._base_url()}/messages", params)
