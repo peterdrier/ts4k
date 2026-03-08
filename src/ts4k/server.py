@@ -34,7 +34,7 @@ mcp = FastMCP(
         "ts4k (Token Saver 4000) provides token-efficient access to messages "
         "across Gmail, WhatsApp, O365, and other platforms. Use pipe format "
         "(default) for maximum token efficiency. Listings use short refs "
-        "(#1, #2, ...) — use these with get/thread instead of full IDs."
+        "(1, 2, ...) — use these with get/thread instead of full IDs."
     ),
 )
 
@@ -57,7 +57,7 @@ async def updates(
 ) -> str:
     """Fetch messages by time range. Stateless — no watermarks.
 
-    Listings use short refs (#1, #2, ...) — pass these to get/thread.
+    Listings use short refs (1, 2, ...) — pass these to get/thread.
 
     Args:
         source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
@@ -114,7 +114,7 @@ async def get(id: str, fmt: str = "pipe") -> str:
     """Read a single message by its prefixed ID or short ref.
 
     Args:
-        id: Message ID (e.g. "g:18f6a2b3c4e5f6a7") or short ref (e.g. "#3").
+        id: Message ID (e.g. "g:18f6a2b3c4e5f6a7") or short ref (e.g. "3").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
     result = await commands.get_message(id=id, fmt=fmt, ref_table=_refs)
@@ -128,7 +128,7 @@ async def thread(tid: str, fmt: str = "pipe") -> str:
     """Read a thread or conversation by its prefixed ID or short ref.
 
     Args:
-        tid: Thread/chat ID (e.g. "g:18f6a2b3c4e5f6a8") or short ref (e.g. "#3").
+        tid: Thread/chat ID (e.g. "g:18f6a2b3c4e5f6a8") or short ref (e.g. "3").
         fmt: Output format — "pipe" (default), "json", or "xml".
     """
     result = await commands.get_thread(tid=tid, fmt=fmt, ref_table=_refs)
@@ -147,7 +147,7 @@ async def list_tool(
 ) -> str:
     """Search and list messages matching a query.
 
-    Listings use short refs (#1, #2, ...) — pass these to get/thread.
+    Listings use short refs (1, 2, ...) — pass these to get/thread.
 
     Args:
         source: Source prefix, provider name, or "all".

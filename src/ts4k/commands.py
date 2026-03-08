@@ -195,23 +195,12 @@ def _normalize_thread(thread: dict) -> dict:
 def _since_to_gmail_query(since: str | None, prefix: str = "g") -> str:
     """Convert a --since value to a Gmail search query fragment."""
     if since is None:
-        wm = watermarks.get(prefix)
-        if wm:
-            from datetime import datetime
-
-            try:
-                dt = datetime.fromisoformat(wm.replace("Z", "+00:00"))
-                return f"after:{int(dt.timestamp())}"
-            except ValueError:
-                return "newer_than:1d"
         return "newer_than:1d"
 
     if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
         return f"newer_than:{since}"
 
     try:
-        from datetime import datetime
-
         dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         return f"after:{int(dt.timestamp())}"
     except ValueError:
@@ -223,9 +212,7 @@ def _since_to_gmail_query(since: str | None, prefix: str = "g") -> str:
 def _since_to_iso(since: str | None, prefix: str) -> str | None:
     """Convert a --since value to an ISO timestamp for adapters that take ISO."""
     if since is None:
-        return watermarks.get(prefix)
-
-    from datetime import datetime, timedelta, timezone
+        return None
 
     # Support relative time: Nd (days) and Nh (hours)
     if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
@@ -305,8 +292,8 @@ def _record_stats(command: str, messages: list[dict], output: str) -> None:
 
 
 def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
-    """Translate ``#N`` to a real ID via *ref_table*, or pass through as-is."""
-    if ref_table is not None and id_or_ref.startswith("#"):
+    """Translate ``N`` or ``#N`` to a real ID via *ref_table*, or pass through."""
+    if ref_table is not None and (id_or_ref.startswith("#") or id_or_ref.isdigit()):
         resolved = ref_table.resolve(id_or_ref)
         if resolved is not None:
             return resolved
@@ -1595,7 +1582,6 @@ def llm_help() -> str:
     from ts4k import state
 
     all_cfg = sources.list_all()
-    wm = watermarks.all()
     lines: list[str] = []
 
     lines.append("ts4k — Token Saver 4000 (agent reference)")
@@ -1615,10 +1601,8 @@ def llm_help() -> str:
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
-            wm_ts = wm.get(prefix, "")
             auth_status = " [needs auth]" if prefix in needs_auth else ""
-            wm_str = f" wm:{wm_ts}" if wm_ts else ""
-            lines.append(f"  {prefix}: {provider} ({detail}){auth_status}{wm_str}")
+            lines.append(f"  {prefix}: {provider} ({detail}){auth_status}")
         lines.append("")
 
         if needs_auth:
@@ -1673,13 +1657,15 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
 def _append_commands(lines: list[str]) -> None:
     """Append command reference to lines."""
     lines.append("COMMANDS:")
-    lines.append("  ts4k updates [--source S] [--since T] [--count N]  New messages (updates watermark)")
-    lines.append("  ts4k list [--query Q] [--source S] [--count N]     Search messages")
-    lines.append("  ts4k get <prefix:id>                               Read single message body")
-    lines.append("  ts4k thread <prefix:id>                            Read thread/conversation")
-    lines.append("  ts4k overview [--source S] [--contact C]           Cache summary drill-down")
-    lines.append("  ts4k status                                        Health, stats, efficiency")
-    lines.append("  Source is a flag, not a subcommand: --source g, not 'ts4k g list'")
+    lines.append("  ts4k updates [--source S] [--since T] [-n N]     Fetch messages by time (stateless)")
+    lines.append("  ts4k whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)")
+    lines.append("  ts4k list [--query Q] [--source S] [-n N]       Search messages")
+    lines.append("  ts4k get [-k KEY] ID                            Read single message body")
+    lines.append("  ts4k thread [-k KEY] TID                        Read thread/conversation")
+    lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
+    lines.append("  ts4k status                                     Health, stats, efficiency")
+    lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread")
+    lines.append("  whatsnew refs accumulate per key; use 'get -k KEY N' to resolve")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
@@ -1721,9 +1707,10 @@ def _append_mistakes(lines: list[str]) -> None:
     lines.append("COMMON MISTAKES:")
     lines.append("  WRONG: ts4k g inbox              -> RIGHT: ts4k updates --source g")
     lines.append("  WRONG: ts4k updates --hours 24   -> RIGHT: ts4k updates --since 24h")
-    lines.append("  WRONG: ts4k gmail whatsnew        -> RIGHT: ts4k updates --source gmail")
+    lines.append("  WRONG: ts4k gmail whatsnew        -> RIGHT: ts4k whatsnew life --source gmail")
     lines.append("  WRONG: ts4k list g                -> RIGHT: ts4k list --source g")
     lines.append("  WRONG: ts4k get abc123            -> RIGHT: ts4k get g:abc123")
+    lines.append("  WRONG: ts4k get #7                -> RIGHT: ts4k get 7 (or get -k life 7)")
 
 
 def skill_reference(level: str = "basic") -> str:
@@ -1746,12 +1733,15 @@ def skill_reference(level: str = "basic") -> str:
         )
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
-        "updates [--source S] [--since T] [-n N]|What's new (e.g. updates --source g --since 6h)\n"
+        "updates [--source S] [--since T] [-n N]|Fetch messages by time (stateless)\n"
+        "whatsnew KEY [--source S] [-n N]|Check new messages (keyed watermarks)\n"
         "list [-q Q] [--source S] [-n N]|Search messages\n"
-        "get PREFIX:ID|Read message (e.g. get g:abc123)\n"
-        "thread PREFIX:ID|Read thread (e.g. thread g:abc123)\n"
+        "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
+        "thread [-k KEY] TID|Read thread (e.g. thread g:abc123)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
         "status|Health + stats\n"
+        "Refs: listings assign numbers (1, 2, ...). Use with get/thread.\n"
+        "whatsnew refs accumulate per key. Use 'get -k KEY N' to resolve.\n"
         "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, ISO. -f p|j|x. -F filters.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
         "More: ts4k skill more | Setup: ts4k skill setup"

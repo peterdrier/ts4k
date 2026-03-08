@@ -208,7 +208,7 @@ def _listing_pipe(
 ) -> str:
     """Pipe-delimited listing — most compact format.
 
-    When *ref_map* is provided, uses short ``#N`` refs and compact timestamps
+    When *ref_map* is provided, uses short ``N`` refs and compact timestamps
     with date-header grouping.  Otherwise falls back to the legacy format with
     full IDs and ISO timestamps.
     """
@@ -252,9 +252,9 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
     lines: list[str] = []
 
     if has_snippets:
-        lines.append("#|SOURCE|FROM|SUBJECT|DATE|SIZE|SNIPPET")
+        lines.append("N|SOURCE|FROM|SUBJECT|DATE|SIZE|SNIPPET")
     else:
-        lines.append("#|SOURCE|FROM|SUBJECT|DATE|SIZE")
+        lines.append("N|SOURCE|FROM|SUBJECT|DATE|SIZE")
 
     if groups:
         for date_label, group_msgs in groups:
@@ -262,7 +262,7 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
             for msg in group_msgs:
                 ref = ref_map.get(msg.get("id", ""), 0)
                 ts = _compact_ts(msg.get("date", ""), "time")
-                row = f"#{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
+                row = f"{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
                 if has_snippets:
                     snippet = msg.get("snippet", "").strip()
                     if len(snippet) > 80:
@@ -273,7 +273,7 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
         for msg in messages:
             ref = ref_map.get(msg.get("id", ""), 0)
             ts = _compact_ts(msg.get("date", ""), precision)
-            row = f"#{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
+            row = f"{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
             if has_snippets:
                 snippet = msg.get("snippet", "").strip()
                 if len(snippet) > 80:

@@ -464,17 +464,17 @@ class TestPipeFormatWithRefs:
     def test_header_has_ref_column(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
         header = result.split("\n")[0]
-        assert header.startswith("#|SOURCE|")
+        assert header.startswith("N|SOURCE|")
         assert "ID" not in header
 
     def test_ref_in_first_column(self):
         result = format_listing(SAMPLE_MESSAGES[:1], "pipe", ref_map=SAMPLE_REF_MAP)
         lines = result.split("\n")
-        # Data lines start with #<digit>, header starts with #|
-        data_lines = [l for l in lines if l.startswith("#") and not l.startswith("#|")]
+        # Data lines start with a digit (bare ref number)
+        data_lines = [l for l in lines[1:] if l and not l.startswith("---") and not l.startswith("N|")]
         assert data_lines
         fields = data_lines[0].split("|")
-        assert fields[0] == "#1"
+        assert fields[0] == "1"
 
     def test_no_full_id_in_ref_mode(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
@@ -484,9 +484,9 @@ class TestPipeFormatWithRefs:
 
     def test_all_refs_present(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
-        assert "#1|" in result
-        assert "#2|" in result
-        assert "#3|" in result
+        assert "1|" in result
+        assert "2|" in result
+        assert "3|" in result
 
     def test_without_ref_map_uses_legacy(self):
         """No ref_map → legacy format with full IDs."""
@@ -571,7 +571,7 @@ class TestCompactTimestamps:
 
     def test_empty_messages_no_crash(self):
         result = format_listing([], "pipe", ref_map={})
-        assert "#|SOURCE|" in result
+        assert "N|SOURCE|" in result
 
     def test_missing_date_fallback(self):
         """Messages without dates should not crash."""
@@ -581,4 +581,4 @@ class TestCompactTimestamps:
         ]
         ref_map = {"g:1": 1}
         result = format_listing(msgs, "pipe", ref_map=ref_map)
-        assert "#1|" in result
+        assert "1|" in result
