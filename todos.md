@@ -9,6 +9,10 @@ Last synced: 2026-03-08 (v0.1.9)
 - [x] ~~**src add breaks WhatsApp**~~ [#6](https://github.com/peterdrier/ts4k/issues/6) — `server_command` auto-split on spaces in CLI; coerced from string in adapter; help updated with examples and o365 keys.
 - [x] ~~**Usage log improvements**~~ [#10](https://github.com/peterdrier/ts4k/issues/10) — All 10 items addressed: relative `--since`, empty results, `0b` size, non-interactive auth, wrong syntax errors, WhatsApp JID→name fallback, stderr→stdout for command results, thread from message ID via cache, common mistakes in help, filter discoverability via skill/llm-help.
 
+## P1.5 — Bugs / Normalization
+
+- [ ] **WhatsApp 1-on-1 chat: wrong `from` field** — Private chats show an unrelated label (e.g. "Anker technology") in `from` instead of the contact name. Sender ends up in `subject`. Likely a WhatsApp adapter normalization bug — group vs 1-on-1 detection issue.
+
 ## P2 — Token Optimization / UX (GitHub Issues)
 
 - [ ] **Setup doc deep links** [#5](https://github.com/peterdrier/ts4k/issues/5) — Add direct console/portal URLs to Gmail/O365 setup docs so users don't have to navigate by menu path. Gmail needs 4 deep links; O365 sidebar hints. Partially addressed by O365 doc improvements (c948c36, ea07f3d).
