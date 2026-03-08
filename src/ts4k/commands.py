@@ -713,7 +713,6 @@ def get_status(
 
     config_dir = state.get_config_dir()
     all_cfg = _ensure_sources()
-    wm = watermarks.all()
     lines: list[str] = []
 
     # Sources
@@ -736,9 +735,7 @@ def get_status(
             elif provider == "o365":
                 ok = bool(cfg.get("mailbox") or cfg.get("client_id"))
             status_str = "ok" if ok else "not found"
-            wm_ts = wm.get(prefix, "")
-            wm_str = f"  wm: {wm_ts}" if wm_ts else ""
-            lines.append(f"  {prefix}: {provider} [{status_str}] ({detail}){wm_str}")
+            lines.append(f"  {prefix}: {provider} [{status_str}] ({detail})")
     else:
         lines.append("  (none — run: ts4k src add <prefix> <provider> ...)")
 
@@ -746,6 +743,18 @@ def get_status(
     if mailbox_stats_data:
         lines.append("")
         lines.append(format_mailbox_stats(mailbox_stats_data, fmt=fmt))
+
+    # Whatsnew keys
+    from ts4k.state import keyed_watermarks
+    keys = keyed_watermarks.list_keys()
+    if keys:
+        lines.append("")
+        lines.append("Whatsnew keys:")
+        for key in keys:
+            wm_data = keyed_watermarks.get_all(key)
+            num_sources = len(wm_data)
+            last_run = max(wm_data.values()) if wm_data else "never"
+            lines.append(f"  {key}: {num_sources} sources, last run {last_run}")
 
     # Contacts
     all_contacts = contacts.list_all()
