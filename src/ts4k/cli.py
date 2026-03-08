@@ -133,59 +133,40 @@ async def _cmd_list(args: argparse.Namespace) -> None:
 
 
 def _cmd_help(args: argparse.Namespace) -> None:
-    """Handle the help / h command — show status and quick reference."""
+    """Handle the help / h command — quick reference for commands and flags."""
     if getattr(args, "llm", False):
         print(commands.llm_help())
         return
 
-    cfg = state.get_config_dir()
     all_cfg = sources.list_all()
-    wm = watermarks.all()
 
     print("ts4k — Token Saver 4000")
     print()
     print("Commands:")
     print("  updates [--since 2d] [--source S] [-n N]  What's new (updates watermark)  [wn]")
-    print("  l(ist) [-q QUERY] [--source S] [-n N]     Search messages")
-    print("  g(et) ID                                  Read a message (prefix:id)")
-    print("  t(hread) TID                              Read a thread/chat")
-    print("  o(verview) [--source S] [--contact C]     Cache summary (drill-down)")
-    print("  st(atus)                                  Health, stats, efficiency")
+    print("  list [-q QUERY] [--source S] [-n N]       Search messages              [l]")
+    print("  get ID                                    Read a message (prefix:id)   [g]")
+    print("  thread TID                                Read a thread/chat           [t]")
+    print("  overview [--source S] [--contact C]       Cache summary (drill-down)   [o]")
+    print("  status                                    Health, stats, efficiency    [st]")
     print()
     print("  src list|add|rm                           Manage sources")
-    print("  c(ontacts) link|unlink|find|list          Manage contacts")
-    print("  f(ilter) show|add-*|rm-*|reset            Manage filters")
+    print("  contacts link|unlink|find|list            Manage contacts              [c]")
+    print("  filter show|add-*|rm-*|reset              Manage filters               [f]")
     print("  preload --source S [--query Q] [--bg]     Paginate history into cache")
     print("  cache stats|clear [--source S] [--stale]  Manage message cache")
-    print("  skill [more]                              Compact reference for agents")
-    print("  h(elp)                                    This help")
+    print("  auth gmail|o365                            Authenticate with a platform")
+    print("  skill                                     Agent-oriented command reference")
     print()
     print("Flags: -F applies filters (off by default), -f p|j|x sets format")
     print("IDs:   g:xxx (Gmail), o:xxx (O365), w:xxx (WhatsApp)")
-    print()
-    print("Sources:")
-    if all_cfg:
-        for prefix, cfg in sorted(all_cfg.items()):
-            provider = cfg.get("provider", "?")
-            detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
-            wm_ts = wm.get(prefix, "")
-            wm_str = f"  wm:{wm_ts}" if wm_ts else ""
-            print(f"  {prefix}: {provider} ({detail}){wm_str}")
-    else:
-        print("  (none configured)")
+
+    if not all_cfg:
         print()
         print("Quick setup:")
         print("  1. ts4k src add g gmail email=you@gmail.com")
         print("  2. ts4k auth gmail you@gmail.com")
         print("  3. ts4k updates")
-        print()
-        print("Setup guides:")
-        print("  Gmail:    https://github.com/peterdrier/ts4k/blob/main/docs/setup-gmail.md")
-        print("  O365:     https://github.com/peterdrier/ts4k/blob/main/docs/setup-o365.md")
-        print("  WhatsApp: https://github.com/peterdrier/ts4k/blob/main/docs/setup-whatsapp.md")
-    print()
-    config_dir = state.get_config_dir()
-    print(f"Config: {config_dir.path}  ({config_dir.reason})")
 
 
 def _cmd_contacts(args: argparse.Namespace) -> None:
@@ -604,7 +585,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ts4k",
         description="Token-efficient messaging gateway for LLM agents.",
-        epilog="Run 'ts4k help' for a quick reference with live source status.",
     )
     parser.add_argument(
         "--version",
@@ -622,7 +602,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Use .ts4k/ in current directory (created if missing)",
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(dest="command", title="Commands", metavar="<command>")
 
     # --- whatsnew / wn / updates ---
     wn = subparsers.add_parser("updates", aliases=["whatsnew", "wn"], help="Show new messages (updates watermark)")
@@ -769,7 +749,7 @@ def _build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=_cmd_status)
 
     # --- help / h ---
-    hp = subparsers.add_parser("help", aliases=["h"], help="Show status and quick reference")
+    hp = subparsers.add_parser("help", aliases=["h"], help="Quick reference for commands and flags")
     hp.add_argument("--llm", action="store_true", help="Agent-optimized reference (structured, context-aware)")
     hp.set_defaults(func=_cmd_help)
 
@@ -788,7 +768,7 @@ def _build_parser() -> argparse.ArgumentParser:
     au.set_defaults(func=_cmd_auth)
 
     # --- skill ---
-    sk = subparsers.add_parser("skill", help="Machine-readable output for Claude Code")
+    sk = subparsers.add_parser("skill", help="Compact reference for Claude Code skill integration")
     sk.add_argument("subcmd", nargs="?", help="Subcommand: wn, l, g, t")
     sk.add_argument("skill_args", nargs="*", help="Arguments for the subcommand")
     sk.set_defaults(func=_cmd_skill)
