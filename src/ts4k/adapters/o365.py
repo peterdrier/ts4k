@@ -182,6 +182,15 @@ def _message_to_dict(data: dict, prefix: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _build_sender_filter(sender: str | None, domain: str | None) -> str | None:
+    """Build a Graph API $filter clause for sender/domain."""
+    if sender:
+        return f"from/emailAddress/address eq '{sender}'"
+    if domain:
+        return f"endsWith(from/emailAddress/address, '@{domain}')"
+    return None
+
+
 class O365Adapter(BaseAdapter):
     """O365 adapter using direct Microsoft Graph API calls via httpx."""
 
@@ -264,13 +273,23 @@ class O365Adapter(BaseAdapter):
 
     # -- BaseAdapter data methods -------------------------------------------
 
-    async def whatsnew(self, since: str | None = None) -> list[dict]:
+    async def whatsnew(
+        self,
+        since: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
+    ) -> list[dict]:
         if not since:
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             since = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        filter_parts = [f"receivedDateTime ge {since}"]
+        sender_filter = _build_sender_filter(sender, domain)
+        if sender_filter:
+            filter_parts.append(sender_filter)
+
         params = {
-            "$filter": f"receivedDateTime ge {since}",
+            "$filter": " and ".join(filter_parts),
             "$select": _LIST_SELECT,
             "$orderby": "receivedDateTime desc",
             "$top": "200",
@@ -284,6 +303,8 @@ class O365Adapter(BaseAdapter):
         query: str | None = None,
         count: int = 20,
         page_token: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
     ) -> list[dict]:
         params: dict[str, str] = {
             "$select": _LIST_SELECT,
@@ -293,6 +314,11 @@ class O365Adapter(BaseAdapter):
 
         if page_token:
             params["$skip"] = page_token
+
+        # Sender/domain filter via $filter
+        sender_filter = _build_sender_filter(sender, domain)
+        if sender_filter:
+            params["$filter"] = sender_filter
 
         headers: dict[str, str] | None = None
         if query:

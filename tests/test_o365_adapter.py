@@ -634,6 +634,75 @@ class TestO365AdapterSourcePrefix:
         assert adapter.source_prefix == "oa"
 
 
+class TestO365AdapterSenderFilter:
+    """Test sender/domain filtering on O365 adapter."""
+
+    @pytest.mark.asyncio
+    async def test_sender_filter_on_whatsnew(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.whatsnew(since="2026-01-01T00:00:00Z", sender="alice@contoso.com")
+
+        call_args = adapter._client.get.call_args
+        filt = call_args[1]["params"]["$filter"]
+        assert "alice@contoso.com" in filt
+        assert "receivedDateTime ge" in filt
+
+    @pytest.mark.asyncio
+    async def test_domain_filter_on_whatsnew(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.whatsnew(since="2026-01-01T00:00:00Z", domain="contoso.com")
+
+        call_args = adapter._client.get.call_args
+        filt = call_args[1]["params"]["$filter"]
+        assert "contoso.com" in filt
+        assert "receivedDateTime ge" in filt
+
+    @pytest.mark.asyncio
+    async def test_sender_filter_on_list(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(sender="alice@contoso.com")
+
+        call_args = adapter._client.get.call_args
+        filt = call_args[1]["params"]["$filter"]
+        assert "alice@contoso.com" in filt
+
+    @pytest.mark.asyncio
+    async def test_domain_filter_on_list(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(domain="contoso.com")
+
+        call_args = adapter._client.get.call_args
+        filt = call_args[1]["params"]["$filter"]
+        assert "contoso.com" in filt
+
+    @pytest.mark.asyncio
+    async def test_sender_filter_with_query(self):
+        """Sender filter + free-text query should both be present."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(query="budget", sender="alice@contoso.com")
+
+        call_args = adapter._client.get.call_args
+        params = call_args[1]["params"]
+        assert "$search" in params
+        assert "$filter" in params
+        assert "alice@contoso.com" in params["$filter"]
+
+
 class TestStripPrefix:
     """Test the _strip_prefix helper."""
 

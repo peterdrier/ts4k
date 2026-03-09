@@ -44,11 +44,20 @@ class BaseAdapter(ABC):
         """Tear down the upstream connection gracefully."""
 
     @abstractmethod
-    async def whatsnew(self, since: str | None = None) -> list[dict]:
+    async def whatsnew(
+        self,
+        since: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
+    ) -> list[dict]:
         """Return new activity since *since* (ISO-8601 timestamp).
 
         If *since* is ``None``, the adapter should fall back to its own
         stored watermark or a sensible default (e.g. last 24 h).
+
+        *sender* filters to an exact email address; *domain* filters to
+        all addresses at that domain.  Both are optional and adapter-
+        specific (some adapters may ignore them).
 
         Each item in the returned list is a normalised header dict with at
         least: ``id``, ``thread_id``, ``from``, ``subject``, ``date``.
@@ -60,11 +69,17 @@ class BaseAdapter(ABC):
         query: str | None = None,
         count: int = 20,
         page_token: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
     ) -> list[dict]:
         """Return message-header dicts matching *query*.
 
         The dicts must contain at least: ``id``, ``thread_id``, ``from``,
         ``subject``, ``date``.
+
+        *sender* filters to an exact email address; *domain* filters to
+        all addresses at that domain.  Both are optional and adapter-
+        specific (some adapters may ignore them).
 
         When *page_token* is provided, fetch the next page of results
         starting from that token.  If more pages exist, the **last** entry

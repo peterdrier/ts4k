@@ -255,7 +255,12 @@ class WhatsAppAdapter(BaseAdapter):
 
     # -- BaseAdapter data methods -------------------------------------------
 
-    async def whatsnew(self, since: str | None = None) -> list[dict]:
+    async def whatsnew(
+        self,
+        since: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
+    ) -> list[dict]:
         args: dict[str, Any] = {"limit": 50, "include_context": False}
         if since:
             args["after"] = since
@@ -273,6 +278,8 @@ class WhatsAppAdapter(BaseAdapter):
         query: str | None = None,
         count: int = 20,
         page_token: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
     ) -> list[dict]:
         if query and query.startswith("chat:"):
             # Direct chat JID query

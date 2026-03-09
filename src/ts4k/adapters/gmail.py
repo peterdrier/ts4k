@@ -309,7 +309,12 @@ class GmailAdapter(BaseAdapter):
 
     # -- BaseAdapter data methods -------------------------------------------
 
-    async def whatsnew(self, since: str | None = None) -> list[dict]:
+    async def whatsnew(
+        self,
+        since: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
+    ) -> list[dict]:
         """Search for recent messages.
 
         Uses Gmail search syntax: ``newer_than:1d`` by default, or
@@ -319,13 +324,15 @@ class GmailAdapter(BaseAdapter):
             query = f"after:{since}"
         else:
             query = "newer_than:1d"
-        return await self.list_messages(query=query)
+        return await self.list_messages(query=query, sender=sender, domain=domain)
 
     async def list_messages(
         self,
         query: str | None = None,
         count: int = 20,
         page_token: str | None = None,
+        sender: str | None = None,
+        domain: str | None = None,
     ) -> list[dict]:
         """Search Gmail and return a list of message-header dicts.
 
