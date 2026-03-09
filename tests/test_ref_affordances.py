@@ -8,15 +8,18 @@ import json
 import pytest
 
 from ts4k import commands
-from ts4k.cli import _cmd_updates, _cmd_whatsnew, _cmd_list
+from ts4k.cli import _cmd_updates, _cmd_whatsnew, _cmd_list, _cmd_get, _refs_path
+from ts4k.state.refs import RefTable
 
 
 @pytest.fixture(autouse=True)
 def mock_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TS4K_CONFIG_DIR", str(tmp_path))
 
+    from ts4k import state as _state
     from ts4k.state import sources, stats, cache, keyed_watermarks as kwm
 
+    monkeypatch.setattr(_state, "_current", None)
     monkeypatch.setattr(sources, "_CONFIG_DIR", tmp_path)
     monkeypatch.setattr(sources, "_SOURCES_FILE", tmp_path / "sources.json")
     monkeypatch.setattr(stats, "_CONFIG_DIR", tmp_path)
@@ -123,3 +126,42 @@ class TestListHint:
         await _cmd_list(args)
         out = capsys.readouterr().out
         assert "→ ts4k get N to read message N" in out
+
+
+class TestGetRefError:
+    @pytest.mark.asyncio
+    async def test_get_wrong_key_suggests_global(self, capsys):
+        """When ref exists in global but agent uses -k, suggest dropping -k."""
+        # Save ref 1 in global table
+        rt = RefTable()
+        rt.assign([{"id": "g:abc123"}])
+        rt.save(_refs_path(None))
+
+        args = argparse.Namespace(id="1", key="life", format="pipe")
+        with pytest.raises(SystemExit):
+            await _cmd_get(args)
+        out = capsys.readouterr().out
+        assert "try: ts4k get 1" in out
+
+    @pytest.mark.asyncio
+    async def test_get_no_key_suggests_keyed_table(self, capsys):
+        """When ref exists in a keyed table but agent uses no key, suggest -k."""
+        # Save ref 1 in 'life' keyed table only
+        rt = RefTable()
+        rt.assign([{"id": "g:abc123"}])
+        rt.save(_refs_path("life"))
+
+        args = argparse.Namespace(id="1", key=None, format="pipe")
+        with pytest.raises(SystemExit):
+            await _cmd_get(args)
+        out = capsys.readouterr().out
+        assert "-k life" in out
+
+    @pytest.mark.asyncio
+    async def test_get_ref_not_found_anywhere(self, capsys):
+        """When ref doesn't exist anywhere, show generic message."""
+        args = argparse.Namespace(id="99", key=None, format="pipe")
+        with pytest.raises(SystemExit):
+            await _cmd_get(args)
+        out = capsys.readouterr().out
+        assert "Run 'whatsnew' or 'updates' first" in out

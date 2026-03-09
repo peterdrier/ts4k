@@ -52,6 +52,30 @@ def _refs_path(key: str | None = None) -> "Path":
     return base / "refs.json"
 
 
+def _suggest_ref_table(ref: str, current_key: str | None) -> str:
+    """Check other ref tables for the ref and suggest the right command."""
+    base = state.get_config_dir().path
+
+    # If agent used a key, check global
+    if current_key is not None:
+        rt = RefTable()
+        rt.load(_refs_path(None))
+        if rt.resolve(ref) is not None:
+            return f" Found in global refs — try: ts4k get {ref}"
+
+    # Check keyed tables
+    for path in sorted(base.glob("refs-*.json")):
+        k = path.stem.removeprefix("refs-")
+        if k == current_key:
+            continue
+        rt = RefTable()
+        rt.load(path)
+        if rt.resolve(ref) is not None:
+            return f" Found in key '{k}' — try: ts4k get -k {k} {ref}"
+
+    return " Run 'whatsnew' or 'updates' first."
+
+
 def _new_ref_table() -> RefTable:
     """Create a fresh RefTable for CLI listing commands (last-listing-wins)."""
     return RefTable()
@@ -113,7 +137,8 @@ async def _cmd_get(args: argparse.Namespace) -> None:
         resolved = rt.resolve(msg_id)
         if resolved is None:
             label = f"key '{key}'" if key else "global refs"
-            print(f"Ref {msg_id} not found in {label}. Run 'whatsnew' or 'updates' first.")
+            hint = _suggest_ref_table(msg_id, key)
+            print(f"Ref {msg_id} not found in {label}.{hint}")
             sys.exit(1)
         msg_id = resolved
     result = await commands.get_message(
@@ -135,7 +160,8 @@ async def _cmd_thread(args: argparse.Namespace) -> None:
         resolved = rt.resolve(tid)
         if resolved is None:
             label = f"key '{key}'" if key else "global refs"
-            print(f"Ref {tid} not found in {label}. Run 'whatsnew' or 'updates' first.")
+            hint = _suggest_ref_table(tid, key)
+            print(f"Ref {tid} not found in {label}.{hint}")
             sys.exit(1)
         tid = resolved
     result = await commands.get_thread(
