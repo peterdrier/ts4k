@@ -245,10 +245,20 @@ class O365Adapter(BaseAdapter):
             )
         return self._client
 
-    async def _get(self, path: str, params: dict[str, str] | None = None) -> dict:
+    async def _get(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict:
         """Issue a GET request to Graph API and return the parsed JSON."""
         client = self._require_client()
-        resp = await client.get(path, params=params)
+        kwargs: dict[str, Any] = {}
+        if params:
+            kwargs["params"] = params
+        if headers:
+            kwargs["headers"] = headers
+        resp = await client.get(path, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
@@ -284,11 +294,22 @@ class O365Adapter(BaseAdapter):
         if page_token:
             params["$skip"] = page_token
 
+        headers: dict[str, str] | None = None
         if query:
             params["$search"] = f'"{query}"'
+            # Graph API: $search requires ConsistencyLevel header
+            # and cannot combine with $orderby
+            del params["$orderby"]
+            headers = {"ConsistencyLevel": "eventual"}
 
-        data = await self._get(f"{self._base_url()}/messages", params)
+        data = await self._get(
+            f"{self._base_url()}/messages", params, headers=headers
+        )
         results = _list_response_to_dicts(data, self.source_prefix)
+
+        # Client-side sort when $orderby was removed for $search
+        if query:
+            results.sort(key=lambda m: m.get("date", ""), reverse=True)
 
         # Attach next page token if we got a full page
         if results and len(results) == count:

@@ -448,6 +448,50 @@ class TestO365AdapterListMessages:
         call_args = adapter._client.get.call_args
         assert "$search" not in call_args[1]["params"]
 
+    @pytest.mark.asyncio
+    async def test_search_adds_consistency_header(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(query="budget review", count=10)
+
+        call_args = adapter._client.get.call_args
+        assert call_args[1].get("headers", {}).get("ConsistencyLevel") == "eventual"
+
+    @pytest.mark.asyncio
+    async def test_search_removes_orderby(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(query="budget review", count=10)
+
+        call_args = adapter._client.get.call_args
+        assert "$orderby" not in call_args[1]["params"]
+
+    @pytest.mark.asyncio
+    async def test_no_search_keeps_orderby(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(count=10)
+
+        call_args = adapter._client.get.call_args
+        assert "$orderby" in call_args[1]["params"]
+
+    @pytest.mark.asyncio
+    async def test_no_search_no_consistency_header(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(count=10)
+
+        call_args = adapter._client.get.call_args
+        assert "headers" not in call_args[1] or "ConsistencyLevel" not in call_args[1].get("headers", {})
+
 
 class TestO365AdapterReadMessage:
     """Test O365Adapter.read_message() with mocked httpx client."""
