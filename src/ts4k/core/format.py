@@ -590,7 +590,7 @@ def _overview_pipe(data: dict) -> str:
                 f"|{date_range}|top: {top}"
             )
         lines.append("---")
-        lines.append("Drill: ts4k o --source <prefix> | ts4k o --contact <name>")
+        lines.append("Drill: ts4k overview --source <prefix> | ts4k overview --contact <name>")
 
     elif level == "source":
         prefix = data.get("prefix", "")
@@ -612,7 +612,7 @@ def _overview_pipe(data: dict) -> str:
                 lines.append(f"{t.get('subject', '')}|{t['count']} msgs|{t.get('id', '')}")
 
         lines.append("---")
-        lines.append("Drill: ts4k o --contact <name> | ts4k g <msg_id>")
+        lines.append("Drill: ts4k overview --contact <name> | ts4k get <msg_id>")
 
     elif level == "contact":
         contact = data.get("contact", "")
@@ -635,7 +635,7 @@ def _overview_pipe(data: dict) -> str:
                 lines.append(f"{p['period']}|{p['count']}")
 
         lines.append("---")
-        lines.append(f"Drill: ts4k o --contact {contact} --period <period>")
+        lines.append(f"Drill: ts4k overview --contact {contact} --period <period>")
 
     return "\n".join(lines)
 

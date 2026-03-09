@@ -249,10 +249,16 @@ def _resolve_since_to_utc(since: str | None) -> str | None:
         return None
     if since.lower() == "all":
         return None
-    # Relative: Nd or Nh
-    if len(since) >= 2 and since[-1] in ("d", "h") and since[:-1].isdigit():
+    # Relative: Nd, Nh, or Nw
+    if len(since) >= 2 and since[-1] in ("d", "h", "w") and since[:-1].isdigit():
         n = int(since[:-1])
-        delta = timedelta(days=n) if since[-1] == "d" else timedelta(hours=n)
+        unit = since[-1]
+        if unit == "w":
+            delta = timedelta(weeks=n)
+        elif unit == "d":
+            delta = timedelta(days=n)
+        else:
+            delta = timedelta(hours=n)
         dt = datetime.now(timezone.utc) - delta
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     # Assume ISO already
@@ -1690,9 +1696,9 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
 def _append_commands(lines: list[str]) -> None:
     """Append command reference to lines."""
     lines.append("COMMANDS:")
-    lines.append("  ts4k updates [--source S] [--since T] [-n N] [-k K] Fetch messages by time (stateless)")
+    lines.append("  ts4k updates [--source S] [--since T] [-n N] [-k K] [--from ADDR] [--domain D]  Fetch messages by time")
     lines.append("  ts4k whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)")
-    lines.append("  ts4k list [--query Q] [--source S] [-n N]       Search messages")
+    lines.append("  ts4k list [-q Q] [--source S] [-n N] [--from ADDR] [--domain D]  Search messages")
     lines.append("  ts4k get [-k KEY] ID                            Read single message body")
     lines.append("  ts4k thread [-k KEY] TID                        Read thread/conversation")
     lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
@@ -1700,6 +1706,8 @@ def _append_commands(lines: list[str]) -> None:
     lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread")
     lines.append("  updates/list refs are global: get N. whatsnew/updates -k refs are keyed: get -k KEY N")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
+    lines.append("  --from: filter by sender address. --domain: filter by sender domain.")
+    lines.append("  Truncated results show a continuation command — copy-paste for older messages.")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
 

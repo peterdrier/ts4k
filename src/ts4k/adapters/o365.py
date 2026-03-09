@@ -182,12 +182,21 @@ def _message_to_dict(data: dict, prefix: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _build_sender_filter(sender: str | None, domain: str | None) -> str | None:
-    """Build a Graph API $filter clause for sender/domain."""
+def _build_sender_filter(sender: str | None) -> str | None:
+    """Build a Graph API ``$filter`` clause for exact sender match."""
     if sender:
         return f"from/emailAddress/address eq '{sender}'"
+    return None
+
+
+def _build_domain_search(domain: str | None) -> str | None:
+    """Build a Graph API ``$search`` clause for domain filtering.
+
+    Graph API does not support ``endsWith`` on ``from/emailAddress/address``,
+    so domain filtering must use KQL ``$search`` instead of ``$filter``.
+    """
     if domain:
-        return f"endsWith(from/emailAddress/address, '@{domain}')"
+        return f'"from:@{domain}"'
     return None
 
 
@@ -279,12 +288,34 @@ class O365Adapter(BaseAdapter):
         sender: str | None = None,
         domain: str | None = None,
     ) -> list[dict]:
+        since_specified = since is not None
         if not since:
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             since = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        # Domain filtering requires $search which can't combine with $filter.
+        # When domain is used, do time filtering client-side.
+        domain_search = _build_domain_search(domain)
+        if domain_search:
+            params: dict[str, str] = {
+                "$search": domain_search,
+                "$select": _LIST_SELECT,
+                "$top": "200",
+            }
+            headers = {"ConsistencyLevel": "eventual"}
+            data = await self._get(
+                f"{self._base_url()}/messages", params, headers=headers
+            )
+            results = _list_response_to_dicts(data, self.source_prefix)
+            # Client-side time filter only when caller specified a since value
+            if since_specified:
+                results = [m for m in results if m.get("date", "") >= since]
+            results.sort(key=lambda m: m.get("date", ""), reverse=True)
+            return results
+
+        # Standard path: $filter for time + optional sender
         filter_parts = [f"receivedDateTime ge {since}"]
-        sender_filter = _build_sender_filter(sender, domain)
+        sender_filter = _build_sender_filter(sender)
         if sender_filter:
             filter_parts.append(sender_filter)
 
@@ -306,39 +337,72 @@ class O365Adapter(BaseAdapter):
         sender: str | None = None,
         domain: str | None = None,
     ) -> list[dict]:
-        params: dict[str, str] = {
-            "$select": _LIST_SELECT,
-            "$top": str(count),
-            "$orderby": "receivedDateTime desc",
-        }
+        # If page_token is a full URL (@odata.nextLink), use it directly.
+        use_next_link = page_token and page_token.startswith("http")
 
-        if page_token:
-            params["$skip"] = page_token
-
-        # Sender/domain filter via $filter
-        sender_filter = _build_sender_filter(sender, domain)
-        if sender_filter:
-            params["$filter"] = sender_filter
-
-        headers: dict[str, str] | None = None
-        if query:
-            params["$search"] = f'"{query}"'
-            # Graph API: $search requires ConsistencyLevel header
-            # and cannot combine with $orderby
-            del params["$orderby"]
+        if use_next_link:
+            # @odata.nextLink is a complete URL — call it as-is.
+            client = self._require_client()
             headers = {"ConsistencyLevel": "eventual"}
+            resp = await client.get(page_token, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        else:
+            params: dict[str, str] = {
+                "$select": _LIST_SELECT,
+                "$top": str(count),
+                "$orderby": "receivedDateTime desc",
+            }
 
-        data = await self._get(
-            f"{self._base_url()}/messages", params, headers=headers
-        )
+            if page_token:
+                params["$skip"] = page_token
+
+            # Sender filter via $filter (exact match).
+            # Filtering on from/emailAddress/address requires ConsistencyLevel
+            # header and is incompatible with $orderby.
+            sender_filter = _build_sender_filter(sender)
+            if sender_filter:
+                params["$filter"] = sender_filter
+                params.pop("$orderby", None)
+
+            headers_dict: dict[str, str] | None = None
+
+            # Domain filter via $search (endsWith not supported on from address)
+            domain_search = _build_domain_search(domain)
+
+            # Any use of $filter on from or $search requires ConsistencyLevel
+            needs_consistency = bool(sender_filter or domain_search or query)
+            if needs_consistency:
+                headers_dict = {"ConsistencyLevel": "eventual"}
+                params.pop("$orderby", None)
+                # $skip is incompatible with $search — use @odata.nextLink instead
+                params.pop("$skip", None)
+
+            if query and domain_search:
+                params["$search"] = f'"from:@{domain} {query}"'
+            elif query:
+                params["$search"] = f'"{query}"'
+            elif domain_search:
+                params["$search"] = domain_search
+
+            data = await self._get(
+                f"{self._base_url()}/messages", params, headers=headers_dict
+            )
+
         results = _list_response_to_dicts(data, self.source_prefix)
 
-        # Client-side sort when $orderby was removed for $search
-        if query:
+        # Client-side sort when $orderby was removed
+        needs_sort = use_next_link or bool(
+            _build_sender_filter(sender) or _build_domain_search(domain) or query
+        )
+        if needs_sort:
             results.sort(key=lambda m: m.get("date", ""), reverse=True)
 
-        # Attach next page token if we got a full page
-        if results and len(results) == count:
+        # Pagination: prefer @odata.nextLink, fall back to $skip offset
+        next_link = data.get("@odata.nextLink") if isinstance(data, dict) else None
+        if next_link:
+            results[-1]["_next_page_token"] = next_link
+        elif results and len(results) == count and not use_next_link:
             next_offset = int(page_token or 0) + len(results)
             results[-1]["_next_page_token"] = str(next_offset)
 
@@ -366,16 +430,21 @@ class O365Adapter(BaseAdapter):
         params = {
             "$filter": f"conversationId eq '{raw_id}'",
             "$select": _READ_SELECT,
-            "$orderby": "receivedDateTime asc",
         }
+        # $filter on conversationId requires ConsistencyLevel and is
+        # incompatible with $orderby — sort client-side instead.
+        headers = {"ConsistencyLevel": "eventual"}
 
-        data = await self._get(f"{self._base_url()}/messages", params)
+        data = await self._get(
+            f"{self._base_url()}/messages", params, headers=headers
+        )
 
         items = data.get("value", data) if isinstance(data, dict) else data
         if not isinstance(items, list):
             items = []
 
         messages = [_message_to_dict(m, self.source_prefix) for m in items]
+        messages.sort(key=lambda m: m.get("date", ""))
         subject = messages[0].get("subject", "") if messages else ""
 
         return {

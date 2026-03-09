@@ -659,9 +659,12 @@ class TestO365AdapterSenderFilter:
         await adapter.whatsnew(since="2026-01-01T00:00:00Z", domain="contoso.com")
 
         call_args = adapter._client.get.call_args
-        filt = call_args[1]["params"]["$filter"]
-        assert "contoso.com" in filt
-        assert "receivedDateTime ge" in filt
+        params = call_args[1]["params"]
+        # Domain uses $search alone (can't combine with $filter on messages)
+        assert "contoso.com" in params["$search"]
+        assert "$filter" not in params
+        assert "$orderby" not in params
+        assert call_args[1].get("headers", {}).get("ConsistencyLevel") == "eventual"
 
     @pytest.mark.asyncio
     async def test_sender_filter_on_list(self):
@@ -684,8 +687,11 @@ class TestO365AdapterSenderFilter:
         await adapter.list_messages(domain="contoso.com")
 
         call_args = adapter._client.get.call_args
-        filt = call_args[1]["params"]["$filter"]
-        assert "contoso.com" in filt
+        params = call_args[1]["params"]
+        # Domain uses $search, not $filter
+        assert "contoso.com" in params["$search"]
+        assert "$filter" not in params
+        assert "$orderby" not in params
 
     @pytest.mark.asyncio
     async def test_sender_filter_with_query(self):
