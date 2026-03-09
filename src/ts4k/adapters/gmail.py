@@ -345,10 +345,20 @@ class GmailAdapter(BaseAdapter):
 
         service = self._require_service()
 
+        # Build effective query with sender/domain filters.
+        parts = []
+        if query:
+            parts.append(query)
+        if sender:
+            parts.append(f"from:{sender}")
+        elif domain:
+            parts.append(f"from:@{domain}")
+        effective_query = " ".join(parts) if parts else "in:inbox"
+
         # Step 1: Get message IDs.
         list_args: dict[str, Any] = {
             "userId": "me",
-            "q": query or "in:inbox",
+            "q": effective_query,
             "maxResults": count,
         }
         if page_token:
