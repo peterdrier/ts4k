@@ -52,7 +52,7 @@ def _refs_path(key: str | None = None) -> "Path":
     return base / "refs.json"
 
 
-def _suggest_ref_table(ref: str, current_key: str | None) -> str:
+def _suggest_ref_table(ref: str, current_key: str | None, cmd: str = "get") -> str:
     """Check other ref tables for the ref and suggest the right command."""
     base = state.get_config_dir().path
 
@@ -61,7 +61,7 @@ def _suggest_ref_table(ref: str, current_key: str | None) -> str:
         rt = RefTable()
         rt.load(_refs_path(None))
         if rt.resolve(ref) is not None:
-            return f" Found in global refs — try: ts4k get {ref}"
+            return f" Found in global refs — try: ts4k {cmd} {ref}"
 
     # Check keyed tables
     for path in sorted(base.glob("refs-*.json")):
@@ -71,7 +71,7 @@ def _suggest_ref_table(ref: str, current_key: str | None) -> str:
         rt = RefTable()
         rt.load(path)
         if rt.resolve(ref) is not None:
-            return f" Found in key '{k}' — try: ts4k get -k {k} {ref}"
+            return f" Found in key '{k}' — try: ts4k {cmd} -k {k} {ref}"
 
     return " Run 'whatsnew' or 'updates' first."
 
@@ -160,7 +160,7 @@ async def _cmd_thread(args: argparse.Namespace) -> None:
         resolved = rt.resolve(tid)
         if resolved is None:
             label = f"key '{key}'" if key else "global refs"
-            hint = _suggest_ref_table(tid, key)
+            hint = _suggest_ref_table(tid, key, cmd="thread")
             print(f"Ref {tid} not found in {label}.{hint}")
             sys.exit(1)
         tid = resolved
