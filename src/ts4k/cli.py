@@ -706,6 +706,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k updates --since 2d          # last 2 days, all sources\n"
             "  ts4k u --since 6h -s g           # last 6 hours, Gmail only\n"
             "  ts4k u --since 2025-01-01 -n 50  # since date, up to 50 msgs\n"
+            "  ts4k u --since 1w -k research    # save refs under 'research' key\n"
             "  ts4k u --since 1w -f json         # last week, JSON output"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -741,13 +742,13 @@ def _build_parser() -> argparse.ArgumentParser:
     get = subparsers.add_parser(
         "get", aliases=["g"],
         help="Read a single message",
-        description="Retrieve the full content of a single message by native ID or ref number from a whatsnew result.",
+        description="Retrieve the full content of a single message by native ID or ref number. Ref numbers come from whatsnew, updates, or list output.",
         epilog=(
             "examples:\n"
-            "  ts4k get g:18f3a2b1c4d5e6f7    # by native Gmail ID\n"
-            "  ts4k g 7 -k life               # ref #7 from 'life' whatsnew\n"
-            "  ts4k g w:1234@wa               # by native WhatsApp ID\n"
-            "  ts4k g 3 -k work -f json       # ref #3, JSON output"
+            "  ts4k get 3                        # ref #3 from last updates/list\n"
+            "  ts4k g 7 -k life                  # ref #7 from 'life' whatsnew\n"
+            "  ts4k get g:18f3a2b1c4d5e6f7       # by native Gmail ID\n"
+            "  ts4k g 3 -k work -f json          # ref #3, JSON output"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

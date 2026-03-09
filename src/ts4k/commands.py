@@ -1657,7 +1657,7 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
 def _append_commands(lines: list[str]) -> None:
     """Append command reference to lines."""
     lines.append("COMMANDS:")
-    lines.append("  ts4k updates [--source S] [--since T] [-n N]     Fetch messages by time (stateless)")
+    lines.append("  ts4k updates [--source S] [--since T] [-n N] [-k K] Fetch messages by time (stateless)")
     lines.append("  ts4k whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)")
     lines.append("  ts4k list [--query Q] [--source S] [-n N]       Search messages")
     lines.append("  ts4k get [-k KEY] ID                            Read single message body")
@@ -1665,7 +1665,7 @@ def _append_commands(lines: list[str]) -> None:
     lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
     lines.append("  ts4k status                                     Health, stats, efficiency")
     lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread")
-    lines.append("  whatsnew refs accumulate per key; use 'get -k KEY N' to resolve")
+    lines.append("  updates/list refs are global: get N. whatsnew/updates -k refs are keyed: get -k KEY N")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
@@ -1711,6 +1711,7 @@ def _append_mistakes(lines: list[str]) -> None:
     lines.append("  WRONG: ts4k list g                -> RIGHT: ts4k list --source g")
     lines.append("  WRONG: ts4k get abc123            -> RIGHT: ts4k get g:abc123")
     lines.append("  WRONG: ts4k get #7                -> RIGHT: ts4k get 7 (or get -k life 7)")
+    lines.append("  WRONG: ts4k get -k life 7 (after updates) -> RIGHT: ts4k get 7 (or use updates -k life)")
 
 
 def skill_reference(level: str = "basic") -> str:
@@ -1733,7 +1734,7 @@ def skill_reference(level: str = "basic") -> str:
         )
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
-        "updates [--source S] [--since T] [-n N]|Fetch messages by time (stateless)\n"
+        "updates [--source S] [--since T] [-n N] [-k KEY]|Fetch messages by time (stateless)\n"
         "whatsnew KEY [-n N] [--source S]|New msgs since last check (all sources unless --source)\n"
         "list [-q Q] [--source S] [-n N]|Search messages\n"
         "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
@@ -1744,7 +1745,7 @@ def skill_reference(level: str = "basic") -> str:
         "  whatsnew life → shows unseen msgs, advances watermark. Next call shows only newer.\n"
         "  whatsnew life -n 50 → all sources, one call. --source S narrows to one source.\n"
         "Refs: listings assign numbers (1, 2, ...). Use with get/thread.\n"
-        "  whatsnew refs accumulate per key. Use 'get -k KEY N' to resolve.\n"
+        "  updates/list refs are global: get N. whatsnew/updates -k refs are keyed: get -k KEY N.\n"
         "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, ISO. -f p|j|x. -F filters.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
         "Do NOT pipe through head/grep/awk. Use built-in flags instead:\n"
