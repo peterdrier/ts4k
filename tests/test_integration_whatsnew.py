@@ -51,7 +51,7 @@ class TestWhatsnewDrains:
     @pytest.mark.asyncio
     async def test_whatsnew_advances_watermarks(self, monkeypatch):
         """whatsnew saves per-source watermarks from returned messages."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 5, base_hour=10)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -89,7 +89,7 @@ class TestUpdatesStateless:
     @pytest.mark.asyncio
     async def test_updates_does_not_create_watermarks(self, monkeypatch, mock_env):
         """updates never creates watermark files."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -100,7 +100,7 @@ class TestUpdatesStateless:
     @pytest.mark.asyncio
     async def test_updates_returns_messages(self, monkeypatch):
         """updates returns formatted output."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -114,7 +114,7 @@ class TestHasMoreTruncation:
     @pytest.mark.asyncio
     async def test_truncation_sets_has_more(self, monkeypatch):
         """When total fetched > count, has_more=True with remaining count."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 15, base_hour=1)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -127,7 +127,7 @@ class TestHasMoreTruncation:
     @pytest.mark.asyncio
     async def test_no_truncation_when_within_count(self, monkeypatch):
         """When total <= count, has_more is False."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -141,7 +141,7 @@ class TestIndependentKeys:
     @pytest.mark.asyncio
     async def test_keys_dont_interfere(self, monkeypatch):
         """Different whatsnew keys maintain independent watermarks."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 2, base_hour=10)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -159,7 +159,7 @@ class TestMultiSourceFetch:
     @pytest.mark.asyncio
     async def test_messages_sorted_newest_first(self, monkeypatch):
         """Messages from multiple sources are merged and sorted by date descending."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             if prefix == "g":
                 return _fake_messages("g", 2, base_hour=14)
             return _fake_messages("o", 2, base_hour=10)

@@ -50,7 +50,7 @@ def _fake_messages(prefix, count, base_hour=10):
 class TestUpdatesHint:
     @pytest.mark.asyncio
     async def test_updates_shows_get_hint(self, monkeypatch, capsys):
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -64,7 +64,7 @@ class TestUpdatesHint:
 class TestWhatsnewHint:
     @pytest.mark.asyncio
     async def test_whatsnew_shows_keyed_get_hint(self, monkeypatch, capsys):
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -81,7 +81,7 @@ class TestUpdatesWithKey:
         """updates -k saves refs under key and shows keyed hint."""
         from ts4k.cli import _refs_path
 
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
@@ -100,7 +100,7 @@ class TestUpdatesWithKey:
     @pytest.mark.asyncio
     async def test_updates_without_key_shows_global_hint(self, monkeypatch, capsys):
         """updates without -k shows global hint."""
-        async def fake_fetch(prefix, cfg, since, count):
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)

@@ -306,7 +306,8 @@ def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
 
 
 async def _fetch_for_source(
-    prefix: str, cfg: dict[str, Any], since: str | None, count: int
+    prefix: str, cfg: dict[str, Any], since: str | None, count: int,
+    sender: str | None = None, domain: str | None = None,
 ) -> list[dict]:
     """Fetch new messages from a single source.
 
@@ -322,9 +323,9 @@ async def _fetch_for_source(
         async with adapter:
             if provider == "gmail":
                 query = _utc_to_gmail_query(since)
-                listing = await adapter.list_messages(query=query, count=count)
+                listing = await adapter.list_messages(query=query, count=count, sender=sender, domain=domain)
             else:
-                listing = await adapter.whatsnew(since=since)
+                listing = await adapter.whatsnew(since=since, sender=sender, domain=domain)
 
             if not listing:
                 return []
@@ -349,6 +350,8 @@ async def _fetch_messages(
     filter: bool = False,
     ref_table: RefTable | None = None,
     stat_cmd: str = "wn",
+    sender: str | None = None,
+    domain: str | None = None,
 ) -> CommandResult:
     """Shared fetch layer — parallel fetch, collate, format.
 
@@ -376,7 +379,8 @@ async def _fetch_messages(
         if cfg:
             tasks.append(
                 asyncio.create_task(
-                    _fetch_for_source(prefix, cfg, since[prefix], count)
+                    _fetch_for_source(prefix, cfg, since[prefix], count,
+                                     sender=sender, domain=domain)
                 )
             )
             task_prefixes.append(prefix)
@@ -433,6 +437,8 @@ async def updates(
     fmt: str = "pipe",
     filter: bool = False,
     ref_table: RefTable | None = None,
+    sender: str | None = None,
+    domain: str | None = None,
 ) -> CommandResult:
     """Fetch messages by time range. Stateless — no watermarks."""
     active_prefixes = _resolve_prefixes(source)
@@ -446,6 +452,8 @@ async def updates(
         filter=filter,
         ref_table=ref_table,
         stat_cmd="u",
+        sender=sender,
+        domain=domain,
     )
 
 
@@ -456,6 +464,8 @@ async def whatsnew(
     fmt: str = "pipe",
     filter: bool = False,
     ref_table: RefTable | None = None,
+    sender: str | None = None,
+    domain: str | None = None,
 ) -> CommandResult:
     """Fetch new messages using keyed watermarks."""
     from ts4k.state import keyed_watermarks
@@ -477,6 +487,8 @@ async def whatsnew(
         filter=filter,
         ref_table=ref_table,
         stat_cmd="wn",
+        sender=sender,
+        domain=domain,
     )
 
     # Advance watermarks per source to newest returned message
@@ -575,6 +587,8 @@ async def list_messages(
     fmt: str = "pipe",
     filter: bool = False,
     ref_table: RefTable | None = None,
+    sender: str | None = None,
+    domain: str | None = None,
 ) -> CommandResult:
     """List messages matching a query."""
     active_prefixes = _resolve_prefixes(source)
@@ -592,7 +606,7 @@ async def list_messages(
 
         try:
             async with adapter:
-                listing = await adapter.list_messages(query=query, count=count)
+                listing = await adapter.list_messages(query=query, count=count, sender=sender, domain=domain)
                 for entry in listing or []:
                     msg = _normalize_message(entry)
                     msg.setdefault("source", prefix)
