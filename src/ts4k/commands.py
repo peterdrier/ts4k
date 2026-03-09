@@ -53,6 +53,7 @@ class CommandResult:
     has_more: bool = False
     remaining: int = 0
     _messages: list[dict] | None = None  # internal: raw messages for watermark tracking
+    _continuation_hint: str = ""  # internal: actionable "get more" command
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +414,23 @@ async def _fetch_messages(
     if has_more:
         output += f"\n--- {remaining} more messages available ---"
 
+    # Build continuation hint for paginating older results
+    continuation_hint = ""
+    if has_more and truncated:
+        oldest_date = truncated[-1].get("date", "")[:10]  # YYYY-MM-DD
+        if oldest_date:
+            cmd_name = "updates" if stat_cmd == "u" else "list"
+            parts = [f"ts4k {cmd_name}"]
+            if source and source != "all":
+                parts.append(f"--source {source}")
+            parts.append(f"--since {oldest_date}")
+            parts.append(f"-n {count}")
+            if sender:
+                parts.append(f"--from {sender}")
+            if domain:
+                parts.append(f"--domain {domain}")
+            continuation_hint = " ".join(parts)
+
     _record_stats(stat_cmd, truncated, output)
 
     return CommandResult(
@@ -422,6 +440,7 @@ async def _fetch_messages(
         has_more=has_more,
         remaining=remaining,
         _messages=truncated,
+        _continuation_hint=continuation_hint,
     )
 
 

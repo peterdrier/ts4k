@@ -109,6 +109,8 @@ async def _cmd_updates(args: argparse.Namespace) -> None:
         print(f"→ ts4k get -k {key} N to read message N")
     else:
         print("→ ts4k get N to read message N")
+    if result._continuation_hint:
+        print(f"→ {result._continuation_hint}  (older messages)")
 
 
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
