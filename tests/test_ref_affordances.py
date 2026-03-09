@@ -1,0 +1,88 @@
+"""Tests for ref affordance hints — inline usage guidance in listing output."""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+import pytest
+
+from ts4k import commands
+from ts4k.cli import _cmd_updates, _cmd_whatsnew, _cmd_list
+
+
+@pytest.fixture(autouse=True)
+def mock_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("TS4K_CONFIG_DIR", str(tmp_path))
+
+    from ts4k.state import sources, stats, cache, keyed_watermarks as kwm
+
+    monkeypatch.setattr(sources, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(sources, "_SOURCES_FILE", tmp_path / "sources.json")
+    monkeypatch.setattr(stats, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(stats, "_STATS_FILE", tmp_path / "stats.json")
+    monkeypatch.setattr(cache, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(kwm, "_CONFIG_DIR", tmp_path)
+
+    cfg = {"g": {"provider": "gmail", "email": "t@t.com"}}
+    (tmp_path / "sources.json").write_text(json.dumps(cfg))
+    return tmp_path
+
+
+def _fake_messages(prefix, count, base_hour=10):
+    return [
+        {
+            "id": f"{prefix}:msg{i}",
+            "source": prefix,
+            "thread_id": f"{prefix}:t{i}",
+            "from": f"s{i}@test.com",
+            "subject": f"Subj {i}",
+            "date": f"2026-03-08T{base_hour + i:02d}:00:00Z",
+            "body": f"Body {i}",
+        }
+        for i in range(count)
+    ]
+
+
+class TestUpdatesHint:
+    @pytest.mark.asyncio
+    async def test_updates_shows_get_hint(self, monkeypatch, capsys):
+        async def fake_fetch(prefix, cfg, since, count):
+            return _fake_messages(prefix, 3)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        args = argparse.Namespace(source=None, since="1d", count=20, format="pipe", filter=False, key=None)
+        await _cmd_updates(args)
+        out = capsys.readouterr().out
+        assert "→ ts4k get N to read message N" in out
+
+
+class TestWhatsnewHint:
+    @pytest.mark.asyncio
+    async def test_whatsnew_shows_keyed_get_hint(self, monkeypatch, capsys):
+        async def fake_fetch(prefix, cfg, since, count):
+            return _fake_messages(prefix, 3)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        args = argparse.Namespace(key="life", source=None, count=20, format="pipe", filter=False)
+        await _cmd_whatsnew(args)
+        out = capsys.readouterr().out
+        assert "→ ts4k get -k life N to read message N" in out
+
+
+class TestListHint:
+    @pytest.mark.asyncio
+    async def test_list_shows_get_hint(self, monkeypatch, capsys):
+        from ts4k.commands import CommandResult
+
+        async def fake_list(**kwargs):
+            return CommandResult(output="N|SOURCE|FROM|SUBJECT|DATE|SIZE\n1|g|s@t.com|Subj|12:00|6b")
+
+        monkeypatch.setattr(commands, "list_messages", fake_list)
+
+        args = argparse.Namespace(source=None, query=None, count=20, format="pipe", filter=False)
+        await _cmd_list(args)
+        out = capsys.readouterr().out
+        assert "→ ts4k get N to read message N" in out

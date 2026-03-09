@@ -78,6 +78,7 @@ async def _cmd_updates(args: argparse.Namespace) -> None:
         return
     refs.save(_refs_path())
     print(result.output)
+    print("→ ts4k get N to read message N")
 
 
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
@@ -96,6 +97,7 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
         return
     refs.save(_refs_path(args.key))  # save accumulated
     print(result.output)
+    print(f"→ ts4k get -k {args.key} N to read message N")
 
 
 async def _cmd_get(args: argparse.Namespace) -> None:
@@ -157,6 +159,7 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         return
     refs.save(_refs_path())
     print(result.output)
+    print("→ ts4k get N to read message N")
 
 
 def _cmd_help(args: argparse.Namespace) -> None:
