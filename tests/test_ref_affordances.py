@@ -72,6 +72,43 @@ class TestWhatsnewHint:
         assert "→ ts4k get -k life N to read message N" in out
 
 
+class TestUpdatesWithKey:
+    @pytest.mark.asyncio
+    async def test_updates_with_key_saves_keyed_refs(self, monkeypatch, capsys, tmp_path):
+        """updates -k saves refs under key and shows keyed hint."""
+        from ts4k.cli import _refs_path
+
+        async def fake_fetch(prefix, cfg, since, count):
+            return _fake_messages(prefix, 3)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        args = argparse.Namespace(source=None, since="1d", count=20, format="pipe", filter=False, key="myquery")
+        await _cmd_updates(args)
+        out = capsys.readouterr().out
+        assert "→ ts4k get -k myquery N to read message N" in out
+
+        # Verify refs saved under key
+        from ts4k.state.refs import RefTable
+        rt = RefTable()
+        rt.load(_refs_path("myquery"))
+        assert rt.resolve("1") is not None
+
+    @pytest.mark.asyncio
+    async def test_updates_without_key_shows_global_hint(self, monkeypatch, capsys):
+        """updates without -k shows global hint."""
+        async def fake_fetch(prefix, cfg, since, count):
+            return _fake_messages(prefix, 3)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        args = argparse.Namespace(source=None, since="1d", count=20, format="pipe", filter=False, key=None)
+        await _cmd_updates(args)
+        out = capsys.readouterr().out
+        assert "→ ts4k get N to read message N" in out
+        assert "-k" not in out.split("→")[1]  # no -k in the hint
+
+
 class TestListHint:
     @pytest.mark.asyncio
     async def test_list_shows_get_hint(self, monkeypatch, capsys):

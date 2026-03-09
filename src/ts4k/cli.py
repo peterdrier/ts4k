@@ -64,6 +64,7 @@ def _new_ref_table() -> RefTable:
 
 
 async def _cmd_updates(args: argparse.Namespace) -> None:
+    key = getattr(args, "key", None)
     refs = _new_ref_table()
     result = await commands.updates(
         source=getattr(args, "source", None),
@@ -76,9 +77,12 @@ async def _cmd_updates(args: argparse.Namespace) -> None:
     if result.error:
         print(result.error)
         return
-    refs.save(_refs_path())
+    refs.save(_refs_path(key))
     print(result.output)
-    print("→ ts4k get N to read message N")
+    if key:
+        print(f"→ ts4k get -k {key} N to read message N")
+    else:
+        print("→ ts4k get N to read message N")
 
 
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
@@ -683,6 +687,7 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
     up.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    up.add_argument("--key", "-k", help="Save refs under a key (use with get -k KEY N)")
     _add_common_args(up)
     up.set_defaults(func=_cmd_updates)
 
