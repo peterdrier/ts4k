@@ -97,6 +97,8 @@ async def _cmd_updates(args: argparse.Namespace) -> None:
         fmt=getattr(args, "format", "pipe") or "pipe",
         filter=getattr(args, "filter", False),
         ref_table=refs,
+        sender=getattr(args, "sender", None),
+        domain=getattr(args, "domain", None),
     )
     if result.error:
         print(result.error)
@@ -183,6 +185,8 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         fmt=getattr(args, "format", "pipe") or "pipe",
         filter=getattr(args, "filter", False),
         ref_table=refs,
+        sender=getattr(args, "sender", None),
+        domain=getattr(args, "domain", None),
     )
     if result.error:
         print(result.error)
@@ -707,6 +711,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k u --since 6h -s g           # last 6 hours, Gmail only\n"
             "  ts4k u --since 2025-01-01 -n 50  # since date, up to 50 msgs\n"
             "  ts4k u --since 1w -k research    # save refs under 'research' key\n"
+            "  ts4k u --from alice@example.com --since 1w  # msgs from alice, last week\n"
+            "  ts4k u --domain example.com -n 50           # msgs from domain, up to 50\n"
             "  ts4k u --since 1w -f json         # last week, JSON output"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -715,6 +721,8 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
     up.add_argument("--key", "-k", help="Save refs under a key (use with get -k KEY N)")
+    up.add_argument("--from", dest="sender", help="Filter by sender email address")
+    up.add_argument("--domain", help="Filter by sender domain (e.g. example.com)")
     _add_common_args(up)
     up.set_defaults(func=_cmd_updates)
 
@@ -784,6 +792,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "examples:\n"
             "  ts4k list -q 'from:boss subject:urgent'  # Gmail search\n"
             "  ts4k l -q invoice -s g -n 10             # Gmail, 10 results\n"
+            "  ts4k l --from boss@co.com                   # search by sender\n"
+            "  ts4k l --domain co.com -n 50                # search by domain\n"
             "  ts4k l -q 'after:2025/01/01' -f json     # date filter, JSON"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -791,6 +801,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--query", "-q", help="Search query")
     ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     ls.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
+    ls.add_argument("--from", dest="sender", help="Filter by sender email address")
+    ls.add_argument("--domain", help="Filter by sender domain (e.g. example.com)")
     _add_common_args(ls)
     ls.set_defaults(func=_cmd_list)
 
