@@ -628,6 +628,89 @@ class O365Adapter(BaseAdapter):
         )
         return {"id": f"{self._prefix}:{raw_id}", "status": "trashed"}
 
+    # -- Draft methods (require level >= DRAFT) -----------------------------
+
+    def _check_draft(self, operation: str) -> None:
+        from ts4k.core.levels import AccessLevel, check_level
+        check_level(self._access_level, AccessLevel.DRAFT, operation)
+
+    async def create_draft(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        reply_to_message_id: str | None = None,
+    ) -> dict:
+        """Create a draft in the O365 Drafts folder. Does NOT send.
+
+        Uses POST /me/messages which creates in Drafts by default.
+        When reply_to_message_id is provided, sets conversationId for
+        threading and blockquotes the original message body.
+        """
+        self._check_draft("create_draft")
+
+        draft_body: dict = {
+            "subject": subject,
+            "body": {"contentType": "text", "content": body},
+            "toRecipients": [
+                {"emailAddress": {"address": to}}
+            ],
+        }
+
+        if reply_to_message_id:
+            raw_id = _strip_prefix(reply_to_message_id, self.source_prefix)
+            orig = await self._get(
+                f"{self._base_url()}/messages/{raw_id}",
+                {"$select": "conversationId,subject,from,receivedDateTime,"
+                            "body,internetMessageId"},
+            )
+
+            conv_id = orig.get("conversationId")
+            if conv_id:
+                draft_body["conversationId"] = conv_id
+
+            # Auto-add Re: if not present
+            if not subject.lower().startswith("re:"):
+                orig_subject = orig.get("subject", "")
+                draft_body["subject"] = f"Re: {orig_subject}" if orig_subject else subject
+
+            # Build blockquote
+            orig_from = _format_from(orig)
+            orig_date = orig.get("receivedDateTime", "")
+            orig_body_obj = orig.get("body", {})
+            orig_body = orig_body_obj.get("content", "") if isinstance(orig_body_obj, dict) else ""
+            if not orig_body:
+                orig_body = orig.get("bodyPreview", "")
+
+            # Strip HTML if body is HTML
+            content_type = orig_body_obj.get("contentType", "text") if isinstance(orig_body_obj, dict) else "text"
+            if content_type.lower() == "html" and orig_body:
+                from ts4k.core.normalize import _html_to_text
+                orig_body = _html_to_text(orig_body)
+
+            quoted_lines = "\n".join(f"> {line}" for line in orig_body.strip().split("\n"))
+            full_body = (
+                f"{body}\n\n"
+                f"On {orig_date}, {orig_from} wrote:\n"
+                f"{quoted_lines}"
+            )
+            draft_body["body"]["content"] = full_body
+
+            # Set In-Reply-To header for proper threading
+            internet_msg_id = orig.get("internetMessageId")
+            if internet_msg_id:
+                draft_body["internetMessageHeaders"] = [
+                    {"name": "In-Reply-To", "value": internet_msg_id},
+                    {"name": "References", "value": internet_msg_id},
+                ]
+
+        result = await self._post(
+            f"{self._base_url()}/messages",
+            json=draft_body,
+        )
+        draft_id = result.get("id", "")
+        return {"id": f"{self._prefix}:{draft_id}", "status": "draft_created"}
+
     # -- Discovery ----------------------------------------------------------
 
     async def discover_mailboxes(self) -> dict:
