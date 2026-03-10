@@ -124,3 +124,60 @@ class BaseAdapter(ABC):
             ]}
         """
         return None
+
+    # -- Management methods (optional, require level >= MODIFY) ---------------
+    # ts4k NEVER sends messages. There is no send method. This is by design.
+
+    async def archive_message(self, msg_id: str) -> dict:
+        """Archive a message (remove from inbox, keep in mailbox)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support archive")
+
+    async def unarchive_message(self, msg_id: str) -> dict:
+        """Unarchive a message (return to inbox)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support unarchive")
+
+    async def label_message(self, msg_id: str, label: str) -> dict:
+        """Add a label/category to a message."""
+        raise NotImplementedError(f"{type(self).__name__} does not support labeling")
+
+    async def unlabel_message(self, msg_id: str, label: str) -> dict:
+        """Remove a label/category from a message."""
+        raise NotImplementedError(f"{type(self).__name__} does not support unlabeling")
+
+    async def mark_read(self, msg_id: str) -> dict:
+        """Mark a message as read."""
+        raise NotImplementedError(f"{type(self).__name__} does not support mark_read")
+
+    async def mark_unread(self, msg_id: str) -> dict:
+        """Mark a message as unread."""
+        raise NotImplementedError(f"{type(self).__name__} does not support mark_unread")
+
+    async def trash_message(self, msg_id: str) -> dict:
+        """Move a message to trash (recoverable)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support trash")
+
+    async def list_labels(self) -> list[dict]:
+        """List available labels/categories/folders."""
+        raise NotImplementedError(f"{type(self).__name__} does not support list_labels")
+
+    async def create_label(self, name: str) -> dict:
+        """Create a new label/category/folder."""
+        raise NotImplementedError(f"{type(self).__name__} does not support create_label")
+
+    # -- Draft methods (optional, require level >= DRAFT) ---------------------
+
+    async def create_draft(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        reply_to_message_id: str | None = None,
+    ) -> dict:
+        """Create a draft message. Does NOT send.
+
+        When reply_to_message_id is provided, the draft threads as a reply
+        with proper headers and blockquoted original.
+
+        Returns: {"id": "<prefixed draft ID>", "status": "draft_created"}
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support create_draft")
