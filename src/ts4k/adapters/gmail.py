@@ -697,6 +697,92 @@ class GmailAdapter(BaseAdapter):
         label_id = await self._resolve_label_id(name, create=True)
         return {"id": label_id, "name": name, "status": "created"}
 
+    # -- Draft methods (require level >= DRAFT) -----------------------------
+
+    def _check_draft(self, operation: str) -> None:
+        from ts4k.core.levels import AccessLevel, check_level
+        check_level(self._access_level, AccessLevel.DRAFT, operation)
+
+    async def create_draft(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        reply_to_message_id: str | None = None,
+    ) -> dict:
+        """Create a Gmail draft. Does NOT send.
+
+        When reply_to_message_id is provided, fetches the original message
+        to set threading headers and blockquote the original body.
+        """
+        from email.mime.text import MIMEText
+
+        self._check_draft("create_draft")
+        service = self._require_service()
+
+        thread_id = None
+        in_reply_to = None
+        references = None
+        quoted_body = body
+
+        if reply_to_message_id:
+            raw_orig_id = self._strip_prefix(reply_to_message_id)
+            orig = await asyncio.to_thread(
+                lambda: service.users().messages().get(
+                    userId="me", id=raw_orig_id, format="full",
+                ).execute()
+            )
+            orig_headers = orig.get("payload", {}).get("headers", [])
+            thread_id = orig.get("threadId")
+            in_reply_to = _get_header(orig_headers, "Message-ID")
+            references = _get_header(orig_headers, "References")
+            if references and in_reply_to:
+                references = f"{references} {in_reply_to}"
+            elif in_reply_to:
+                references = in_reply_to
+
+            # Auto-add Re: if not present
+            if not subject.lower().startswith("re:"):
+                orig_subject = _get_header(orig_headers, "Subject")
+                subject = f"Re: {orig_subject}" if orig_subject else subject
+
+            # Build blockquote
+            orig_from = _get_header(orig_headers, "From")
+            orig_date = _get_header(orig_headers, "Date")
+            orig_body = _decode_body(orig.get("payload", {}))
+            # Strip HTML if needed
+            if "<" in orig_body and ">" in orig_body:
+                from ts4k.core.normalize import _strip_html
+                orig_body = _strip_html(orig_body)
+            quoted_lines = "\n".join(f"> {line}" for line in orig_body.strip().split("\n"))
+            quoted_body = (
+                f"{body}\n\n"
+                f"On {orig_date}, {orig_from} wrote:\n"
+                f"{quoted_lines}"
+            )
+
+        msg = MIMEText(quoted_body)
+        msg["to"] = to
+        msg["subject"] = subject
+        msg["from"] = self._config.user_email
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        draft_body: dict = {"message": {"raw": raw}}
+        if thread_id:
+            draft_body["message"]["threadId"] = thread_id
+
+        result = await asyncio.to_thread(
+            lambda: service.users().drafts().create(
+                userId="me", body=draft_body,
+            ).execute()
+        )
+        draft_id = result.get("id", "")
+        return {"id": f"{self._prefix}:{draft_id}", "status": "draft_created"}
+
     # -- Helpers -------------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:
