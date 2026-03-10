@@ -1713,14 +1713,6 @@ async def manage_message(
     return "\n".join(results)
 
 
-def _resolve_ref(mid: str, ref_table: RefTable | None) -> str:
-    """Resolve a short ref or full ID. Returns the full ID."""
-    if ref_table and mid.isdigit():
-        resolved = ref_table.resolve(mid)
-        if resolved:
-            return resolved
-    return mid
-
 
 # ---------------------------------------------------------------------------
 # Draft commands (#18)

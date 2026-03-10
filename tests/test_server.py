@@ -25,6 +25,8 @@ EXPECTED_TOOLS = {
     "status",
     "overview",
     "admin",
+    "manage",
+    "draft",
 }
 
 
@@ -40,9 +42,9 @@ class TestToolRegistration:
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_eight_tools(self):
+    def test_exactly_ten_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 8
+        assert len(self._get_tool_names()) == 10
 
     def test_updates_params(self):
         """updates has expected parameters."""
