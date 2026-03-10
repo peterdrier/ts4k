@@ -1643,10 +1643,17 @@ async def manage_message(
         adapter = _make_adapter(prefix, cfg)
         if not adapter:
             return f"Error: failed to create adapter for {prefix!r}"
-        async with adapter:
-            labels = await adapter.list_labels()
-        lines = [f"{lbl['name']} ({lbl.get('type', '')})" for lbl in labels]
-        return "\n".join(lines) if lines else "No labels found."
+        try:
+            async with adapter:
+                labels = await adapter.list_labels()
+            lines = [f"{lbl['name']} ({lbl.get('type', '')})" for lbl in labels]
+            return "\n".join(lines) if lines else "No labels found."
+        except PermissionError as e:
+            return f"Error: {e}"
+        except NotImplementedError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error listing labels: {e}"
 
     results = []
     for mid in ids:

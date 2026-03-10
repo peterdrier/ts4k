@@ -76,8 +76,25 @@ def get_credentials(
 
     # Try loading existing token.
     if token_file.is_file():
-        creds = Credentials.from_authorized_user_file(str(token_file), scopes)
-        logger.debug("Loaded existing token from %s", token_file)
+        # Check if stored token has sufficient scopes before loading.
+        import json
+        try:
+            token_data = json.loads(token_file.read_text())
+            granted = set(token_data.get("scopes", []))
+            needed = set(scopes)
+            if needed and not needed.issubset(granted):
+                missing = needed - granted
+                logger.warning(
+                    "Token for %s has scopes %s but needs %s — re-authenticating",
+                    email, granted, missing,
+                )
+                token_file.unlink()
+                # Fall through to full OAuth flow below.
+            else:
+                creds = Credentials.from_authorized_user_file(str(token_file), scopes)
+                logger.debug("Loaded existing token from %s", token_file)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Could not read token file %s: %s", token_file, exc)
 
     # Refresh or re-auth.
     if creds and creds.valid:

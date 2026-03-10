@@ -595,7 +595,7 @@ class O365Adapter(BaseAdapter):
         """Find a folder ID by name, optionally creating it."""
         data = await self._get(
             f"{self._base_url()}/mailFolders",
-            {"$filter": f"displayName eq '{folder_name}'"},
+            {"$filter": f"displayName eq '{folder_name.replace(chr(39), chr(39)*2)}'"},
         )
         folders = data.get("value", [])
         if folders:
