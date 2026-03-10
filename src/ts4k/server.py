@@ -235,6 +235,67 @@ def overview(
     )
 
 
+@mcp.tool()
+async def manage(
+    action: str,
+    id: str,
+    label: str | None = None,
+    folder: str | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Manage mailbox: archive, label, mark read/unread, trash.
+
+    All actions are non-destructive and reversible. Requires source
+    level >= modify. Comma-separate IDs for batch operations.
+
+    Args:
+        action: archive, unarchive, label, unlabel, read, unread, trash, move, list-labels.
+        id: Message ID(s), comma-separated for batch. Use short refs from listings.
+        label: Label/category name (required for label/unlabel).
+        folder: Folder name (required for move, O365 only).
+        dry_run: Preview actions without executing (default false).
+    """
+    return await commands.manage_message(
+        action=action,
+        msg_id=id,
+        label=label,
+        folder=folder,
+        dry_run=dry_run,
+        ref_table=_refs,
+    )
+
+
+@mcp.tool()
+async def draft(
+    source: str,
+    to: str,
+    subject: str,
+    body: str,
+    reply_to: str | None = None,
+) -> str:
+    """Create a draft message. NEVER sends. Requires source level >= draft.
+
+    When reply_to is provided, the draft threads as a reply with proper
+    headers and blockquoted original message — indistinguishable from
+    a manually composed reply.
+
+    Args:
+        source: Source prefix (e.g. "g", "o").
+        to: Recipient email address.
+        subject: Subject line (auto-prefixed with "Re:" for replies).
+        body: Message body text.
+        reply_to: Message ID or short ref to reply to (optional).
+    """
+    return await commands.create_draft(
+        source=source,
+        to=to,
+        subject=subject,
+        body=body,
+        reply_to=reply_to,
+        ref_table=_refs,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Admin CLI router
 # ---------------------------------------------------------------------------
