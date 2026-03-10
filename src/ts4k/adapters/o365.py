@@ -502,6 +502,132 @@ class O365Adapter(BaseAdapter):
 
         return {"provider": "o365", "labels": labels}
 
+    # -- Management methods (require level >= MODIFY) -----------------------
+
+    def _check_modify(self, operation: str) -> None:
+        from ts4k.core.levels import AccessLevel, check_level
+        check_level(self._access_level, AccessLevel.MODIFY, operation)
+
+    async def _post(self, path: str, json: dict | None = None) -> dict:
+        """Issue a POST request to Graph API."""
+        client = self._require_client()
+        resp = await client.post(path, json=json or {})
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _patch(self, path: str, json: dict) -> dict:
+        """Issue a PATCH request to Graph API."""
+        client = self._require_client()
+        resp = await client.patch(path, json=json)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def archive_message(self, msg_id: str) -> dict:
+        self._check_modify("archive")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        await self._post(
+            f"{self._base_url()}/messages/{raw_id}/move",
+            json={"destinationId": "archive"},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "archived"}
+
+    async def unarchive_message(self, msg_id: str) -> dict:
+        self._check_modify("unarchive")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        await self._post(
+            f"{self._base_url()}/messages/{raw_id}/move",
+            json={"destinationId": "inbox"},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "unarchived"}
+
+    async def mark_read(self, msg_id: str) -> dict:
+        self._check_modify("mark_read")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        await self._patch(
+            f"{self._base_url()}/messages/{raw_id}",
+            json={"isRead": True},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "marked_read"}
+
+    async def mark_unread(self, msg_id: str) -> dict:
+        self._check_modify("mark_unread")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        await self._patch(
+            f"{self._base_url()}/messages/{raw_id}",
+            json={"isRead": False},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "marked_unread"}
+
+    async def label_message(self, msg_id: str, label: str) -> dict:
+        """Add a category to a message (O365 equivalent of Gmail labels)."""
+        self._check_modify("categorize")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        # Get current categories, then add
+        msg = await self._get(
+            f"{self._base_url()}/messages/{raw_id}",
+            {"$select": "categories"},
+        )
+        categories = list(msg.get("categories", []))
+        if label not in categories:
+            categories.append(label)
+        await self._patch(
+            f"{self._base_url()}/messages/{raw_id}",
+            json={"categories": categories},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "labeled", "label": label}
+
+    async def unlabel_message(self, msg_id: str, label: str) -> dict:
+        """Remove a category from a message."""
+        self._check_modify("uncategorize")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        msg = await self._get(
+            f"{self._base_url()}/messages/{raw_id}",
+            {"$select": "categories"},
+        )
+        categories = [c for c in msg.get("categories", []) if c != label]
+        await self._patch(
+            f"{self._base_url()}/messages/{raw_id}",
+            json={"categories": categories},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "unlabeled", "label": label}
+
+    async def _resolve_folder_id(self, folder_name: str, create: bool = True) -> str:
+        """Find a folder ID by name, optionally creating it."""
+        data = await self._get(
+            f"{self._base_url()}/mailFolders",
+            {"$filter": f"displayName eq '{folder_name}'"},
+        )
+        folders = data.get("value", [])
+        if folders:
+            return folders[0]["id"]
+        if not create:
+            raise ValueError(f"Folder {folder_name!r} not found")
+        result = await self._post(
+            f"{self._base_url()}/mailFolders",
+            json={"displayName": folder_name},
+        )
+        return result["id"]
+
+    async def move_to_folder(self, msg_id: str, folder_name: str) -> dict:
+        """Move a message to a named folder (creating it if needed)."""
+        self._check_modify("move")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        folder_id = await self._resolve_folder_id(folder_name, create=True)
+        await self._post(
+            f"{self._base_url()}/messages/{raw_id}/move",
+            json={"destinationId": folder_id},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "moved", "folder": folder_name}
+
+    async def trash_message(self, msg_id: str) -> dict:
+        self._check_modify("trash")
+        raw_id = _strip_prefix(msg_id, self.source_prefix)
+        await self._post(
+            f"{self._base_url()}/messages/{raw_id}/move",
+            json={"destinationId": "deleteditems"},
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "trashed"}
+
     # -- Discovery ----------------------------------------------------------
 
     async def discover_mailboxes(self) -> dict:
