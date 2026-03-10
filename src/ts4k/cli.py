@@ -491,6 +491,38 @@ def _cmd_cache(args: argparse.Namespace) -> None:
     print(commands.manage_cache(action=action, source=source, stale=stale))
 
 
+async def _cmd_manage_async(args: argparse.Namespace) -> None:
+    rt = RefTable()
+    rt.load(_refs_path())
+    result = await commands.manage_message(
+        action=args.action,
+        msg_id=args.id,
+        label=getattr(args, "label", None),
+        folder=getattr(args, "folder", None),
+        dry_run=getattr(args, "dry_run", False),
+        ref_table=rt,
+    )
+    print(result)
+
+
+async def _cmd_draft_async(args: argparse.Namespace) -> None:
+    action = getattr(args, "action", None)
+    if action != "create":
+        print("Usage: ts4k draft create --source S --to ADDR --subject SUBJ --body TEXT")
+        return
+    rt = RefTable()
+    rt.load(_refs_path())
+    result = await commands.create_draft(
+        source=args.source,
+        to=args.to,
+        subject=args.subject,
+        body=args.body,
+        reply_to=getattr(args, "reply_to", None),
+        ref_table=rt,
+    )
+    print(result)
+
+
 def _cmd_filter(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
     value = getattr(args, "value", None)
@@ -1002,6 +1034,65 @@ def _build_parser() -> argparse.ArgumentParser:
     ca_clear.add_argument("--source", "-s", help="Clear only this source (e.g. g, o)")
     ca_clear.add_argument("--stale", action="store_true", help="Only clear stale (old schema) entries")
     ca.set_defaults(func=_cmd_cache)
+
+    # --- manage / m ---
+    mg = subparsers.add_parser(
+        "manage", aliases=["m"],
+        help="Manage mailbox (archive, label, mark read/unread, trash)",
+        description="Non-destructive mailbox management. All actions are reversible. Requires source level >= modify.",
+        epilog=(
+            "actions:\n"
+            "  archive      Remove from inbox (keep in mailbox)\n"
+            "  unarchive    Return to inbox\n"
+            "  label        Add a label/category (--label required)\n"
+            "  unlabel      Remove a label/category (--label required)\n"
+            "  read         Mark as read\n"
+            "  unread       Mark as unread\n"
+            "  trash        Move to trash (recoverable)\n"
+            "  move         Move to folder (--folder required, O365 only)\n"
+            "  list-labels  List available labels/categories\n"
+            "\n"
+            "examples:\n"
+            "  ts4k m archive g:abc123              # archive one message\n"
+            "  ts4k m archive g:abc,g:def,g:ghi     # batch archive\n"
+            "  ts4k m label g:abc --label llm-garbage\n"
+            "  ts4k m read g:abc,g:def              # mark batch as read\n"
+            "  ts4k m list-labels g:any              # list labels for source g\n"
+            "  ts4k m archive g:abc --dry-run        # preview without acting"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mg.add_argument("action", choices=[
+        "archive", "unarchive", "label", "unlabel",
+        "read", "unread", "trash", "move", "list-labels",
+    ])
+    mg.add_argument("id", help="Message ID(s), comma-separated for batch")
+    mg.add_argument("--label", "-l", help="Label/category name (for label/unlabel)")
+    mg.add_argument("--folder", help="Folder name (for move, O365)")
+    mg.add_argument("--dry-run", action="store_true", help="Preview actions without executing")
+    mg.set_defaults(func=_cmd_manage_async)
+
+    # --- draft / d ---
+    dr = subparsers.add_parser(
+        "draft", aliases=["d"],
+        help="Create draft messages (never sends)",
+        description="Create draft messages in your mailbox. Requires source level >= draft. ts4k NEVER sends messages.",
+        epilog=(
+            "examples:\n"
+            '  ts4k d create -s g --to alice@x.com --subject "Hi" --body "Hello"\n'
+            '  ts4k d create -s g --reply-to g:abc123 --body "Sounds good!"\n'
+            '  ts4k d create -s o --to bob@co.com --subject "FYI" --body "See attached"'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    dr_sub = dr.add_subparsers(dest="action")
+    dr_create = dr_sub.add_parser("create", help="Create a new draft")
+    dr_create.add_argument("--source", "-s", required=True, help="Source prefix (e.g. g, o)")
+    dr_create.add_argument("--to", required=True, help="Recipient email address")
+    dr_create.add_argument("--subject", default="", help="Subject line")
+    dr_create.add_argument("--body", required=True, help="Message body text")
+    dr_create.add_argument("--reply-to", help="Message ID to reply to (threads the draft)")
+    dr.set_defaults(func=_cmd_draft_async)
 
     # --- status / st ---
     st = subparsers.add_parser(
