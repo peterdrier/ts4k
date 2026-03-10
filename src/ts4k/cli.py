@@ -334,7 +334,8 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
-            print(f"  {prefix}: {provider} ({detail})")
+            level = cfg.get("level", "readonly")
+            print(f"  {prefix}: {provider} ({detail}) [{level}]")
             for k, v in sorted(cfg.items()):
                 if k not in ("provider", "email", "mailbox", "mcp_cwd"):
                     print(f"    {k}: {v}")
