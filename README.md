@@ -7,20 +7,19 @@ Raw HTML email: ~8,000 tokens. After ts4k: ~400 tokens. **20x reduction.**
 ## Quick Example
 
 ```
-$ ts4k wn
-SOURCE|FROM|SUBJECT|DATE|ID|SIZE
-g|alice@acme.com|Q1 report draft|2026-02-24T09:15:00Z|g:19abc123|2.1kb
-g|bob@example.com|Re: lunch tomorrow|2026-02-24T08:30:00Z|g:19def456|340b
-o|carol@contoso.com|Budget approval|2026-02-24T10:00:00Z|o:AAMkAD789|1.8kb
-w|+15551234567|Hey, running late|2026-02-24T09:45:00Z|w:3EB05C42|120b
+$ ts4k whatsnew life
+1|g|alice@acme.com|Q1 report draft|2026-02-24T09:15|2.1kb
+2|g|bob@example.com|Re: lunch tomorrow|2026-02-24T08:30|340b
+3|o|carol@contoso.com|Budget approval|2026-02-24T10:00|1.8kb
+4|w|+15551234567|Hey, running late|2026-02-24T09:45|120b
 ```
 
-One command, three platforms, pipe-delimited output an LLM can parse in ~60 tokens.
+One command, three platforms, pipe-delimited output an LLM can parse in ~60 tokens. Ref numbers (1, 2, ...) let you `get 1` or `thread 2` without copying long IDs.
 
 ## Install
 
 ```bash
-pip install -e .
+pip install ts4k
 ```
 
 Requires Python 3.12+. Creates two entry points:
@@ -41,19 +40,62 @@ You can run any combination. One provider is enough to get started.
 
 ## Usage
 
-See [docs/usage.md](docs/usage.md) for the full command reference, MCP server mode, output formats, and examples.
-
-### Everyday Commands
+### Reading Messages
 
 ```bash
-ts4k wn                        # What's new across all sources
-ts4k wn --source g             # Gmail only
-ts4k g g:19abc123              # Read a specific message
-ts4k t g:thread456             # Read a thread
-ts4k l -q "from:alice" -n 10   # Search messages
-ts4k o                         # Overview of cached messages
-ts4k st                        # Health + token savings stats
+ts4k whatsnew life               # New messages since last check (keyed watermark)
+ts4k updates --since 2d          # Messages from last 2 days (stateless)
+ts4k updates --source g          # Gmail only
+ts4k get 3                       # Read message by ref number
+ts4k get g:19abc123              # Read message by full ID
+ts4k thread g:thread456          # Read a thread
+ts4k list -q "budget" -n 10     # Search messages
+ts4k overview                    # Hierarchical cache summary
+ts4k status --live               # Health + live mailbox counts
 ```
+
+### Managing Messages
+
+Requires source level `modify` or higher. All actions are non-destructive and reversible.
+
+```bash
+ts4k manage archive g:abc123              # Archive a message
+ts4k manage archive g:abc,g:def,g:ghi    # Batch archive
+ts4k manage label g:abc --label invoices  # Add a label
+ts4k manage read g:abc,g:def             # Mark as read
+ts4k manage trash g:abc                   # Move to trash (recoverable)
+ts4k manage list-labels g:any             # List available labels
+ts4k manage archive g:abc --dry-run       # Preview without acting
+```
+
+### Creating Drafts
+
+Requires source level `draft`. ts4k **never sends messages** — drafts appear in your mailbox for manual review.
+
+```bash
+ts4k draft create -s g --to alice@x.com --subject "Hi" --body "Hello"
+ts4k draft create -s g --reply-to g:abc123 --body "Sounds good!"  # Threaded reply
+```
+
+Reply drafts automatically set threading headers and blockquote the original message.
+
+### Access Levels
+
+Each source has a permission level that controls what operations are allowed:
+
+| Level | Capabilities | OAuth Scope |
+|-------|-------------|-------------|
+| `readonly` (default) | Read, list, search | `gmail.readonly` / `Mail.Read` |
+| `modify` | + archive, label, mark read/unread, trash | `gmail.modify` / `Mail.ReadWrite` |
+| `draft` | + create draft messages | `gmail.modify` / `Mail.ReadWrite` |
+
+Set the level when adding or updating a source:
+
+```bash
+ts4k src add g gmail email=you@gmail.com level=draft
+```
+
+Changing the level automatically triggers re-authentication with the correct OAuth scopes.
 
 ### MCP Server Mode
 
@@ -62,7 +104,7 @@ ts4k-mcp                              # stdio (default, for Claude Code)
 ts4k-mcp --transport http --port 9000  # HTTP for other clients
 ```
 
-Exposes the same commands as MCP tools: `updates`, `get`, `thread`, `list`, `overview`, `status`, and more.
+10 MCP tools: `updates`, `whatsnew`, `get`, `thread`, `list`, `overview`, `status`, `admin`, `manage`, `draft`.
 
 ## Architecture
 
@@ -70,14 +112,14 @@ Exposes the same commands as MCP tools: `updates`, `get`, `thread`, `list`, `ove
 Agent (Claude, etc.)
   |
   v
-ts4k (normalize --> filter --> format)
-  |-- Gmail Adapter    --> Google Gmail API
-  |-- O365 Adapter     --> Microsoft Graph API
-  |-- WhatsApp Adapter --> whatsapp-mcp (local SQLite)
-  '-- Future adapters  --> Slack, Teams, Telegram, ...
+ts4k (normalize → filter → format)
+  |── Gmail Adapter    → Google Gmail API (direct)
+  |── O365 Adapter     → Microsoft Graph API (direct, httpx)
+  |── WhatsApp Adapter → whatsapp-mcp (local SQLite)
+  '── Future adapters  → Slack, Teams, Telegram, ...
 ```
 
-- **Adapters** wrap platform APIs. ts4k doesn't reimplement them.
+- **Adapters** wrap platform APIs with a uniform interface. Each adapter supports read, manage, and draft operations gated by access level.
 - **Normalize** strips HTML, deduplicates reply chains, collapses whitespace.
 - **Filter** applies skip lists (senders, domains, patterns). Off by default.
 - **Format** outputs pipe-delimited (default), JSON, or XML.
@@ -88,6 +130,7 @@ Platform failures are isolated — if one adapter is down, the others still retu
 
 - **Metadata first, content on demand** — default to minimum useful response
 - **No LLM calls inside ts4k** — this is the data layer, not the intelligence layer
+- **ts4k never sends messages** — draft creation only; the send level is defined but intentionally not implemented
 - **Using a command IS the side effect** — watermarks update on `whatsnew`, no separate save step
 - **Format is a feature** — pipe-delimited saves ~60% tokens vs JSON
 
@@ -97,8 +140,8 @@ All state lives in `~/.config/ts4k/` (override with `TS4K_CONFIG_DIR`):
 
 ```
 ~/.config/ts4k/
-  sources.json              # Configured providers
-  watermarks.json           # Last-fetched timestamps
+  sources.json              # Configured providers (incl. access levels)
+  watermarks/               # Per-key last-fetched timestamps
   contacts.json             # Cross-platform identity map
   filters.json              # Skip lists
   stats.json                # Usage counters
