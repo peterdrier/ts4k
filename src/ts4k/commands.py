@@ -1789,8 +1789,9 @@ def llm_help() -> str:
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
+            level = cfg.get("level", "readonly")
             auth_status = " [needs auth]" if prefix in needs_auth else ""
-            lines.append(f"  {prefix}: {provider} ({detail}){auth_status}")
+            lines.append(f"  {prefix}: {provider} ({detail}) [{level}]{auth_status}")
         lines.append("")
 
         if needs_auth:
@@ -1851,7 +1852,10 @@ def _append_commands(lines: list[str]) -> None:
     lines.append("  ts4k get [-k KEY] ID                            Read single message body")
     lines.append("  ts4k thread [-k KEY] TID                        Read thread/conversation")
     lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
+    lines.append("  ts4k manage ACTION ID [--label L] [--folder F] [--dry-run]  Manage mailbox (archive, label, read/unread, trash)")
+    lines.append("  ts4k draft create -s S --to ADDR --subject SUBJ --body TEXT  Create draft (never sends)")
     lines.append("  ts4k status                                     Health, stats, efficiency")
+    lines.append("  Access levels: readonly (default), modify (manage), draft (create drafts). Set via: ts4k src add PREFIX PROVIDER level=modify")
     lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread")
     lines.append("  updates/list refs are global: get N. whatsnew/updates -k refs are keyed: get -k KEY N")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
@@ -1920,6 +1924,12 @@ def skill_reference(level: str = "basic") -> str:
             "contacts unlink|find|list|Manage contacts\n"
             "filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|skip-groups|reset\n"
             "cache stats|clear [--source S] [--stale]|Manage cache\n"
+            "manage actions: archive, unarchive, label, unlabel, read, unread, trash, move, list-labels\n"
+            "  manage archive g:abc,g:def|Batch archive (comma-separated IDs or refs)\n"
+            "  manage label g:abc --label llm-garbage|Add label\n"
+            "  manage read g:abc --dry-run|Preview without acting\n"
+            "draft create -s g --to alice@x.com --subject Hi --body Hello|New draft\n"
+            "  draft create -s g --reply-to g:abc --body 'Sounds good!'|Reply draft with threading\n"
             "help|Human-readable help"
         )
     return (
@@ -1930,7 +1940,10 @@ def skill_reference(level: str = "basic") -> str:
         "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
         "thread [-k KEY] TID|Read thread (e.g. thread g:abc123)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
+        "manage ACTION ID [--label L] [--folder F] [--dry-run]|Manage mailbox (requires level=modify)\n"
+        "draft create -s S --to ADDR --subject SUBJ --body TEXT [--reply-to ID]|Create draft (requires level=draft)\n"
         "status|Health + stats\n"
+        "Access levels: readonly (default), modify, draft. Set: ts4k src add PREFIX PROVIDER level=modify\n"
         "Keys: user-defined labels (life, work). Each key tracks its own read position.\n"
         "  whatsnew life \u2192 shows unseen msgs, advances watermark. Next call shows only newer.\n"
         "  whatsnew life -n 50 \u2192 all sources, one call. --source S narrows to one source.\n"
