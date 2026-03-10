@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-08T23:00 (v0.1.11)
+Last synced: 2026-03-10T22:00 (v0.1.14)
 
 ## P1 — Bugs / Reliability
 
@@ -35,7 +35,8 @@ Last synced: 2026-03-08T23:00 (v0.1.11)
 
 ## Phase 5 — Send + Docker + Release (incomplete)
 
-- [ ] **Send/draft commands** — Safety-railed send and draft-only mode across all adapters. Needs adapter send methods, CLI/MCP commands, confirmation flags.
+- [x] ~~**Draft message creation**~~ [#18](https://github.com/peterdrier/ts4k/issues/18) — Gmail and O365 draft creation with reply threading, blockquoting, and proper headers. CLI `draft create`, MCP `draft` tool. Requires source level >= draft.
+- [x] ~~**Non-destructive mailbox management**~~ [#19](https://github.com/peterdrier/ts4k/issues/19) — Archive, label, mark read/unread, trash for Gmail and O365. Batch support, dry-run mode, ref resolution. CLI `manage`/`m`, MCP `manage` tool. Requires source level >= modify. Per-source permission levels (readonly/modify/draft/send) with scope-aware OAuth re-auth.
 - [ ] **Docker template** — Dockerfile + docker-compose for ts4k + connectors. deploy-plan.md has full design; no implementation yet. *Soft-blocked by secrets handling decision (P1).*
 - [x] ~~PyPI packaging~~ — `pyproject.toml` with entry points, installable via `pip install -e .`. Minor metadata polish remaining.
 - [x] ~~Public release docs~~ — README, setup guides, usage docs (73543c3). Docker/contributing docs pending. *(Setup doc improvements tracked in [#5](https://github.com/peterdrier/ts4k/issues/5))*
