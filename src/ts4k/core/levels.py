@@ -44,8 +44,8 @@ def check_level(current: AccessLevel, required: AccessLevel, operation: str) -> 
         )
     if current < required:
         raise PermissionError(
-            f"Operation '{operation}' requires level '{required.name.lower()}', "
-            f"but source is configured as '{current.name.lower()}'. "
+            f"Operation '{operation}' requires level='{required.name.lower()}', "
+            f"but source is configured as level='{current.name.lower()}'. "
             f"Update with: ts4k src add <prefix> <provider> level={required.name.lower()}"
         )
 

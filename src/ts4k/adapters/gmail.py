@@ -570,6 +570,133 @@ class GmailAdapter(BaseAdapter):
 
         return {"provider": "gmail", "labels": labels}
 
+    # -- Management methods (require level >= MODIFY) -----------------------
+
+    def _check_modify(self, operation: str) -> None:
+        from ts4k.core.levels import AccessLevel, check_level
+        check_level(self._access_level, AccessLevel.MODIFY, operation)
+
+    async def archive_message(self, msg_id: str) -> dict:
+        self._check_modify("archive")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        await asyncio.to_thread(
+            lambda: service.users().messages().modify(
+                userId="me", id=raw_id,
+                body={"removeLabelIds": ["INBOX"]}
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "archived"}
+
+    async def unarchive_message(self, msg_id: str) -> dict:
+        self._check_modify("unarchive")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        await asyncio.to_thread(
+            lambda: service.users().messages().modify(
+                userId="me", id=raw_id,
+                body={"addLabelIds": ["INBOX"]}
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "unarchived"}
+
+    async def _resolve_label_id(self, label_name: str, create: bool = True) -> str:
+        """Find a label ID by name, optionally creating it if missing."""
+        service = self._require_service()
+        result = await asyncio.to_thread(
+            lambda: service.users().labels().list(userId="me").execute()
+        )
+        for lbl in result.get("labels", []):
+            if lbl.get("name", "").lower() == label_name.lower():
+                return lbl["id"]
+        if not create:
+            raise ValueError(f"Label {label_name!r} not found")
+        new_label = await asyncio.to_thread(
+            lambda: service.users().labels().create(
+                userId="me",
+                body={"name": label_name, "labelListVisibility": "labelShow",
+                      "messageListVisibility": "show"}
+            ).execute()
+        )
+        return new_label["id"]
+
+    async def label_message(self, msg_id: str, label: str) -> dict:
+        self._check_modify("label")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        label_id = await self._resolve_label_id(label, create=True)
+        await asyncio.to_thread(
+            lambda: service.users().messages().modify(
+                userId="me", id=raw_id,
+                body={"addLabelIds": [label_id]}
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "labeled", "label": label}
+
+    async def unlabel_message(self, msg_id: str, label: str) -> dict:
+        self._check_modify("unlabel")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        label_id = await self._resolve_label_id(label, create=False)
+        await asyncio.to_thread(
+            lambda: service.users().messages().modify(
+                userId="me", id=raw_id,
+                body={"removeLabelIds": [label_id]}
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "unlabeled", "label": label}
+
+    async def mark_read(self, msg_id: str) -> dict:
+        self._check_modify("mark_read")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        await asyncio.to_thread(
+            lambda: service.users().messages().modify(
+                userId="me", id=raw_id,
+                body={"removeLabelIds": ["UNREAD"]}
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "marked_read"}
+
+    async def mark_unread(self, msg_id: str) -> dict:
+        self._check_modify("mark_unread")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        await asyncio.to_thread(
+            lambda: service.users().messages().modify(
+                userId="me", id=raw_id,
+                body={"addLabelIds": ["UNREAD"]}
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "marked_unread"}
+
+    async def trash_message(self, msg_id: str) -> dict:
+        self._check_modify("trash")
+        service = self._require_service()
+        raw_id = self._strip_prefix(msg_id)
+        await asyncio.to_thread(
+            lambda: service.users().messages().trash(
+                userId="me", id=raw_id,
+            ).execute()
+        )
+        return {"id": f"{self._prefix}:{raw_id}", "status": "trashed"}
+
+    async def list_labels(self) -> list[dict]:
+        self._check_modify("list_labels")
+        service = self._require_service()
+        result = await asyncio.to_thread(
+            lambda: service.users().labels().list(userId="me").execute()
+        )
+        return [
+            {"id": lbl["id"], "name": lbl.get("name", ""), "type": lbl.get("type", "")}
+            for lbl in result.get("labels", [])
+        ]
+
+    async def create_label(self, name: str) -> dict:
+        self._check_modify("create_label")
+        label_id = await self._resolve_label_id(name, create=True)
+        return {"id": label_id, "name": name, "status": "created"}
+
     # -- Helpers -------------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:
