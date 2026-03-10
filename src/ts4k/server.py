@@ -48,38 +48,6 @@ _refs = RefTable()
 
 
 @mcp.tool()
-async def updates(
-    source: str = "all",
-    since: str | None = None,
-    count: int = 20,
-    fmt: str = "pipe",
-    filter: bool = False,
-) -> str:
-    """Fetch messages by time range. Stateless — no watermarks.
-
-    Listings use short refs (1, 2, ...) — pass these to get/thread.
-
-    Args:
-        source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
-        since: Time range — "2d", "7d", ISO timestamp. Defaults to 1d if omitted.
-        count: Maximum messages to return (default 20).
-        fmt: Output format — "pipe" (default, most compact), "json", or "xml".
-        filter: Apply configured skip filters (default off).
-    """
-    result = await commands.updates(
-        source=source,
-        since=since,
-        count=count,
-        fmt=fmt,
-        filter=filter,
-        ref_table=_refs,
-    )
-    if result.error:
-        return result.error
-    return result.output
-
-
-@mcp.tool()
 async def whatsnew(
     key: str,
     source: str = "all",
@@ -141,24 +109,33 @@ async def thread(tid: str, fmt: str = "pipe") -> str:
 async def list_tool(
     source: str = "all",
     query: str | None = None,
+    since: str | None = None,
+    sender: str | None = None,
+    domain: str | None = None,
     count: int = 20,
     fmt: str = "pipe",
     filter: bool = False,
 ) -> str:
-    """Search and list messages matching a query.
+    """Search and list messages. All filters stack.
 
-    Listings use short refs (1, 2, ...) — pass these to get/thread.
+    Listings use short refs (1, 2, ...) — pass these to get/thread/manage.
 
     Args:
-        source: Source prefix, provider name, or "all".
-        query: Search query string (provider-specific).
+        source: Source prefix (e.g. "g"), provider name ("gmail"), or "all".
+        query: Search query string (provider-specific syntax).
+        since: Time range — "2d", "6h", "1w", ISO timestamp, or "all".
+        sender: Filter by sender email address.
+        domain: Filter by sender domain (e.g. "example.com").
         count: Maximum messages to return (default 20).
-        fmt: Output format — "pipe" (default), "json", or "xml".
+        fmt: Output format — "pipe" (default, most compact), "json", or "xml".
         filter: Apply configured skip filters (default off).
     """
     result = await commands.list_messages(
         source=source,
         query=query,
+        since=since,
+        sender=sender,
+        domain=domain,
         count=count,
         fmt=fmt,
         filter=filter,

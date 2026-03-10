@@ -155,7 +155,7 @@ def _prefix_from_id(prefixed_id: str, all_cfg: dict[str, dict[str, Any]]) -> str
     raise ValueError(
         f"Invalid message ID {prefixed_id!r} — expected format like 'g:abc123'.\n"
         f"  Configured sources: {known}\n"
-        f"  Did you mean: ts4k updates --source {prefixed_id}?"
+        f"  Did you mean: ts4k list --source {prefixed_id}?"
     )
 
 
@@ -372,7 +372,7 @@ async def _fetch_messages(
         fmt: Output format (pipe, json, xml).
         filter: Whether to apply skip filters.
         ref_table: Optional ref table for short refs.
-        stat_cmd: Stats command label (``"wn"`` or ``"u"``).
+        stat_cmd: Stats command label (``"wn"`` or ``"l"``).
 
     Returns a CommandResult with ``_messages`` populated (the truncated list).
     Does NOT touch watermarks.
@@ -427,7 +427,7 @@ async def _fetch_messages(
     if has_more and truncated:
         oldest_date = truncated[-1].get("date", "")[:10]  # YYYY-MM-DD
         if oldest_date:
-            cmd_name = "updates" if stat_cmd == "u" else "list"
+            cmd_name = "list"
             parts = [f"ts4k {cmd_name}"]
             if source and source != "all":
                 parts.append(f"--source {source}")
@@ -467,18 +467,14 @@ async def updates(
     sender: str | None = None,
     domain: str | None = None,
 ) -> CommandResult:
-    """Fetch messages by time range. Stateless — no watermarks."""
-    active_prefixes = _resolve_prefixes(source)
-    resolved_ts = _resolve_since_to_utc(since)
-    since_map = {p: resolved_ts for p in active_prefixes}
-    return await _fetch_messages(
-        since=since_map,
-        count=count,
+    """Deprecated — use list_messages(since=...) instead."""
+    return await list_messages(
         source=source,
+        since=since,
+        count=count,
         fmt=fmt,
         filter=filter,
         ref_table=ref_table,
-        stat_cmd="u",
         sender=sender,
         domain=domain,
     )
@@ -616,8 +612,32 @@ async def list_messages(
     ref_table: RefTable | None = None,
     sender: str | None = None,
     domain: str | None = None,
+    since: str | None = None,
 ) -> CommandResult:
-    """List messages matching a query."""
+    """List messages matching filters. All filters stack.
+
+    When *since* is provided, uses the time-aware fetch path (adapter.whatsnew
+    for O365, after: query for Gmail).  Otherwise uses adapter.list_messages.
+    """
+    if since is not None:
+        # Time-aware path — delegate to _fetch_messages which handles
+        # per-provider since conversion and parallel fetch.
+        active_prefixes = _resolve_prefixes(source)
+        resolved_ts = _resolve_since_to_utc(since)
+        since_map = {p: resolved_ts for p in active_prefixes}
+        return await _fetch_messages(
+            since=since_map,
+            count=count,
+            source=source,
+            fmt=fmt,
+            filter=filter,
+            ref_table=ref_table,
+            stat_cmd="l",
+            sender=sender,
+            domain=domain,
+        )
+
+    # Query-only path — no time filter.
     active_prefixes = _resolve_prefixes(source)
     all_cfg = _ensure_sources()
 
@@ -1853,20 +1873,19 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
 def _append_commands(lines: list[str]) -> None:
     """Append command reference to lines."""
     lines.append("COMMANDS:")
-    lines.append("  ts4k updates [--source S] [--since T] [-n N] [-k K] [--from ADDR] [--domain D]  Fetch messages by time")
+    lines.append("  ts4k list [--since T] [-q Q] [--source S] [-n N] [-k K] [--from ADDR] [--domain D]  Search messages (all filters stack)")
     lines.append("  ts4k whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)")
-    lines.append("  ts4k list [-q Q] [--source S] [-n N] [--from ADDR] [--domain D]  Search messages")
     lines.append("  ts4k get [-k KEY] ID                            Read single message body")
     lines.append("  ts4k thread [-k KEY] TID                        Read thread/conversation")
     lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
-    lines.append("  ts4k manage ACTION ID [--label L] [--folder F] [--dry-run]  Manage mailbox (archive, label, read/unread, trash)")
+    lines.append("  ts4k manage ACTION ID [-k KEY] [--label L] [--folder F] [--dry-run]  Manage mailbox (archive, label, read/unread, trash)")
     lines.append("  ts4k draft create -s S --to ADDR --subject SUBJ --body TEXT  Create draft (never sends)")
     lines.append("  ts4k status                                     Health, stats, efficiency")
     lines.append("  Access levels: readonly (default), modify (manage), draft (create drafts). Set via: ts4k src add PREFIX PROVIDER level=modify")
-    lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread")
-    lines.append("  updates/list refs are global: get N. whatsnew/updates -k refs are keyed: get -k KEY N")
+    lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread/manage. Refs accumulate across calls.")
+    lines.append("  list refs are global: get N. list/whatsnew -k refs are keyed: get -k KEY N")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
-    lines.append("  --from: filter by sender address. --domain: filter by sender domain.")
+    lines.append("  --since: 2d, 6h, 1w, ISO date, or 'all'. --from: sender address. --domain: sender domain.")
     lines.append("  Truncated results show a continuation command — copy-paste for older messages.")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
@@ -1880,16 +1899,16 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    2. mkdir -p ~/.config/ts4k/google/<email>/ && cp client_secret.json there")
     lines.append("    3. ts4k src add g gmail email=<email>")
     lines.append("    4. ts4k auth gmail <email>                  (opens browser for OAuth)")
-    lines.append("    5. ts4k updates --source g                  (verify)")
+    lines.append("    5. ts4k list --source g --since 2d           (verify)")
     lines.append("  O365:")
     lines.append("    1. Register app: Azure Portal > App registrations > New > add Mail.Read permission")
     lines.append("    2. ts4k src add o o365 client_id=<id> tenant_id=<tid>")
     lines.append("    3. ts4k auth o365                           (device code flow)")
     lines.append("    4. ts4k src discover                        (find mailboxes)")
-    lines.append("    5. ts4k updates --source o                  (verify)")
+    lines.append("    5. ts4k list --source o --since 2d          (verify)")
     lines.append("  WhatsApp:")
     lines.append('    1. ts4k src add w whatsapp mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
-    lines.append("    2. ts4k updates --source w                  (verify)")
+    lines.append("    2. ts4k list --source w --since 2d          (verify)")
 
 
 def _append_errors(lines: list[str]) -> None:
@@ -1906,13 +1925,13 @@ def _append_errors(lines: list[str]) -> None:
 def _append_mistakes(lines: list[str]) -> None:
     """Append common agent mistakes to lines."""
     lines.append("COMMON MISTAKES:")
-    lines.append("  WRONG: ts4k g inbox              -> RIGHT: ts4k updates --source g")
-    lines.append("  WRONG: ts4k updates --hours 24   -> RIGHT: ts4k updates --since 24h")
+    lines.append("  WRONG: ts4k g inbox              -> RIGHT: ts4k list --source g --since 1d")
+    lines.append("  WRONG: ts4k list --hours 24      -> RIGHT: ts4k list --since 24h")
     lines.append("  WRONG: ts4k gmail whatsnew        -> RIGHT: ts4k whatsnew life --source gmail")
     lines.append("  WRONG: ts4k list g                -> RIGHT: ts4k list --source g")
     lines.append("  WRONG: ts4k get abc123            -> RIGHT: ts4k get g:abc123")
     lines.append("  WRONG: ts4k get #7                -> RIGHT: ts4k get 7 (or get -k life 7)")
-    lines.append("  WRONG: ts4k get -k life 7 (after updates) -> RIGHT: ts4k get 7 (or use updates -k life)")
+    lines.append("  WRONG: ts4k get -k life 7 (after list) -> RIGHT: ts4k get 7 (or use list -k life)")
 
 
 def skill_reference(level: str = "basic") -> str:
@@ -1932,34 +1951,33 @@ def skill_reference(level: str = "basic") -> str:
             "filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|skip-groups|reset\n"
             "cache stats|clear [--source S] [--stale]|Manage cache\n"
             "manage actions: archive, unarchive, label, unlabel, read, unread, trash, move, list-labels\n"
-            "  manage archive g:abc,g:def|Batch archive (comma-separated IDs or refs)\n"
-            "  manage label g:abc --label llm-garbage|Add label\n"
-            "  manage read g:abc --dry-run|Preview without acting\n"
+            "  manage archive 1,2,3|Batch archive by ref\n"
+            "  manage label 5 --label llm-garbage|Add label by ref\n"
+            "  manage read 1,2 -k work --dry-run|Preview with keyed refs\n"
             "draft create -s g --to alice@x.com --subject Hi --body Hello|New draft\n"
             "  draft create -s g --reply-to g:abc --body 'Sounds good!'|Reply draft with threading\n"
             "help|Human-readable help"
         )
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
-        "updates [--source S] [--since T] [-n N] [-k KEY] [--from ADDR] [--domain D]|Fetch messages by time (stateless)\n"
+        "list [--since T] [-q Q] [--source S] [-n N] [-k KEY] [--from ADDR] [--domain D]|Search messages (all filters stack)\n"
         "whatsnew KEY [-n N] [--source S]|New msgs since last check (all sources unless --source)\n"
-        "list [-q Q] [--source S] [-n N] [--from ADDR] [--domain D]|Search messages\n"
         "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
         "thread [-k KEY] TID|Read thread (e.g. thread g:abc123)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
-        "manage ACTION ID [--label L] [--folder F] [--dry-run]|Manage mailbox (requires level=modify)\n"
+        "manage ACTION ID [-k KEY] [--label L] [--folder F] [--dry-run]|Manage mailbox (requires level=modify)\n"
         "draft create -s S --to ADDR --subject SUBJ --body TEXT [--reply-to ID]|Create draft (requires level=draft)\n"
         "status|Health + stats\n"
         "Access levels: readonly (default), modify, draft. Set: ts4k src add PREFIX PROVIDER level=modify\n"
         "Keys: user-defined labels (life, work). Each key tracks its own read position.\n"
         "  whatsnew life \u2192 shows unseen msgs, advances watermark. Next call shows only newer.\n"
         "  whatsnew life -n 50 \u2192 all sources, one call. --source S narrows to one source.\n"
-        "Refs: listings assign numbers (1, 2, ...). Use with get/thread.\n"
-        "  updates/list refs are global: get N. whatsnew/updates -k refs are keyed: get -k KEY N.\n"
-        "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, ISO. -f p|j|x. -F filters.\n"
+        "Refs: listings assign numbers (1, 2, ...). Use with get/thread/manage. Refs accumulate across calls.\n"
+        "  list refs are global: get N. list/whatsnew -k refs are keyed: get -k KEY N.\n"
+        "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, 1w, ISO. -f p|j|x. -F filters.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
-        "Sender/domain: --from alice@co.com or --domain co.com. Works on updates + list.\n"
-        "  Find all from a domain: updates --domain co.com --since 2023-01-01 -n 200\n"
+        "Sender/domain/time: --from alice@co.com, --domain co.com, --since 1w. All stack.\n"
+        "  Find all from a domain: list --domain co.com --since 2023-01-01 -n 200\n"
         "  Truncated results show a continuation command \u2014 copy-paste to get older messages.\n"
         "Do NOT pipe through head/grep/awk. Use built-in flags instead:\n"
         "  Limit results: -n 20 (not | head). Search: list -q \"name\" (not | grep).\n"

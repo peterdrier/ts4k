@@ -73,12 +73,8 @@ def _suggest_ref_table(ref: str, current_key: str | None, cmd: str = "get") -> s
         if rt.resolve(ref) is not None:
             return f" Found in key '{k}' — try: ts4k {cmd} -k {k} {ref}"
 
-    return " Run 'whatsnew' or 'updates' first."
+    return " Run 'whatsnew' or 'list' first."
 
-
-def _new_ref_table() -> RefTable:
-    """Create a fresh RefTable for CLI listing commands (last-listing-wins)."""
-    return RefTable()
 
 
 
@@ -86,31 +82,6 @@ def _new_ref_table() -> RefTable:
 # Command handlers — thin wrappers around commands.*
 # ---------------------------------------------------------------------------
 
-
-async def _cmd_updates(args: argparse.Namespace) -> None:
-    key = getattr(args, "key", None)
-    refs = _new_ref_table()
-    result = await commands.updates(
-        source=getattr(args, "source", None),
-        since=getattr(args, "since", None),
-        count=getattr(args, "count", 20) or 20,
-        fmt=getattr(args, "format", "pipe") or "pipe",
-        filter=getattr(args, "filter", False),
-        ref_table=refs,
-        sender=getattr(args, "sender", None),
-        domain=getattr(args, "domain", None),
-    )
-    if result.error:
-        print(result.error)
-        return
-    refs.save(_refs_path(key))
-    print(result.output)
-    if key:
-        print(f"→ ts4k get -k {key} N to read message N")
-    else:
-        print("→ ts4k get N to read message N")
-    if result._continuation_hint:
-        print(f"→ {result._continuation_hint}  (older messages)")
 
 
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
@@ -179,7 +150,9 @@ async def _cmd_thread(args: argparse.Namespace) -> None:
 
 
 async def _cmd_list(args: argparse.Namespace) -> None:
-    refs = _new_ref_table()
+    key = getattr(args, "key", None)
+    refs = RefTable()
+    refs.load(_refs_path(key))
     result = await commands.list_messages(
         source=getattr(args, "source", None),
         query=getattr(args, "query", None),
@@ -189,13 +162,19 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         ref_table=refs,
         sender=getattr(args, "sender", None),
         domain=getattr(args, "domain", None),
+        since=getattr(args, "since", None),
     )
     if result.error:
         print(result.error)
         return
-    refs.save(_refs_path())
+    refs.save(_refs_path(key))
     print(result.output)
-    print("→ ts4k get N to read message N")
+    if key:
+        print(f"→ ts4k get -k {key} N to read message N")
+    else:
+        print("→ ts4k get N to read message N")
+    if result._continuation_hint:
+        print(f"→ {result._continuation_hint}  (older messages)")
 
 
 def _cmd_help(args: argparse.Namespace) -> None:
@@ -209,9 +188,8 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("ts4k — Token Saver 4000")
     print()
     print("Commands:")
-    print("  updates [--since T] [--source S] [-n N] [--from/--domain]  Fetch by time  [u]")
     print("  whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)  [wn]")
-    print("  list [-q Q] [--source S] [-n N] [--from/--domain]      Search messages [l]")
+    print("  list [--since T] [-q Q] [--source S] [-n N] [--from/--domain]  Search [l]")
     print("  get [-k KEY] ID                             Read a message               [g]")
     print("  thread [-k KEY] TID                         Read a thread/chat           [t]")
     print("  overview [--source S] [--contact C]         Cache summary (drill-down)   [o]")
@@ -234,7 +212,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
         print("Quick setup:")
         print("  1. ts4k src add g gmail email=you@gmail.com")
         print("  2. ts4k auth gmail you@gmail.com")
-        print("  3. ts4k updates")
+        print("  3. ts4k list --since 2d")
 
 
 def _cmd_contacts(args: argparse.Namespace) -> None:
@@ -492,8 +470,9 @@ def _cmd_cache(args: argparse.Namespace) -> None:
 
 
 async def _cmd_manage_async(args: argparse.Namespace) -> None:
+    key = getattr(args, "key", None)
     rt = RefTable()
-    rt.load(_refs_path())
+    rt.load(_refs_path(key))
     result = await commands.manage_message(
         action=args.action,
         msg_id=args.id,
@@ -510,8 +489,9 @@ async def _cmd_draft_async(args: argparse.Namespace) -> None:
     if action != "create":
         print("Usage: ts4k draft create --source S --to ADDR --subject SUBJ --body TEXT")
         return
+    key = getattr(args, "key", None)
     rt = RefTable()
-    rt.load(_refs_path())
+    rt.load(_refs_path(key))
     result = await commands.create_draft(
         source=args.source,
         to=args.to,
@@ -745,32 +725,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", title="Commands", metavar="<command>")
 
-    # --- updates / u ---
-    up = subparsers.add_parser(
-        "updates", aliases=["u"],
-        help="Fetch messages by time range (stateless)",
-        description="Fetch messages within a time range without updating watermarks. Useful for ad-hoc searches and re-reading recent mail.",
-        epilog=(
-            "examples:\n"
-            "  ts4k updates --since 2d          # last 2 days, all sources\n"
-            "  ts4k u --since 6h -s g           # last 6 hours, Gmail only\n"
-            "  ts4k u --since 2025-01-01 -n 50  # since date, up to 50 msgs\n"
-            "  ts4k u --since 1w -k research    # save refs under 'research' key\n"
-            "  ts4k u --from alice@example.com --since 1w  # msgs from alice, last week\n"
-            "  ts4k u --domain example.com -n 50           # msgs from domain, up to 50\n"
-            "  ts4k u --since 1w -f json         # last week, JSON output"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    up.add_argument("--since", help="Time range: 2d, 6h, ISO timestamp, or Gmail query")
-    up.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
-    up.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
-    up.add_argument("--key", "-k", help="Save refs under a key (use with get -k KEY N)")
-    up.add_argument("--from", dest="sender", help="Filter by sender email address")
-    up.add_argument("--domain", help="Filter by sender domain (e.g. example.com)")
-    _add_common_args(up)
-    up.set_defaults(func=_cmd_updates)
-
     # --- whatsnew / wn ---
     wn = subparsers.add_parser(
         "whatsnew", aliases=["wn"],
@@ -795,10 +749,10 @@ def _build_parser() -> argparse.ArgumentParser:
     get = subparsers.add_parser(
         "get", aliases=["g"],
         help="Read a single message",
-        description="Retrieve the full content of a single message by native ID or ref number. Ref numbers come from whatsnew, updates, or list output.",
+        description="Retrieve the full content of a single message by native ID or ref number. Ref numbers come from whatsnew or list output.",
         epilog=(
             "examples:\n"
-            "  ts4k get 3                        # ref #3 from last updates/list\n"
+            "  ts4k get 3                        # ref #3 from last list\n"
             "  ts4k g 7 -k life                  # ref #7 from 'life' whatsnew\n"
             "  ts4k get g:18f3a2b1c4d5e6f7       # by native Gmail ID\n"
             "  ts4k g 3 -k work -f json          # ref #3, JSON output"
@@ -831,23 +785,26 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- list / l ---
     ls = subparsers.add_parser(
         "list", aliases=["l"],
-        help="List messages matching a query",
-        description="Search for messages using provider-native query syntax. Gmail supports full Gmail search operators; other providers support basic text search.",
+        help="Search and list messages (all filters stack)",
+        description="Search messages with stackable filters. Combines time range, sender, domain, and query filters. Refs accumulate across calls.",
         epilog=(
             "examples:\n"
-            "  ts4k list -q 'from:boss subject:urgent'  # Gmail search\n"
-            "  ts4k l -q invoice -s g -n 10             # Gmail, 10 results\n"
-            "  ts4k l --from boss@co.com                   # search by sender\n"
-            "  ts4k l --domain co.com -n 50                # search by domain\n"
-            "  ts4k l -q 'after:2025/01/01' -f json     # date filter, JSON"
+            "  ts4k l --since 2d                        # last 2 days\n"
+            "  ts4k l --from boss@co.com --since 1w     # from boss, last week\n"
+            "  ts4k l --domain co.com -n 50             # by domain, up to 50\n"
+            "  ts4k l -q invoice -s g -n 10             # Gmail search, 10 results\n"
+            "  ts4k l --since 6h -s g -k work           # last 6h Gmail, refs under 'work'\n"
+            "  ts4k l -q 'subject:urgent' -f json       # query, JSON output"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ls.add_argument("--query", "-q", help="Search query")
+    ls.add_argument("--since", help="Time range: 2d, 6h, 1w, ISO timestamp, or 'all'")
+    ls.add_argument("--query", "-q", help="Search query (provider-native syntax)")
     ls.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     ls.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all (default: all)")
     ls.add_argument("--from", dest="sender", help="Filter by sender email address")
     ls.add_argument("--domain", help="Filter by sender domain (e.g. example.com)")
+    ls.add_argument("--key", "-k", help="Accumulate refs under a key (use with get -k KEY N)")
     _add_common_args(ls)
     ls.set_defaults(func=_cmd_list)
 
@@ -1063,12 +1020,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "  list-labels  List available labels/categories\n"
             "\n"
             "examples:\n"
-            "  ts4k m archive g:abc123              # archive one message\n"
-            "  ts4k m archive g:abc,g:def,g:ghi     # batch archive\n"
-            "  ts4k m label g:abc --label llm-garbage\n"
-            "  ts4k m read g:abc,g:def              # mark batch as read\n"
-            "  ts4k m list-labels g:any              # list labels for source g\n"
-            "  ts4k m archive g:abc --dry-run        # preview without acting"
+            "  ts4k m archive 1,2,3                 # batch archive by ref\n"
+            "  ts4k m label 5 --label llm-garbage    # add label by ref\n"
+            "  ts4k m read 1,2,3 -k work             # use refs from key 'work'\n"
+            "  ts4k m archive g:abc123               # by native ID\n"
+            "  ts4k m list-labels g:any               # list labels for source g\n"
+            "  ts4k m archive 1 --dry-run             # preview without acting"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1079,6 +1036,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mg.add_argument("id", help="Message ID(s), comma-separated for batch")
     mg.add_argument("--label", "-l", help="Label/category name (for label/unlabel)")
     mg.add_argument("--folder", help="Folder name (for move, O365)")
+    mg.add_argument("--key", "-k", help="Ref key for resolving short refs (e.g. life)")
     mg.add_argument("--dry-run", action="store_true", help="Preview actions without executing")
     mg.set_defaults(func=_cmd_manage_async)
 
@@ -1102,6 +1060,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dr_create.add_argument("--subject", default="", help="Subject line")
     dr_create.add_argument("--body", required=True, help="Message body text")
     dr_create.add_argument("--reply-to", help="Message ID to reply to (threads the draft)")
+    dr_create.add_argument("--key", "-k", help="Ref key for resolving short refs (e.g. life)")
     dr.set_defaults(func=_cmd_draft_async)
 
     # --- status / st ---

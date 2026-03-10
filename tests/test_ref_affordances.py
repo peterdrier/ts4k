@@ -8,7 +8,7 @@ import json
 import pytest
 
 from ts4k import commands
-from ts4k.cli import _cmd_updates, _cmd_whatsnew, _cmd_list, _cmd_get, _refs_path
+from ts4k.cli import _cmd_whatsnew, _cmd_list, _cmd_get, _refs_path
 from ts4k.state.refs import RefTable
 
 
@@ -47,16 +47,16 @@ def _fake_messages(prefix, count, base_hour=10):
     ]
 
 
-class TestUpdatesHint:
+class TestListWithSinceHint:
     @pytest.mark.asyncio
-    async def test_updates_shows_get_hint(self, monkeypatch, capsys):
+    async def test_list_with_since_shows_get_hint(self, monkeypatch, capsys):
         async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
 
-        args = argparse.Namespace(source=None, since="1d", count=20, format="pipe", filter=False, key=None)
-        await _cmd_updates(args)
+        args = argparse.Namespace(source=None, query=None, since="1d", count=20, format="pipe", filter=False, key=None, sender=None, domain=None)
+        await _cmd_list(args)
         out = capsys.readouterr().out
         assert "→ ts4k get N to read message N" in out
 
@@ -75,10 +75,10 @@ class TestWhatsnewHint:
         assert "→ ts4k get -k life N to read message N" in out
 
 
-class TestUpdatesWithKey:
+class TestListWithKeyAndSince:
     @pytest.mark.asyncio
-    async def test_updates_with_key_saves_keyed_refs(self, monkeypatch, capsys, tmp_path):
-        """updates -k saves refs under key and shows keyed hint."""
+    async def test_list_with_key_saves_keyed_refs(self, monkeypatch, capsys, tmp_path):
+        """list -k saves refs under key and shows keyed hint."""
         from ts4k.cli import _refs_path
 
         async def fake_fetch(prefix, cfg, since, count, **kwargs):
@@ -86,8 +86,8 @@ class TestUpdatesWithKey:
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
 
-        args = argparse.Namespace(source=None, since="1d", count=20, format="pipe", filter=False, key="myquery")
-        await _cmd_updates(args)
+        args = argparse.Namespace(source=None, query=None, since="1d", count=20, format="pipe", filter=False, key="myquery", sender=None, domain=None)
+        await _cmd_list(args)
         out = capsys.readouterr().out
         assert "→ ts4k get -k myquery N to read message N" in out
 
@@ -98,15 +98,15 @@ class TestUpdatesWithKey:
         assert rt.resolve("1") is not None
 
     @pytest.mark.asyncio
-    async def test_updates_without_key_shows_global_hint(self, monkeypatch, capsys):
-        """updates without -k shows global hint."""
+    async def test_list_without_key_shows_global_hint(self, monkeypatch, capsys):
+        """list without -k shows global hint."""
         async def fake_fetch(prefix, cfg, since, count, **kwargs):
             return _fake_messages(prefix, 3)
 
         monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
 
-        args = argparse.Namespace(source=None, since="1d", count=20, format="pipe", filter=False, key=None)
-        await _cmd_updates(args)
+        args = argparse.Namespace(source=None, query=None, since="1d", count=20, format="pipe", filter=False, key=None, sender=None, domain=None)
+        await _cmd_list(args)
         out = capsys.readouterr().out
         assert "→ ts4k get N to read message N" in out
         assert "-k" not in out.split("→")[1]  # no -k in the hint
@@ -122,7 +122,7 @@ class TestListHint:
 
         monkeypatch.setattr(commands, "list_messages", fake_list)
 
-        args = argparse.Namespace(source=None, query=None, count=20, format="pipe", filter=False)
+        args = argparse.Namespace(source=None, query=None, since=None, count=20, format="pipe", filter=False, key=None, sender=None, domain=None)
         await _cmd_list(args)
         out = capsys.readouterr().out
         assert "→ ts4k get N to read message N" in out
@@ -164,4 +164,4 @@ class TestGetRefError:
         with pytest.raises(SystemExit):
             await _cmd_get(args)
         out = capsys.readouterr().out
-        assert "Run 'whatsnew' or 'updates' first" in out
+        assert "Run 'whatsnew' or 'list' first" in out

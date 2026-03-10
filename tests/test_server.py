@@ -17,7 +17,6 @@ from ts4k.server import mcp, _apply_context
 # ---------------------------------------------------------------------------
 
 EXPECTED_TOOLS = {
-    "updates",
     "whatsnew",
     "get",
     "thread",
@@ -44,15 +43,18 @@ class TestToolRegistration:
 
     def test_exactly_ten_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 10
+        assert len(self._get_tool_names()) == 9
 
-    def test_updates_params(self):
-        """updates has expected parameters."""
-        tool = mcp._tool_manager._tools["updates"]
+    def test_list_params(self):
+        """list has all stackable filter parameters."""
+        tool = mcp._tool_manager._tools["list"]
         schema = tool.parameters
         props = schema.get("properties", {})
         assert "source" in props
         assert "since" in props
+        assert "query" in props
+        assert "sender" in props
+        assert "domain" in props
         assert "count" in props
         assert "fmt" in props
         assert "filter" in props
