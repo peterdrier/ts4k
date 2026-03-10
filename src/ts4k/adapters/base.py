@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from ts4k.core.levels import AccessLevel
+
 
 class BaseAdapter(ABC):
     """Interface that all platform adapters must implement.
@@ -20,6 +22,14 @@ class BaseAdapter(ABC):
     The *source_prefix* is set at construction time — it's the user-chosen
     prefix from the source config (e.g. ``'g'``, ``'gn'``, ``'w'``).
     """
+
+    @property
+    def access_level(self) -> AccessLevel:
+        """Permission level for this source connection.
+
+        Defaults to READONLY. Concrete adapters set this via config.
+        """
+        return getattr(self, "_access_level", AccessLevel.READONLY)
 
     @property
     @abstractmethod

@@ -81,6 +81,7 @@ def _make_adapter(
             GmailAdapterConfig(
                 user_email=email,
                 config_dir=Path(config_dir) if config_dir else None,
+                level=cfg.get("level"),
             ),
             prefix=prefix,
         )
@@ -108,6 +109,7 @@ def _make_adapter(
                 tenant_id=cfg.get("tenant_id", "common"),
                 mailbox=cfg.get("mailbox"),
                 config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
+                level=cfg.get("level"),
             ),
             prefix=prefix,
         )

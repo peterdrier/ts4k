@@ -46,6 +46,9 @@ class GmailAdapterConfig:
     config_dir: Path | None = None
     """Override for credential directory (default: ~/.config/ts4k)."""
 
+    level: str | None = None
+    """Access level: readonly (default), modify, draft."""
+
 
 # ---------------------------------------------------------------------------
 # Response converters — pure functions, easy to test
@@ -253,6 +256,8 @@ class GmailAdapter(BaseAdapter):
         self._config = config
         self._prefix = prefix
         self._service = None
+        from ts4k.core.levels import parse_level
+        self._access_level = parse_level(config.level)
 
     # -- BaseAdapter properties/lifecycle -----------------------------------
 
@@ -266,13 +271,17 @@ class GmailAdapter(BaseAdapter):
             return  # already connected
 
         from ts4k.auth.google import build_gmail_service
+        from ts4k.core.levels import scopes_for
 
+        scopes = scopes_for("gmail", self._access_level)
         self._service = await asyncio.to_thread(
             build_gmail_service,
             self._config.user_email,
             config_dir=self._config.config_dir,
+            scopes=scopes,
         )
-        logger.info("GmailAdapter connected for %s", self._config.user_email)
+        logger.info("GmailAdapter connected for %s (level=%s)",
+                    self._config.user_email, self._access_level.name.lower())
 
     async def disconnect(self) -> None:
         """Close the Gmail API service."""

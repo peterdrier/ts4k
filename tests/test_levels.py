@@ -96,3 +96,20 @@ class TestScopesFor:
 
     def test_unknown_provider_returns_empty(self):
         assert scopes_for("telegram", AccessLevel.READONLY) == []
+
+
+class TestAdapterLevelPassthrough:
+    def test_gmail_adapter_default_readonly(self):
+        from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+        adapter = GmailAdapter(GmailAdapterConfig(user_email="a@b.com"))
+        assert adapter.access_level == AccessLevel.READONLY
+
+    def test_gmail_adapter_modify(self):
+        from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+        adapter = GmailAdapter(GmailAdapterConfig(user_email="a@b.com", level="modify"))
+        assert adapter.access_level == AccessLevel.MODIFY
+
+    def test_o365_adapter_draft(self):
+        from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
+        adapter = O365Adapter(O365AdapterConfig(client_id="x", level="draft"))
+        assert adapter.access_level == AccessLevel.DRAFT

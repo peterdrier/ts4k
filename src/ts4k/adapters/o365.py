@@ -71,6 +71,9 @@ class O365AdapterConfig:
     When ``None``, uses ``/me/`` (primary mailbox)."""
     config_dir: Path | None = None
 
+    level: str | None = None
+    """Access level: readonly (default), modify, draft."""
+
 
 # ---------------------------------------------------------------------------
 # Response converters — dict from Graph API JSON
@@ -207,6 +210,8 @@ class O365Adapter(BaseAdapter):
         self._config = config
         self._prefix = prefix
         self._client: httpx.AsyncClient | None = None
+        from ts4k.core.levels import parse_level
+        self._access_level = parse_level(config.level)
 
     @property
     def source_prefix(self) -> str:
@@ -230,14 +235,16 @@ class O365Adapter(BaseAdapter):
             return
 
         from ts4k.auth.microsoft import build_graph_client
+        from ts4k.core.levels import scopes_for
 
-        # build_graph_client is synchronous (MSAL token acquisition).
+        scopes = scopes_for("o365", self._access_level)
         self._client = await asyncio.to_thread(
             build_graph_client,
             self._config.client_id,
             tenant_id=self._config.tenant_id,
             config_dir=self._config.config_dir,
             username=self._config.mailbox,
+            scopes=scopes,
         )
         mailbox_str = f" ({self._config.mailbox})" if self._config.mailbox else ""
         logger.info("O365Adapter connected via Graph API%s", mailbox_str)
