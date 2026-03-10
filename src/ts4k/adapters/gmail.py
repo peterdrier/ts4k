@@ -752,8 +752,8 @@ class GmailAdapter(BaseAdapter):
             orig_body = _decode_body(orig.get("payload", {}))
             # Strip HTML if needed
             if "<" in orig_body and ">" in orig_body:
-                from ts4k.core.normalize import _strip_html
-                orig_body = _strip_html(orig_body)
+                from ts4k.core.normalize import _html_to_text
+                orig_body = _html_to_text(orig_body)
             quoted_lines = "\n".join(f"> {line}" for line in orig_body.strip().split("\n"))
             quoted_body = (
                 f"{body}\n\n"
