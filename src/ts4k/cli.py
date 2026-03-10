@@ -614,11 +614,21 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         from ts4k.auth.google import get_credentials
+        from ts4k.core.levels import scopes_for, parse_level
 
         check_only = getattr(args, "check", False)
 
+        # Look up source config to get the correct scopes for this email's level
+        gmail_sources = sources.by_provider("gmail")
+        source_level = None
+        for _pfx, cfg in gmail_sources.items():
+            if cfg.get("email") == email:
+                source_level = cfg.get("level")
+                break
+        scopes = scopes_for("gmail", parse_level(source_level)) or None
+
         try:
-            creds = get_credentials(email)
+            creds = get_credentials(email, scopes=scopes)
             if check_only:
                 if creds.valid:
                     print(f"Credentials valid for {email}.")
