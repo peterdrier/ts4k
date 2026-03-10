@@ -1612,6 +1612,161 @@ def manage_cache(
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Manage commands (#19)
+# ---------------------------------------------------------------------------
+
+
+async def manage_message(
+    action: str,
+    msg_id: str,
+    label: str | None = None,
+    folder: str | None = None,
+    dry_run: bool = False,
+    ref_table: RefTable | None = None,
+) -> str:
+    """Execute a management action on one or more messages.
+
+    msg_id can be comma-separated for batch operations.
+    Actions: archive, unarchive, label, unlabel, read, unread, trash, list-labels.
+    """
+    # Resolve refs to full IDs
+    ids = [_resolve_ref(mid.strip(), ref_table) for mid in msg_id.split(",")]
+
+    if action == "list-labels":
+        prefix = ids[0].split(":")[0] if ids else None
+        if not prefix:
+            return "Error: provide a source-prefixed ID (e.g. g:123)"
+        cfg = sources.get(prefix)
+        if not cfg:
+            return f"Error: unknown source {prefix!r}"
+        adapter = _make_adapter(prefix, cfg)
+        if not adapter:
+            return f"Error: failed to create adapter for {prefix!r}"
+        async with adapter:
+            labels = await adapter.list_labels()
+        lines = [f"{lbl['name']} ({lbl.get('type', '')})" for lbl in labels]
+        return "\n".join(lines) if lines else "No labels found."
+
+    results = []
+    for mid in ids:
+        prefix = mid.split(":")[0] if ":" in mid else None
+        if not prefix:
+            results.append(f"{mid}: error — missing source prefix")
+            continue
+
+        if dry_run:
+            detail = ""
+            if label:
+                detail += f" label={label}"
+            if folder:
+                detail += f" folder={folder}"
+            results.append(f"{mid}: would {action}{detail}")
+            continue
+
+        cfg = sources.get(prefix)
+        if not cfg:
+            results.append(f"{mid}: error — unknown source {prefix!r}")
+            continue
+
+        adapter = _make_adapter(prefix, cfg)
+        if not adapter:
+            results.append(f"{mid}: error — failed to create adapter")
+            continue
+
+        try:
+            async with adapter:
+                if action == "archive":
+                    r = await adapter.archive_message(mid)
+                elif action == "unarchive":
+                    r = await adapter.unarchive_message(mid)
+                elif action == "label":
+                    if not label:
+                        results.append(f"{mid}: error — --label required")
+                        continue
+                    r = await adapter.label_message(mid, label)
+                elif action == "unlabel":
+                    if not label:
+                        results.append(f"{mid}: error — --label required")
+                        continue
+                    r = await adapter.unlabel_message(mid, label)
+                elif action == "read":
+                    r = await adapter.mark_read(mid)
+                elif action == "unread":
+                    r = await adapter.mark_unread(mid)
+                elif action == "trash":
+                    r = await adapter.trash_message(mid)
+                elif action == "move":
+                    if not folder:
+                        results.append(f"{mid}: error — --folder required")
+                        continue
+                    r = await adapter.move_to_folder(mid, folder)
+                else:
+                    results.append(f"{mid}: error — unknown action {action!r}")
+                    continue
+                results.append(f"{mid}: {r.get('status', 'ok')}")
+        except PermissionError as e:
+            results.append(f"{mid}: {e}")
+        except Exception as e:
+            results.append(f"{mid}: error — {e}")
+
+    return "\n".join(results)
+
+
+def _resolve_ref(mid: str, ref_table: RefTable | None) -> str:
+    """Resolve a short ref or full ID. Returns the full ID."""
+    if ref_table and mid.isdigit():
+        resolved = ref_table.resolve(mid)
+        if resolved:
+            return resolved
+    return mid
+
+
+# ---------------------------------------------------------------------------
+# Draft commands (#18)
+# ---------------------------------------------------------------------------
+
+
+async def create_draft(
+    source: str,
+    to: str,
+    subject: str,
+    body: str,
+    reply_to: str | None = None,
+    ref_table: RefTable | None = None,
+) -> str:
+    """Create a draft message on the specified source."""
+    cfg = sources.get(source)
+    if not cfg:
+        # Try provider name
+        by_prov = sources.by_provider(source)
+        if by_prov:
+            source = next(iter(by_prov))
+            cfg = by_prov[source]
+        else:
+            return f"Error: unknown source {source!r}"
+
+    adapter = _make_adapter(source, cfg)
+    if not adapter:
+        return f"Error: failed to create adapter for {source!r}"
+
+    reply_id = None
+    if reply_to:
+        reply_id = _resolve_ref(reply_to, ref_table)
+
+    try:
+        async with adapter:
+            result = await adapter.create_draft(
+                to=to, subject=subject, body=body,
+                reply_to_message_id=reply_id,
+            )
+        return f"Draft created: {result['id']} ({result['status']})"
+    except PermissionError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error creating draft: {e}"
+
+
 def llm_help() -> str:
     """Return context-aware, agent-optimized help reference.
 
