@@ -15,6 +15,40 @@ from ts4k.core.levels import AccessLevel, check_level, parse_level, scopes_for
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# RRULE helper — module-level so format.py can import it too
+# ---------------------------------------------------------------------------
+
+
+def rrule_to_human(rrule: str) -> str:
+    """Convert an RRULE string to a human-readable summary.
+
+    Handles common patterns: DAILY, WEEKLY, MONTHLY.
+    Complex rules fall back to the raw RRULE.
+    """
+    if not rrule:
+        return ""
+    parts = dict(p.split("=", 1) for p in rrule.split(";") if "=" in p)
+    freq = parts.get("FREQ", "")
+    byday = parts.get("BYDAY", "")
+
+    day_map = {"MO": "Mon", "TU": "Tue", "WE": "Wed", "TH": "Thu",
+               "FR": "Fri", "SA": "Sat", "SU": "Sun"}
+
+    if freq == "DAILY":
+        return "daily"
+    elif freq == "WEEKLY":
+        if byday:
+            days = [day_map.get(d.strip(), d.strip()) for d in byday.split(",")]
+            return f"weekly on {'+'.join(days)}"
+        return "weekly"
+    elif freq == "MONTHLY":
+        return "monthly"
+    elif freq == "YEARLY":
+        return "yearly"
+    return rrule  # fallback: raw rule
+
+
 @dataclass
 class GcalAdapterConfig:
     """Configuration for a Google Calendar source."""
@@ -202,6 +236,77 @@ class GcalAdapter(BaseAdapter):
             return max(0, int((e - s).total_seconds() / 60))
         except (ValueError, TypeError):
             return None
+
+    async def read_event(self, event_id: str) -> dict:
+        """Fetch full detail for a single event via events.get."""
+        raw_id = self._strip_prefix(event_id)
+        event = await asyncio.to_thread(
+            lambda: self._service.events().get(
+                calendarId=self._config.calendar_id,
+                eventId=raw_id,
+            ).execute()
+        )
+        base = self._normalize_event(event)
+        # Add full-detail fields
+        attendees_full = []
+        for a in event.get("attendees", []):
+            attendees_full.append({
+                "name": a.get("displayName", a.get("email", "")),
+                "email": a.get("email", ""),
+                "status": a.get("responseStatus", "needsAction"),
+            })
+        base["attendees"] = attendees_full
+        base["description"] = event.get("description", "")
+
+        # Conference/meeting link
+        conference = event.get("conferenceData", {})
+        for ep in conference.get("entryPoints", []):
+            if ep.get("entryPointType") == "video":
+                base["meeting_link"] = ep.get("uri", "")
+                break
+        else:
+            base["meeting_link"] = ""
+
+        # Recurrence — only first RRULE is extracted (multi-rule events are rare;
+        # simplification keeps the output compact for LLM consumption)
+        recurrence_list = event.get("recurrence", [])
+        rrule = ""
+        for r in recurrence_list:
+            if r.startswith("RRULE:"):
+                rrule = r[6:]  # strip RRULE: prefix
+                break
+        base["recurrence"] = rrule
+        base["recurrence_summary"] = rrule_to_human(rrule) if rrule else ""
+        base["created"] = event.get("created", "")
+        base["updated"] = event.get("updated", "")
+        return base
+
+    async def list_calendars(self) -> list[dict]:
+        """List available calendars, filtering out freeBusyReader-only."""
+        calendars: list[dict] = []
+        page_token: str | None = None
+
+        while True:
+            result = await asyncio.to_thread(
+                lambda pt=page_token: self._service.calendarList().list(
+                    pageToken=pt,
+                ).execute()
+            )
+            for cal in result.get("items", []):
+                if cal.get("accessRole") == "freeBusyReader":
+                    continue
+                calendars.append({
+                    "id": cal["id"],
+                    "summary": cal.get("summary", cal["id"]),
+                    "access_role": cal.get("accessRole", "reader"),
+                    "timezone": cal.get("timeZone", "UTC"),
+                    "primary": cal.get("primary", False),
+                })
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+        return calendars
 
     # -- Helpers ---------------------------------------------------------------
 

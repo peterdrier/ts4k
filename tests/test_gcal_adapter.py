@@ -190,3 +190,86 @@ class TestListEvents:
         )
 
         assert result[0]["your_status"] == "declined"
+
+
+class TestReadEvent:
+    async def test_full_detail(self, adapter: GcalAdapter):
+        api_event = {
+            "id": "evt1",
+            "summary": "Budget Review",
+            "start": {"dateTime": "2026-03-11T11:00:00+01:00"},
+            "end": {"dateTime": "2026-03-11T12:00:00+01:00"},
+            "status": "confirmed",
+            "organizer": {"email": "sarah@work.com", "displayName": "Sarah Chen"},
+            "description": "Review Q1 numbers.",
+            "location": "Room 4A",
+            "attendees": [
+                {"email": "sarah@work.com", "displayName": "Sarah Chen", "responseStatus": "accepted"},
+                {"email": "test@gmail.com", "responseStatus": "accepted", "self": True},
+            ],
+            "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=TU"],
+            "created": "2026-01-15T10:00:00.000Z",
+            "updated": "2026-03-10T14:30:00.000Z",
+            "conferenceData": {
+                "entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/xyz"}],
+            },
+        }
+        mock_service = MagicMock()
+        mock_service.events.return_value.get.return_value.execute.return_value = api_event
+        adapter._service = mock_service
+
+        result = await adapter.read_event("gc:evt1")
+
+        assert result["description"] == "Review Q1 numbers."
+        assert result["meeting_link"] == "https://meet.google.com/xyz"
+        assert len(result["attendees"]) == 2
+        assert result["attendees"][0]["name"] == "Sarah Chen"
+        assert result["recurrence"] == "FREQ=WEEKLY;BYDAY=TU"
+        assert result["created"] == "2026-01-15T10:00:00.000Z"
+
+    async def test_strips_prefix(self, adapter: GcalAdapter):
+        """Event ID prefix is stripped before API call."""
+        mock_service = MagicMock()
+        mock_service.events.return_value.get.return_value.execute.return_value = {
+            "id": "evt1", "summary": "X",
+            "start": {"dateTime": "2026-03-11T09:00:00Z"},
+            "end": {"dateTime": "2026-03-11T10:00:00Z"},
+            "status": "confirmed",
+        }
+        adapter._service = mock_service
+
+        await adapter.read_event("gc:evt1")
+
+        call_args = mock_service.events.return_value.get.call_args
+        assert call_args[1]["eventId"] == "evt1"
+
+
+class TestListCalendars:
+    async def test_filters_freebusy_only(self, adapter: GcalAdapter):
+        """freeBusyReader calendars are excluded."""
+        mock_service = MagicMock()
+        mock_service.calendarList.return_value.list.return_value.execute.return_value = {
+            "items": [
+                {"id": "primary", "summary": "Main", "accessRole": "owner", "timeZone": "Europe/Amsterdam"},
+                {"id": "holidays", "summary": "Holidays", "accessRole": "reader", "timeZone": "Europe/Amsterdam"},
+                {"id": "freebusy", "summary": "Busy", "accessRole": "freeBusyReader", "timeZone": "UTC"},
+            ],
+        }
+        adapter._service = mock_service
+
+        result = await adapter.list_calendars()
+
+        assert len(result) == 2
+        assert result[0]["id"] == "primary"
+        assert result[1]["id"] == "holidays"
+
+    async def test_pagination(self, adapter: GcalAdapter):
+        """Follows nextPageToken."""
+        mock_service = MagicMock()
+        page1 = {"items": [{"id": "c1", "summary": "A", "accessRole": "owner", "timeZone": "UTC"}], "nextPageToken": "tok"}
+        page2 = {"items": [{"id": "c2", "summary": "B", "accessRole": "owner", "timeZone": "UTC"}]}
+        mock_service.calendarList.return_value.list.return_value.execute.side_effect = [page1, page2]
+        adapter._service = mock_service
+
+        result = await adapter.list_calendars()
+        assert len(result) == 2
