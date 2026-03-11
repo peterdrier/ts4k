@@ -182,9 +182,8 @@ def format_events(
     ref_map = ref_table.assign(display_events) if ref_table else None
 
     lines = ["REF|SOURCE|TIME|DUR|TITLE|LOCATION|ATTENDEES"]
-    ref_num = 0
     for evt in display_events:
-        ref_num += 1
+        ref_num = ref_map.get(evt.get("id", ""), 0) if ref_map else 0
 
         time_str = _format_event_time(evt, time_mode)
         dur_str = _format_duration(evt)

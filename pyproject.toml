@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ts4k"
-version = "0.1.16"
-description = "Token-efficient messaging gateway for LLM agents"
+version = "0.1.17"
+description = "Token-efficient messaging and calendar gateway for LLM agents"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

@@ -35,8 +35,18 @@ Each messaging platform needs a one-time setup. Pick the ones you use:
 | Gmail | [docs/setup-gmail.md](docs/setup-gmail.md) | Google OAuth (browser) | Medium |
 | O365 | [docs/setup-o365.md](docs/setup-o365.md) | Azure device code flow | Medium |
 | WhatsApp | [docs/setup-whatsapp.md](docs/setup-whatsapp.md) | Local SQLite (no auth) | Low |
+| Google Calendar | Uses Gmail OAuth (shared token) | `ts4k cal setup` | Low |
 
 You can run any combination. One provider is enough to get started.
+
+### Claude Code Integration
+
+If you use Claude Code, install the ts4k skill so the agent automatically uses ts4k for email and calendar tasks:
+
+```bash
+ts4k skill install           # global: ~/.claude/skills/ts/
+ts4k skill install --project  # project-level: .claude/skills/ts/
+```
 
 ## Usage
 
@@ -79,15 +89,30 @@ ts4k draft create -s g --reply-to g:abc123 --body "Sounds good!"  # Threaded rep
 
 Reply drafts automatically set threading headers and blockquote the original message.
 
+### Calendar
+
+Requires a Gmail source and Google Calendar API enabled in your Cloud project.
+
+```bash
+ts4k cal setup                        # Discover and add calendar sources
+ts4k cal                              # Today's events
+ts4k cal tomorrow                     # Tomorrow's events
+ts4k cal week                         # This week (Mon-Sun)
+ts4k cal next 5                       # Next 5 events
+ts4k cal range --from 2026-04-01 --to 2026-04-07
+ts4k cal event 3                      # Full detail for ref #3
+```
+
 ### Access Levels
 
 Each source has a permission level that controls what operations are allowed:
 
 | Level | Capabilities | OAuth Scope |
 |-------|-------------|-------------|
-| `readonly` (default) | Read, list, search | `gmail.readonly` / `Mail.Read` |
-| `modify` | + archive, label, mark read/unread, trash | `gmail.modify` / `Mail.ReadWrite` |
-| `draft` | + create draft messages | `gmail.modify` / `Mail.ReadWrite` |
+| `readonly` (default) | Read, list, search | `gmail.readonly` / `Mail.Read` / `calendar.readonly` |
+| `modify` | + archive, label, mark read/unread, trash, RSVP | `gmail.modify` / `Mail.ReadWrite` / `calendar` |
+| `draft` | + create draft messages, create events (no attendees) | `gmail.modify` / `Mail.ReadWrite` / `calendar` |
+| `send` | + create events with attendees (calendar only) | `calendar` |
 
 Set the level when adding or updating a source:
 
@@ -104,7 +129,7 @@ ts4k-mcp                              # stdio (default, for Claude Code)
 ts4k-mcp --transport http --port 9000  # HTTP for other clients
 ```
 
-10 MCP tools: `updates`, `whatsnew`, `get`, `thread`, `list`, `overview`, `status`, `admin`, `manage`, `draft`.
+13 MCP tools: `updates`, `whatsnew`, `get`, `thread`, `list`, `overview`, `status`, `admin`, `manage`, `draft`, `cal`, `cal_create`, `cal_manage`.
 
 ## Architecture
 
@@ -113,10 +138,11 @@ Agent (Claude, etc.)
   |
   v
 ts4k (normalize → filter → format)
-  |── Gmail Adapter    → Google Gmail API (direct)
-  |── O365 Adapter     → Microsoft Graph API (direct, httpx)
-  |── WhatsApp Adapter → whatsapp-mcp (local SQLite)
-  '── Future adapters  → Slack, Teams, Telegram, ...
+  |── Gmail Adapter     → Google Gmail API (direct)
+  |── O365 Adapter      → Microsoft Graph API (direct, httpx)
+  |── WhatsApp Adapter  → whatsapp-mcp (local SQLite)
+  |── Calendar Adapter  → Google Calendar API (direct)
+  '── Future adapters   → Slack, Teams, Telegram, ...
 ```
 
 - **Adapters** wrap platform APIs with a uniform interface. Each adapter supports read, manage, and draft operations gated by access level.

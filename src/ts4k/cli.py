@@ -203,9 +203,19 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  auth gmail|o365                              Authenticate with a platform")
     print("  skill                                       Agent-oriented command reference")
     print()
-    print("Refs:  listings assign numbers (1, 2, 3...) — use with get/thread")
+    print("Calendar:")
+    print("  cal [today|tomorrow|week]                   Calendar events (default: today)")
+    print("  cal next [N]                                Next N events (default 10)")
+    print("  cal range --from DATE --to DATE             Events in date range")
+    print("  cal event REF                               Full event detail")
+    print("  cal create -s S --title T --start DT --end DT  Create event")
+    print("  cal update REF [--title T] [--start/--end]  Update event")
+    print("  cal rsvp REF --status accepted|declined|tentative")
+    print("  cal setup                                   Discover & add calendar sources")
+    print()
+    print("Refs:  listings assign numbers (1, 2, 3...) — use with get/thread/event/manage")
     print("       whatsnew refs accumulate per key; use get -k KEY N to resolve")
-    print("IDs:   g:xxx (Gmail), o:xxx (O365), w:xxx (WhatsApp)")
+    print("       ts4k sources  shows configured source prefixes")
 
     if not all_cfg:
         print()
@@ -291,8 +301,10 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 if username:
                     kwargs["email"] = username
 
+        existed = prefix in sources.list_all()
         entry = sources.add(prefix, provider=provider, **kwargs)
-        print(f"Added source {prefix!r}:")
+        verb = "Updated" if existed else "Added"
+        print(f"{verb} source {prefix!r}:")
         for k, v in sorted(entry.items()):
             print(f"  {k}: {v}")
 
@@ -629,7 +641,7 @@ async def _cmd_cal_next(args: argparse.Namespace) -> None:
     refs.load(_refs_path(getattr(args, "key", None)))
     result = await commands.cal_next(
         source=getattr(args, "source", None),
-        count=args.n,
+        count=args.count or args.n or 10,
         fmt=getattr(args, "format", "pipe") or "pipe",
         ref_table=refs,
     )
@@ -813,6 +825,7 @@ def _cmd_auth(args: argparse.Namespace) -> None:
         from ts4k.core.levels import scopes_for, parse_level
 
         check_only = getattr(args, "check", False)
+        no_calendar = getattr(args, "no_calendar", False)
 
         # Look up source config to get the correct scopes for this email's level
         gmail_sources = sources.by_provider("gmail")
@@ -823,15 +836,22 @@ def _cmd_auth(args: argparse.Namespace) -> None:
                 break
         scopes = scopes_for("gmail", parse_level(source_level)) or None
 
-        # Also collect gcal scopes for the same Google account
-        all_sources = sources.list_all()
-        for pfx, cfg in all_sources.items():
-            if cfg.get("provider") == "gcal" and cfg.get("email") == email:
-                gcal_level = parse_level(cfg.get("level"))
-                gcal_scopes = scopes_for("gcal", gcal_level)
-                if scopes is None:
-                    scopes = list(gcal_scopes)
-                else:
+        # Include calendar scopes by default (enables `cal setup` without
+        # a separate re-auth). Skip with --no-calendar.
+        if not no_calendar:
+            from ts4k.core.levels import AccessLevel
+            cal_readonly_scopes = scopes_for("gcal", AccessLevel.READONLY)
+            if scopes is None:
+                scopes = list(cal_readonly_scopes)
+            else:
+                scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
+
+            # Collect higher gcal scopes if gcal sources already exist
+            all_sources = sources.list_all()
+            for pfx, cfg in all_sources.items():
+                if cfg.get("provider") == "gcal" and cfg.get("email") == email:
+                    gcal_level = parse_level(cfg.get("level"))
+                    gcal_scopes = scopes_for("gcal", gcal_level)
                     scopes.extend(s for s in gcal_scopes if s not in scopes)
 
         try:
@@ -844,6 +864,15 @@ def _cmd_auth(args: argparse.Namespace) -> None:
                     sys.exit(1)
             else:
                 print(f"Authenticated {email} successfully.")
+
+            # Show granted scopes
+            granted = set(creds.scopes or [])
+            scope_labels = []
+            for s in sorted(granted):
+                # Show short human-readable labels
+                label = s.rsplit("/", 1)[-1]
+                scope_labels.append(label)
+            print(f"Scopes: {', '.join(scope_labels)}")
         except FileNotFoundError as exc:
             if check_only:
                 print(f"No credentials found for {email}.")
@@ -1355,7 +1384,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # cal next
     cal_next_p = cal_subs.add_parser("next", help="Next N events")
-    cal_next_p.add_argument("-n", type=int, default=10)
+    cal_next_p.add_argument("count", nargs="?", type=int, default=None, help="Number of events (default 10)")
+    cal_next_p.add_argument("-n", type=int, default=None, help="Number of events (default 10)")
     cal_next_p.add_argument("--source", "-s", default=None)
     cal_next_p.add_argument("--format", "-f", default="pipe")
     cal_next_p.set_defaults(func=_cmd_cal_next)
@@ -1436,6 +1466,7 @@ def _build_parser() -> argparse.ArgumentParser:
     au_gmail = au_sub.add_parser("gmail", help="Authenticate with Gmail (opens browser)")
     au_gmail.add_argument("email", help="Google email to authenticate")
     au_gmail.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
+    au_gmail.add_argument("--no-calendar", action="store_true", help="Skip requesting Google Calendar scopes")
 
     au_o365 = au_sub.add_parser("o365", help="Authenticate with Microsoft 365 (device code flow)")
     au_o365.add_argument("source", nargs="?", default=None, help="Source prefix to authenticate (e.g. 'o'). Uses first O365 source if omitted.")

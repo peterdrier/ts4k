@@ -864,6 +864,8 @@ def get_status(
         lines.append("  By source:")
         for src in sorted(all_cfg.keys()):
             provider = all_cfg[src].get("provider", "")
+            if provider == "gcal":
+                continue  # Calendar events tracked separately
             base_label = _provider_labels.get(provider, provider)
             label = base_label if src == provider[0:1] else f"{base_label}({src})"
             data = by_source.get(src, {})
@@ -2003,23 +2005,27 @@ def skill_reference(level: str = "basic") -> str:
         "ts4k \u2014 token-efficient messaging gateway\n"
         "list [--since T] [-q Q] [--source S] [-n N] [-k KEY] [--from ADDR] [--domain D]|Search messages (all filters stack)\n"
         "whatsnew KEY [-n N] [--source S]|New msgs since last check (all sources unless --source)\n"
-        "get [-k KEY] ID|Read message (e.g. get g:abc123 or get -k life 7)\n"
-        "thread [-k KEY] TID|Read thread (e.g. thread g:abc123)\n"
+        "get [-k KEY] REF|Read message (e.g. get 3 or get -k life 7)\n"
+        "thread [-k KEY] REF|Read thread (e.g. thread 5)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
         "manage ACTION ID [-k KEY] [--label L] [--folder F] [--dry-run]|Manage mailbox (requires level=modify)\n"
         "draft create -s S --to ADDR --subject SUBJ --body TEXT [--reply-to ID]|Create draft (requires level=draft)\n"
-        "cal [today|tomorrow|week]|Calendar events (default: today)\n"
-        "cal next [-n N]|Next N events (default 10)\n"
-        "cal range --from DATE --to DATE|Events in date range\n"
-        "cal event REF|Full event detail\n"
+        "cal [today|tomorrow|week] [-s SOURCE]|Calendar events (default: today)\n"
+        "cal next [N] [-s SOURCE]|Next N events (default 10)\n"
+        "cal range --from DATE --to DATE [-s SOURCE]|Events in date range\n"
+        "cal event REF|Full event detail (attendees, description, meeting link)\n"
+        "cal create -s S --title T --start DT --end DT [--attendees a@b,c@d] [--location L]|Create event (requires level=draft/send)\n"
+        "cal update REF [--title T] [--start DT] [--end DT]|Update event (requires level=modify)\n"
+        "cal rsvp REF --status accepted|declined|tentative|RSVP to event (requires level=modify)\n"
+        "cal setup|Discover & add calendar sources from Gmail accounts\n"
         "status|Health + stats\n"
-        "Access levels: readonly (default), modify, draft. Set: ts4k src add PREFIX PROVIDER level=modify\n"
+        "Access levels: readonly (default), modify, draft, send. Set: ts4k src add PREFIX PROVIDER level=modify\n"
         "Keys: user-defined labels (life, work). Each key tracks its own read position.\n"
         "  whatsnew life \u2192 shows unseen msgs, advances watermark. Next call shows only newer.\n"
         "  whatsnew life -n 50 \u2192 all sources, one call. --source S narrows to one source.\n"
-        "Refs: listings assign numbers (1, 2, ...). Use with get/thread/manage. Refs accumulate across calls.\n"
-        "  list refs are global: get N. list/whatsnew -k refs are keyed: get -k KEY N.\n"
-        "IDs: g:xxx o:xxx w:xxx. --since: 2d, 6h, 1w, ISO. -f p|j|x. -F filters.\n"
+        "Refs: listings assign numbers (1, 2, ...). Use with get/thread/manage/event. Refs accumulate across calls.\n"
+        "  list refs are global: get N. whatsnew -k refs are keyed: get -k KEY N.\n"
+        "Source prefixes are user-chosen (ts4k sources to list). --since: 2d, 6h, 1w, ISO. -f p|j|x. -F filters.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
         "Sender/domain/time: --from alice@co.com, --domain co.com, --since 1w. All stack.\n"
         "  Find all from a domain: list --domain co.com --since 2023-01-01 -n 200\n"
@@ -2036,11 +2042,12 @@ def skill_template() -> str:
     return (
         '---\n'
         'name: ts\n'
-        'description: "Token-efficient messaging gateway for reading Gmail, WhatsApp,'
-        ' and O365 messages. Use when the user asks about email, messages, inbox,'
-        ' communications, mail, or wants to check, read, search, or manage their'
-        ' messages across platforms. Always use this skill for any email or messaging'
-        ' task — even if the user doesn\'t mention ts4k by name."\n'
+        'description: "Token-efficient messaging and calendar gateway for Gmail, WhatsApp,'
+        ' O365, and Google Calendar. Use when the user asks about email, messages, inbox,'
+        ' communications, mail, calendar, events, meetings, schedule, or wants to check,'
+        ' read, search, or manage their messages or calendar across platforms. Always use'
+        ' this skill for any email, messaging, or calendar task — even if the user doesn\'t'
+        ' mention ts4k by name."\n'
         'allowed-tools: Bash(ts4k *)\n'
         '---\n'
         '\n'
