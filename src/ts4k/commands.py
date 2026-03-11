@@ -18,12 +18,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.filter import apply_filters
 from ts4k.core.format import (
     estimate_size,
+    format_event_detail,
+    format_events,
     format_listing,
     format_mailbox_stats,
     format_message,
@@ -68,7 +71,7 @@ def _ensure_sources() -> dict[str, dict[str, Any]]:
 
 def _make_adapter(
     prefix: str, cfg: dict[str, Any]
-) -> GmailAdapter | WhatsAppAdapter | O365Adapter | None:
+) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GcalAdapter | None:
     """Create an adapter instance from a source config entry."""
     provider = cfg.get("provider", "").lower()
 
@@ -114,6 +117,21 @@ def _make_adapter(
             prefix=prefix,
         )
 
+    if provider == "gcal":
+        email = cfg.get("email")
+        calendar_id = cfg.get("calendar_id")
+        if not email or not calendar_id:
+            return None
+        config = GcalAdapterConfig(
+            email=email,
+            calendar_id=calendar_id,
+            calendar_name=cfg.get("calendar_name", calendar_id),
+            timezone=cfg.get("timezone", "UTC"),
+            config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
+            level=cfg.get("level", "readonly"),
+        )
+        return GcalAdapter(config, prefix=prefix)
+
     logger.warning("Unknown provider %r for source %r", provider, prefix)
     return None
 
@@ -132,7 +150,10 @@ def _resolve_prefixes(source: str | None) -> list[str]:
     if source in all_cfg:
         return [source]
 
-    provider_map = {"wa": "whatsapp", "outlook": "o365", "office": "o365", "365": "o365"}
+    provider_map = {
+        "wa": "whatsapp", "outlook": "o365", "office": "o365", "365": "o365",
+        "google-calendar": "gcal", "calendar": "gcal", "cal": "gcal",
+    }
     provider = provider_map.get(source, source)
     matches = [
         p for p, c in all_cfg.items() if c.get("provider", "").lower() == provider
