@@ -12,7 +12,7 @@ Target: 60%+ byte savings vs raw JSON pretty-print for listings.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
 
@@ -145,6 +145,258 @@ def estimate_size(text_or_bytes: str | int) -> str:
     else:
         mb = round(n / (1024 * 1024))
         return f"{mb}mb" if mb > 0 else "1mb"
+
+
+# ---------------------------------------------------------------------------
+# Calendar event formatting
+# ---------------------------------------------------------------------------
+
+
+def format_events(
+    events: list[dict],
+    fmt: str = "pipe",
+    ref_table: "RefTable | None" = None,
+    collapse_recurring: bool = False,
+) -> str:
+    """Format calendar events as pipe-delimited listing.
+
+    Args:
+        events: Normalized event dicts from GcalAdapter.
+        fmt: Output format (pipe, json, xml).
+        ref_table: If provided, assigns short refs via ref_table.assign().
+        collapse_recurring: If True, collapse recurring series into one row.
+    """
+    if fmt == "json":
+        return json.dumps(events, indent=2)
+
+    if not events:
+        return "No events."
+
+    # Determine time display mode from date span
+    time_mode = _detect_time_mode(events)
+
+    # Optionally collapse recurring events
+    display_events = _collapse_recurring(events) if collapse_recurring else events
+
+    # Assign refs (same pattern as format_listing)
+    ref_map = ref_table.assign(display_events) if ref_table else None
+
+    lines = ["REF|SOURCE|TIME|DUR|TITLE|LOCATION|ATTENDEES"]
+    ref_num = 0
+    for evt in display_events:
+        ref_num += 1
+
+        time_str = _format_event_time(evt, time_mode)
+        dur_str = _format_duration(evt)
+        title = evt.get("title", "")
+        if evt.get("your_status") == "declined":
+            title += " (declined)"
+        # Add recurrence annotation if present and collapsing
+        recurrence_note = ""
+        if collapse_recurring and evt.get("_collapsed"):
+            summary = evt.get("recurrence_summary", "recurring")
+            recurrence_note = f" ({summary})"
+
+        location = evt.get("location", "")
+        attendees = evt.get("attendees_summary", "")
+        if recurrence_note:
+            attendees = f"{attendees} {recurrence_note}".strip() if attendees else recurrence_note.strip()
+
+        lines.append(f"{ref_num}|{evt.get('source', '')}|{time_str}|{dur_str}|{title}|{location}|{attendees}")
+
+    return "\n".join(lines)
+
+
+def format_event_detail(event: dict, ref: int = 0, fmt: str = "pipe") -> str:
+    """Format a single event's full detail as mini-XML."""
+    if fmt == "json":
+        return json.dumps(event, indent=2)
+
+    when = _format_when_detail(event)
+    parts = [f'<ev ref="{ref}" id="{event.get("id", "")}">']
+    parts.append(f'<title>{event.get("title", "")}</title>')
+    parts.append(f"<when>{when}</when>")
+
+    if event.get("location"):
+        parts.append(f'<where>{event["location"]}</where>')
+    if event.get("organizer"):
+        parts.append(f'<organizer>{event["organizer"]}</organizer>')
+    if event.get("your_status"):
+        parts.append(f'<your-status>{event["your_status"]}</your-status>')
+
+    attendees = event.get("attendees", [])
+    if attendees:
+        att_lines = []
+        for a in attendees:
+            name = a.get("name", a.get("email", ""))
+            status = a.get("status", "")
+            att_lines.append(f"  {name} ({status})")
+        parts.append("<attendees>")
+        parts.extend(att_lines)
+        parts.append("</attendees>")
+
+    if event.get("meeting_link"):
+        parts.append(f'<link>{event["meeting_link"]}</link>')
+    if event.get("recurrence_summary"):
+        parts.append(f'<recurrence>{event["recurrence_summary"]}</recurrence>')
+    if event.get("description"):
+        parts.append(f'<description>{event["description"]}</description>')
+
+    parts.append("</ev>")
+    return "\n".join(parts)
+
+
+# -- Calendar format helpers --------------------------------------------------
+
+
+def _detect_time_mode(events: list[dict]) -> str:
+    """Determine time display mode based on date span of events.
+
+    Returns: 'time' (same day), 'day' (multi-day <=7d), 'date' (>7d).
+    """
+    dates = set()
+    for evt in events:
+        start = evt.get("start", "")
+        if evt.get("all_day"):
+            dates.add(start)
+        else:
+            # Extract date part from ISO datetime
+            dates.add(start[:10])
+
+    if len(dates) <= 1:
+        return "time"
+
+    sorted_dates = sorted(dates)
+    try:
+        first = datetime.strptime(sorted_dates[0], "%Y-%m-%d")
+        last = datetime.strptime(sorted_dates[-1], "%Y-%m-%d")
+        span = (last - first).days
+    except ValueError:
+        return "date"
+
+    return "day" if span <= 7 else "date"
+
+
+def _format_event_time(event: dict, mode: str) -> str:
+    """Format event time based on display mode."""
+    if event.get("all_day"):
+        start = event["start"]
+        end = event.get("end", start)
+        if mode == "time":
+            return "all-day"
+        # Subtract 1 day from exclusive end for display
+        try:
+            end_dt = datetime.strptime(end, "%Y-%m-%d") - timedelta(days=1)
+            end_display = f"{end_dt.strftime('%b')} {end_dt.day}" if end != start else ""
+        except ValueError:
+            end_display = ""
+        start_dt = datetime.strptime(start, "%Y-%m-%d")
+        if mode == "day":
+            day_name = start_dt.strftime("%a")
+            return f"{day_name} all-day"
+        # date mode
+        start_display = f"{start_dt.strftime('%b')} {str(start_dt.day)}"
+        if end_display and end_display != start_display:
+            return f"{start_display}-{end_dt.day}"
+        return f"{start_display} all-day"
+
+    # Timed event
+    try:
+        start_dt = datetime.fromisoformat(event["start"])
+        end_dt = datetime.fromisoformat(event["end"])
+    except (ValueError, KeyError):
+        return event.get("start", "?")
+
+    start_time = start_dt.strftime("%H:%M")
+    end_time = end_dt.strftime("%H:%M")
+
+    if mode == "time":
+        return f"{start_time}-{end_time}"
+    elif mode == "day":
+        day_name = start_dt.strftime("%a")
+        return f"{day_name} {start_time}-{end_time}"
+    else:
+        date_str = f"{start_dt.strftime('%b')} {str(start_dt.day)}"
+        return f"{date_str} {start_time}-{end_time}"
+
+
+def _format_duration(event: dict) -> str:
+    """Format duration for pipe output."""
+    if event.get("all_day"):
+        # Compute days from start/end dates
+        try:
+            s = datetime.strptime(event["start"], "%Y-%m-%d")
+            e = datetime.strptime(event["end"], "%Y-%m-%d")
+            days = (e - s).days
+            return f"{days}d" if days > 1 else ""
+        except (ValueError, KeyError):
+            return ""
+
+    mins = event.get("duration_minutes")
+    if mins is None:
+        return ""
+    if mins >= 60 and mins % 60 == 0:
+        return f"{mins // 60}h"
+    if mins >= 60:
+        return f"{mins // 60}h{mins % 60}m"
+    return f"{mins}m"
+
+
+def _format_when_detail(event: dict) -> str:
+    """Format when line for event detail XML."""
+    if event.get("all_day"):
+        try:
+            s = datetime.strptime(event["start"], "%Y-%m-%d")
+            e = datetime.strptime(event["end"], "%Y-%m-%d") - timedelta(days=1)
+            start_str = f"{s.strftime('%a %b')} {str(s.day)}"
+            if s.date() == e.date():
+                return f"{start_str}, all-day"
+            end_str = f"{e.strftime('%b')} {str(e.day)}"
+            days = (e - s).days + 1
+            return f"{start_str}-{end_str} ({days}d)"
+        except ValueError:
+            return "all-day"
+
+    try:
+        s = datetime.fromisoformat(event["start"])
+        e = datetime.fromisoformat(event["end"])
+        day_str = f"{s.strftime('%a %b')} {str(s.day)}"
+        time_str = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+        dur = _format_duration(event)
+        return f"{day_str}, {time_str} ({dur})" if dur else f"{day_str}, {time_str}"
+    except (ValueError, KeyError):
+        return event.get("start", "?")
+
+
+def _collapse_recurring(events: list[dict]) -> list[dict]:
+    """Collapse recurring event instances into single representative rows.
+
+    Groups by recurringEventId. For groups with 2+ instances,
+    keep only the first (next upcoming) and mark it as collapsed.
+    """
+    from collections import OrderedDict
+
+    groups: OrderedDict[str | None, list[dict]] = OrderedDict()
+    for evt in events:
+        key = evt.get("recurring_event_id")
+        if key is None:
+            # Non-recurring: use event ID as unique key
+            groups[evt["id"]] = [evt]
+        else:
+            groups.setdefault(key, []).append(evt)
+
+    result = []
+    for key, group in groups.items():
+        if len(group) == 1 or group[0].get("recurring_event_id") is None:
+            result.append(group[0])
+        else:
+            # Collapse: take first instance, mark it
+            representative = dict(group[0])
+            representative["_collapsed"] = True
+            representative["_instance_count"] = len(group)
+            result.append(representative)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
