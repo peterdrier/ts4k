@@ -110,6 +110,99 @@ class GcalAdapter(BaseAdapter):
     def _check_send(self, operation: str) -> None:
         check_level(self._access_level, AccessLevel.SEND, operation, provider="gcal")
 
+    # -- Calendar methods ------------------------------------------------------
+
+    async def list_events(
+        self,
+        time_min: str,
+        time_max: str,
+        count: int = 250,
+    ) -> list[dict]:
+        """Fetch events in a time range, paginated, with normalization."""
+        raw_events: list[dict] = []
+        page_token: str | None = None
+
+        while len(raw_events) < count:
+            result = await asyncio.to_thread(
+                lambda pt=page_token: self._service.events().list(
+                    calendarId=self._config.calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    maxResults=min(count - len(raw_events), 250),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    pageToken=pt,
+                ).execute()
+            )
+            raw_events.extend(result.get("items", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+
+        return [self._normalize_event(e) for e in raw_events]
+
+    def _normalize_event(self, event: dict) -> dict:
+        """Convert a Google Calendar API event to ts4k normalized dict."""
+        # Determine if all-day
+        start_raw = event.get("start", {})
+        end_raw = event.get("end", {})
+        all_day = "date" in start_raw and "dateTime" not in start_raw
+
+        if all_day:
+            start = start_raw["date"]
+            end = end_raw.get("date", start)
+            duration_minutes = None
+        else:
+            start = start_raw.get("dateTime", "")
+            end = end_raw.get("dateTime", "")
+            duration_minutes = self._compute_duration(start, end)
+
+        # Attendees
+        attendees = event.get("attendees", [])
+        your_status = None
+        for a in attendees:
+            if a.get("self"):
+                your_status = a.get("responseStatus")
+                break
+
+        # Recurring event ID
+        recurring_id = event.get("recurringEventId")
+
+        # Meeting link
+        location = event.get("location", "")
+        conference = event.get("conferenceData", {})
+        meeting_link = ""
+        for ep in conference.get("entryPoints", []):
+            if ep.get("entryPointType") == "video":
+                meeting_link = ep.get("uri", "")
+                break
+
+        return {
+            "id": f"{self._prefix}:{event['id']}",
+            "source": self._prefix,
+            "title": event.get("summary", "(No title)"),
+            "start": start,
+            "end": end,
+            "all_day": all_day,
+            "duration_minutes": duration_minutes,
+            "location": location,
+            "organizer": event.get("organizer", {}).get("email", ""),
+            "attendees_summary": f"{len(attendees)} people" if attendees else "",
+            "status": event.get("status", "confirmed"),
+            "your_status": your_status,
+            "recurring_event_id": f"{self._prefix}:{recurring_id}" if recurring_id else None,
+        }
+
+    @staticmethod
+    def _compute_duration(start_iso: str, end_iso: str) -> int | None:
+        """Compute duration in minutes between two ISO 8601 datetimes."""
+        try:
+            s = datetime.fromisoformat(start_iso)
+            e = datetime.fromisoformat(end_iso)
+            return max(0, int((e - s).total_seconds() / 60))
+        except (ValueError, TypeError):
+            return None
+
     # -- Helpers ---------------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:
