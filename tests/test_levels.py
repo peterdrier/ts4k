@@ -64,6 +64,20 @@ class TestCheckLevel:
         with pytest.raises(NotImplementedError, match="intentionally not implemented"):
             check_level(AccessLevel.SEND, AccessLevel.SEND, "send_message")
 
+    def test_check_level_send_blocked_for_messaging(self):
+        """SEND is blocked for non-gcal providers (the default)."""
+        with pytest.raises(NotImplementedError, match="never sends messages"):
+            check_level(AccessLevel.SEND, AccessLevel.SEND, "send_message")
+
+    def test_check_level_send_allowed_for_gcal(self):
+        """SEND is allowed when provider='gcal'."""
+        check_level(AccessLevel.SEND, AccessLevel.SEND, "create_event", provider="gcal")
+
+    def test_check_level_send_blocked_for_gmail(self):
+        """SEND is still blocked for gmail even with explicit provider."""
+        with pytest.raises(NotImplementedError):
+            check_level(AccessLevel.SEND, AccessLevel.SEND, "send", provider="gmail")
+
 
 class TestScopesFor:
     def test_gmail_readonly(self):

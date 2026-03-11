@@ -35,13 +35,20 @@ def parse_level(value: str | None) -> AccessLevel:
     return AccessLevel[value.upper()]
 
 
-def check_level(current: AccessLevel, required: AccessLevel, operation: str) -> None:
-    """Raise PermissionError if current level is below required."""
+def check_level(current: AccessLevel, required: AccessLevel, operation: str,
+                *, provider: str | None = None) -> None:
+    """Raise PermissionError if current level is below required.
+
+    SEND level is blocked for messaging providers (ts4k never sends messages)
+    but permitted for calendar providers (invites are a normal workflow).
+    """
     if required >= AccessLevel.SEND:
-        raise NotImplementedError(
-            f"Operation '{operation}' requires level 'send', which is "
-            "intentionally not implemented. ts4k never sends messages."
-        )
+        if provider != "gcal":
+            raise NotImplementedError(
+                f"Operation '{operation}' requires level 'send', which is "
+                "intentionally not implemented for messaging. "
+                "ts4k never sends messages."
+            )
     if current < required:
         raise PermissionError(
             f"Operation '{operation}' requires level='{required.name.lower()}', "
