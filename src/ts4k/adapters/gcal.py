@@ -308,6 +308,111 @@ class GcalAdapter(BaseAdapter):
 
         return calendars
 
+    # -- Write methods ---------------------------------------------------------
+
+    async def create_event(
+        self,
+        title: str,
+        start: str,
+        end: str,
+        description: str | None = None,
+        location: str | None = None,
+        attendees: list[str] | None = None,
+    ) -> dict:
+        """Create a calendar event with level-gated attendee support."""
+        if attendees:
+            self._check_send("create_event")
+        else:
+            self._check_draft("create_event")
+
+        # Build event body
+        body: dict[str, Any] = {"summary": title}
+        if description:
+            body["description"] = description
+        if location:
+            body["location"] = location
+
+        # Date handling: detect all-day (no 'T' in string)
+        if "T" not in start:
+            # All-day: user provides inclusive end, API needs exclusive
+            end_date = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)
+            body["start"] = {"date": start}
+            body["end"] = {"date": end_date.strftime("%Y-%m-%d")}
+        else:
+            body["start"] = {"dateTime": start}
+            body["end"] = {"dateTime": end}
+
+        if attendees:
+            body["attendees"] = [{"email": e} for e in attendees]
+
+        send_updates = "all" if attendees else "none"
+        event = await asyncio.to_thread(
+            lambda: self._service.events().insert(
+                calendarId=self._config.calendar_id,
+                body=body,
+                sendUpdates=send_updates,
+            ).execute()
+        )
+        return self._normalize_event(event)
+
+    async def update_event(self, event_id: str, **fields: Any) -> dict:
+        """Update an existing event. Requires MODIFY level."""
+        self._check_modify("update_event")
+        raw_id = self._strip_prefix(event_id)
+
+        body: dict[str, Any] = {}
+        if "title" in fields:
+            body["summary"] = fields["title"]
+        if "description" in fields:
+            body["description"] = fields["description"]
+        if "location" in fields:
+            body["location"] = fields["location"]
+        if "start" in fields:
+            s = fields["start"]
+            body["start"] = {"date": s} if "T" not in s else {"dateTime": s}
+        if "end" in fields:
+            e = fields["end"]
+            body["end"] = {"date": e} if "T" not in e else {"dateTime": e}
+
+        event = await asyncio.to_thread(
+            lambda: self._service.events().patch(
+                calendarId=self._config.calendar_id,
+                eventId=raw_id,
+                body=body,
+                sendUpdates="all",
+            ).execute()
+        )
+        return self._normalize_event(event)
+
+    async def rsvp(self, event_id: str, status: str) -> dict:
+        """RSVP to an event. Requires MODIFY level."""
+        self._check_modify("rsvp")
+        raw_id = self._strip_prefix(event_id)
+
+        # Fetch current event to find self in attendees
+        event = await asyncio.to_thread(
+            lambda: self._service.events().get(
+                calendarId=self._config.calendar_id,
+                eventId=raw_id,
+            ).execute()
+        )
+
+        attendees = event.get("attendees", [])
+        for a in attendees:
+            if a.get("self"):
+                a["responseStatus"] = status
+                break
+
+        updated = await asyncio.to_thread(
+            lambda: self._service.events().patch(
+                calendarId=self._config.calendar_id,
+                eventId=raw_id,
+                body={"attendees": attendees},
+                sendUpdates="all",
+            ).execute()
+        )
+        return self._normalize_event(updated)
+
     # -- Helpers ---------------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:
