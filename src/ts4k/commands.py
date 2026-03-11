@@ -2022,3 +2022,261 @@ def skill_template() -> str:
         '\n'
         'Run `ts4k skill` for commands.\n'
     )
+
+
+# ---------------------------------------------------------------------------
+# Calendar commands
+# ---------------------------------------------------------------------------
+
+
+async def _cal_fetch_events(
+    source: str | None,
+    time_min: str,
+    time_max: str,
+    count: int = 250,
+) -> list[dict]:
+    """Fetch events from all gcal sources (or a specific one), merge by start time."""
+    from ts4k.state import sources as src_mod
+
+    all_sources = src_mod.list_all()
+    prefixes = []
+    for pfx, cfg in all_sources.items():
+        if cfg.get("provider") != "gcal":
+            continue
+        if source and pfx != source and cfg.get("provider") != source:
+            continue
+        prefixes.append((pfx, cfg))
+
+    if not prefixes:
+        return []
+
+    all_events: list[dict] = []
+    for pfx, cfg in prefixes:
+        adapter = _make_adapter(pfx, cfg)
+        if adapter is None:
+            continue
+        async with adapter:
+            events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
+            all_events.extend(events)
+
+    # Sort by start time
+    all_events.sort(key=lambda e: e.get("start", ""))
+    return all_events[:count]
+
+
+def _cal_time_bounds(day_offset: int = 0, days: int = 1, timezone: str = "UTC") -> tuple[str, str]:
+    """Compute time_min and time_max for calendar queries."""
+    import zoneinfo
+
+    try:
+        tzinfo = zoneinfo.ZoneInfo(timezone)
+    except Exception:
+        from datetime import timezone as _tz
+        tzinfo = _tz.utc
+
+    now = datetime.now(tzinfo)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
+    end = start + timedelta(days=days)
+    return start.isoformat(), end.isoformat()
+
+
+def _get_cal_timezone(source: str | None) -> str:
+    """Get timezone from calendar sources config."""
+    from ts4k.state import sources as src_mod
+
+    all_sources = src_mod.list_all()
+    for pfx, cfg in all_sources.items():
+        if cfg.get("provider") != "gcal":
+            continue
+        if source and pfx != source:
+            continue
+        return cfg.get("timezone", "UTC")
+    return "UTC"
+
+
+async def cal_today(source: str | None, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
+    """Today's calendar events."""
+    tz = _get_cal_timezone(source)
+    time_min, time_max = _cal_time_bounds(day_offset=0, days=1, timezone=tz)
+    events = await _cal_fetch_events(source, time_min, time_max)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False)
+    return CommandResult(output=output, messages_processed=len(events))
+
+
+async def cal_tomorrow(source: str | None, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
+    """Tomorrow's calendar events."""
+    tz = _get_cal_timezone(source)
+    time_min, time_max = _cal_time_bounds(day_offset=1, days=1, timezone=tz)
+    events = await _cal_fetch_events(source, time_min, time_max)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False)
+    return CommandResult(output=output, messages_processed=len(events))
+
+
+async def cal_week(source: str | None, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
+    """This week's calendar events (Mon-Sun)."""
+    tz = _get_cal_timezone(source)
+    # Compute actual Monday-Sunday range for current week
+    import zoneinfo
+    try:
+        tzinfo = zoneinfo.ZoneInfo(tz)
+    except Exception:
+        from datetime import timezone as _tz
+        tzinfo = _tz.utc
+    now = datetime.now(tzinfo)
+    monday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
+    sunday_end = monday + timedelta(days=7)
+    time_min, time_max = monday.isoformat(), sunday_end.isoformat()
+    events = await _cal_fetch_events(source, time_min, time_max)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False)
+    return CommandResult(output=output, messages_processed=len(events))
+
+
+async def cal_next(source: str | None, count: int, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
+    """Next N events from now, any timeframe."""
+    tz = _get_cal_timezone(source)
+    # Look ahead 365 days max, collapse recurring
+    time_min, _ = _cal_time_bounds(day_offset=0, days=1, timezone=tz)
+    _, time_max = _cal_time_bounds(day_offset=0, days=365, timezone=tz)
+    events = await _cal_fetch_events(source, time_min, time_max, count=count)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=True)
+    return CommandResult(output=output, messages_processed=len(events))
+
+
+async def cal_range(
+    source: str | None, from_date: str, to_date: str, fmt: str,
+    ref_table: RefTable | None = None,
+) -> CommandResult:
+    """Events in an arbitrary date range."""
+    import zoneinfo
+
+    tz_name = _get_cal_timezone(source)
+    try:
+        tzinfo = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tzinfo = timezone.utc
+
+    start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=tzinfo)
+    end = datetime.strptime(to_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=tzinfo)
+    collapse = (end - start).days > 7
+    events = await _cal_fetch_events(source, start.isoformat(), end.isoformat())
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=collapse)
+    return CommandResult(output=output, messages_processed=len(events))
+
+
+async def cal_event(
+    ref_or_id: str, source: str | None, fmt: str,
+    ref_table: RefTable | None = None,
+) -> str:
+    """Full detail for a single event."""
+    from ts4k.state import sources as src_mod
+
+    # Resolve ref to event ID
+    event_id = ref_or_id
+    if ref_table is not None and (ref_or_id.isdigit() or ref_or_id.startswith("#")):
+        resolved = ref_table.resolve(ref_or_id)
+        if resolved is not None:
+            event_id = resolved
+
+    # Find the right adapter from the prefix
+    prefix = event_id.split(":")[0] if ":" in event_id else source
+    all_sources = src_mod.list_all()
+    cfg = all_sources.get(prefix)
+    if not cfg or cfg.get("provider") != "gcal":
+        return f"Error: no gcal source with prefix '{prefix}'"
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        return f"Error: could not create adapter for '{prefix}'"
+
+    async with adapter:
+        event = await adapter.read_event(event_id)
+
+    ref_num = int(ref_or_id) if ref_or_id.isdigit() else 0
+    return format_event_detail(event, ref=ref_num, fmt=fmt)
+
+
+async def cal_list_calendars(email: str, config_dir: Path | None = None) -> list[dict]:
+    """List available calendars for a Google account (non-interactive, for setup wizard)."""
+    config = GcalAdapterConfig(
+        email=email, calendar_id="primary", calendar_name="",
+        timezone="UTC", config_dir=config_dir, level="readonly",
+    )
+    adapter = GcalAdapter(config, prefix="_setup")
+    async with adapter:
+        return await adapter.list_calendars()
+
+
+async def cal_create(
+    source: str, title: str, start: str, end: str,
+    description: str | None, location: str | None,
+    attendees: list[str] | None,
+    ref_table: RefTable | None = None,
+) -> str:
+    """Create a calendar event."""
+    from ts4k.state import sources as src_mod
+
+    cfg = src_mod.list_all().get(source)
+    if not cfg or cfg.get("provider") != "gcal":
+        return f"Error: '{source}' is not a gcal source"
+
+    adapter = _make_adapter(source, cfg)
+    if adapter is None:
+        return f"Error: could not create adapter for '{source}'"
+
+    async with adapter:
+        event = await adapter.create_event(
+            title=title, start=start, end=end,
+            description=description, location=location, attendees=attendees,
+        )
+
+    return f"Created: {event['title']} ({event['id']})"
+
+
+async def cal_update(ref_or_id: str, source: str | None, ref_table: RefTable | None = None, **fields) -> str:
+    """Update a calendar event."""
+    from ts4k.state import sources as src_mod
+
+    event_id = ref_or_id
+    if ref_table is not None and (ref_or_id.isdigit() or ref_or_id.startswith("#")):
+        resolved = ref_table.resolve(ref_or_id)
+        if resolved is not None:
+            event_id = resolved
+
+    prefix = event_id.split(":")[0] if ":" in event_id else source
+    cfg = src_mod.list_all().get(prefix)
+    if not cfg or cfg.get("provider") != "gcal":
+        return f"Error: no gcal source with prefix '{prefix}'"
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        return f"Error: could not create adapter for '{prefix}'"
+
+    async with adapter:
+        event = await adapter.update_event(event_id, **fields)
+
+    return f"Updated: {event['title']} ({event['id']})"
+
+
+async def cal_rsvp(ref_or_id: str, source: str | None, status: str, ref_table: RefTable | None = None) -> str:
+    """RSVP to a calendar event."""
+    from ts4k.state import sources as src_mod
+
+    event_id = ref_or_id
+    if ref_table is not None and (ref_or_id.isdigit() or ref_or_id.startswith("#")):
+        resolved = ref_table.resolve(ref_or_id)
+        if resolved is not None:
+            event_id = resolved
+
+    prefix = event_id.split(":")[0] if ":" in event_id else source
+    cfg = src_mod.list_all().get(prefix)
+    if not cfg or cfg.get("provider") != "gcal":
+        return f"Error: no gcal source with prefix '{prefix}'"
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        return f"Error: could not create adapter for '{prefix}'"
+
+    async with adapter:
+        event = await adapter.rsvp(event_id, status=status)
+
+    return f"RSVP {status}: {event['title']} ({event['id']})"
