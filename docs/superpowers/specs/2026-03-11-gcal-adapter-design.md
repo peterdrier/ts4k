@@ -40,8 +40,11 @@ Added 3 calendar sources (readonly).
 The wizard:
 - Scans `sources.json` for existing Gmail sources to find Google accounts
 - Uses `get_credentials()` with `calendar.readonly` scope (triggers re-auth if needed)
-- Calls `calendarList.list` to enumerate available calendars
+- Calls `calendarList.list` to enumerate available calendars (follows `nextPageToken` for accounts with many calendars)
+- Filters out `freeBusyReader`-only calendars (insufficient access for event details)
 - Suggests prefixes based on calendar name (user can override)
+- Rejects duplicate prefixes (prefix already exists in `sources.json`)
+- Skips calendars already configured (same `calendar_id` + `email` combination)
 - Saves the calendar's `timeZone` from the API response into the source config
 - Creates one `sources.json` entry per selected calendar
 - Defaults to `readonly` level
@@ -109,26 +112,32 @@ async def list_events(
     self,
     time_min: str,          # ISO 8601 datetime (timezone-aware)
     time_max: str,          # ISO 8601 datetime (timezone-aware)
-    count: int = 50,
+    count: int = 250,
 ) -> list[dict]:
     """Fetch events in a time range. Returns normalized event dicts.
 
     Uses singleEvents=True to expand recurring events into instances,
     and orderBy=startTime (required when singleEvents=True).
     Excludes cancelled events by default.
+
+    Follows nextPageToken to paginate through all results up to count.
+    Each expanded instance includes recurringEventId for collapsing.
     """
 
 async def read_event(self, event_id: str) -> dict:
-    """Fetch full detail for a single event."""
+    """Fetch full detail for a single event via events.get (not the list path)."""
 
 async def list_calendars(self) -> list[dict]:
-    """List all calendars for this account. Used by setup wizard."""
+    """List all calendars for this account. Used by setup wizard.
+    Follows nextPageToken for accounts with many calendars.
+    Filters out freeBusyReader-only calendars.
+    """
 
 async def create_event(
     self,
     title: str,
-    start: str,             # ISO 8601 datetime or date (all-day)
-    end: str,               # ISO 8601 datetime or date (all-day)
+    start: str,             # ISO 8601 datetime, or date for all-day (inclusive)
+    end: str,               # ISO 8601 datetime, or date for all-day (inclusive last day)
     description: str | None = None,
     location: str | None = None,
     attendees: list[str] | None = None,  # email addresses
@@ -139,6 +148,11 @@ async def create_event(
 
     When attendees are provided (SEND level), uses sendUpdates='all' to notify them.
     When no attendees (DRAFT level), uses sendUpdates='none'.
+
+    All-day event dates: the CLI accepts inclusive start and end dates
+    (e.g., --start 2026-03-17 --end 2026-03-21 means Mon-Fri).
+    The adapter adds +1 day to end before sending to Google API, which
+    uses exclusive end dates. This prevents off-by-one errors.
     """
 
 async def update_event(
@@ -156,26 +170,44 @@ async def rsvp(
     """RSVP to an event. Requires MODIFY level.
 
     Uses events.patch to update self-attendee status.
-    Sends notification to organizer via sendUpdates='all'.
+    Uses sendUpdates='all' which notifies ALL attendees (not just
+    the organizer) — this is Google API behavior.
     """
 ```
 
 ### Google Calendar API Call Shape
 
-The core listing call:
+The core listing call (paginated):
 
 ```python
-service.events().list(
-    calendarId=self._calendar_id,
-    timeMin=time_min,
-    timeMax=time_max,
-    maxResults=count,
-    singleEvents=True,       # expand recurring events to instances
-    orderBy="startTime",     # required with singleEvents=True
-).execute()
+events = []
+page_token = None
+while len(events) < count:
+    result = service.events().list(
+        calendarId=self._calendar_id,
+        timeMin=time_min,
+        timeMax=time_max,
+        maxResults=min(count - len(events), 250),  # API max is 2500
+        singleEvents=True,       # expand recurring events to instances
+        orderBy="startTime",     # required with singleEvents=True
+        pageToken=page_token,
+    ).execute()
+    events.extend(result.get("items", []))
+    page_token = result.get("nextPageToken")
+    if not page_token:
+        break
 ```
 
 All Google API calls wrap in `asyncio.to_thread()`, matching the Gmail adapter pattern. Event IDs are prefixed: `f"{prefix}:{native_event_id}"`.
+
+### All-Day Event Date Semantics
+
+Google Calendar API uses **exclusive end dates** for all-day events: an event on March 17 has `start.date = "2026-03-17"` and `end.date = "2026-03-18"`. A Mon-Fri event (5 days) has `end.date` = Saturday.
+
+ts4k normalizes this for user-facing interfaces:
+- **CLI input**: users provide **inclusive** start and end dates (`--start 2026-03-17 --end 2026-03-21` = Mon through Fri). The adapter adds +1 day to end before the API call.
+- **Display output**: shows inclusive date ranges (`Mar 17-21`, not `Mar 17-22`). The adapter subtracts 1 day from the API's end date for display.
+- **Normalized event dict**: `all_day: True`, `start` and `end` contain the raw API dates (exclusive end). Display normalization happens in the formatter.
 
 ### Timezone Handling
 
@@ -188,9 +220,40 @@ All Google API calls wrap in `asyncio.to_thread()`, matching the Gmail adapter p
 - **Cancelled events** (`status: "cancelled"`): excluded from listings by default. Google API supports `showDeleted=False` (the default).
 - **Declined events** (`your_status: "declined"`): included in listings but marked with status. Agents and users may want to know about declined events for context (e.g., "you declined this meeting with Sarah, but she emailed you about it"). The pipe format shows a `(declined)` indicator.
 
+### Recurring Event Collapsing
+
+With `singleEvents=True`, a weekly recurring event over 12 months expands to 52+ rows — massive token waste. The adapter returns all expanded instances, but the **formatter collapses recurring series** based on `recurringEventId` (provided by Google on every expanded instance).
+
+**Collapsing rules by view:**
+
+| View | Behavior |
+|------|----------|
+| `cal today` / `cal tomorrow` | Show every instance individually (need to know what's on today) |
+| `cal week` | Show every instance, annotate recurring ones: `(weekly)`, `(daily)`, etc. |
+| `cal next` / `cal range` (multi-week) | Collapse recurring series into one row with pattern + next occurrence |
+
+**Collapsed row format:**
+```
+REF|SOURCE|TIME|DUR|TITLE|LOCATION|ATTENDEES
+1|gc|Mon,Thu 19:00-20:00|1h|Team Sync|Zoom|5 people (weekly, 2x/wk)
+2|gc|Mon 09:00-09:30|30m|Standup|Zoom|3 people (weekly)
+3|gcf|Mar 19 all-day||School Holiday||
+```
+
+**How it works:**
+1. Group expanded instances by `recurringEventId`
+2. For groups with 2+ instances in multi-week views: collapse into one row
+3. Derive the recurrence pattern from the parent event's `recurrence` field (simple RRULE-to-human: `FREQ=WEEKLY;BYDAY=MO,TH` → `weekly, Mon+Thu`)
+4. Show the next upcoming occurrence as the time, with pattern in parentheses
+5. Single-occurrence events and non-recurring events pass through unchanged
+
+**Expanding collapsed events:** `ts4k cal event <ref>` on a collapsed recurring row shows the recurrence rule, next N instances (default 5), and full event detail.
+
+**Detection:** Uses `recurringEventId` from the API — no RRULE parsing needed for grouping. RRULE parsing is only needed for the human-readable summary, and only for common patterns (daily, weekly, biweekly, monthly). Complex RRULEs fall back to showing the raw rule.
+
 ### Event Normalization
 
-`list_events` returns compact header dicts:
+`list_events` returns compact header dicts. Each expanded recurring instance includes `recurring_event_id` for the formatter's collapsing logic:
 
 ```python
 {
@@ -206,6 +269,7 @@ All Google API calls wrap in `asyncio.to_thread()`, matching the Gmail adapter p
     "attendees_summary": "3 people",
     "status": "confirmed",
     "your_status": "accepted",
+    "recurring_event_id": "gc:baseEventId456",  # None if not recurring
 }
 ```
 
@@ -246,7 +310,11 @@ def build_calendar_service(email: str, config_dir: Path | None = None, scopes: l
 - Triggering re-auth when scopes expand (e.g., adding calendar to an existing Gmail account)
 - Token refresh
 
-No changes to the existing auth flow.
+### Auth Command Integration
+
+The existing `ts4k auth gmail` command (in `cli.py`) derives scopes only from Gmail sources for a given email. This must be extended to also include gcal sources for the same email, so that `ts4k auth <email>` requests the union of all needed scopes (Gmail + Calendar) in a single OAuth consent screen.
+
+Alternatively, add `ts4k auth gcal` as a separate auth path. The simpler approach is to make the existing auth command provider-agnostic: scan all Google-authed sources (gmail + gcal) for the email and union their scopes.
 
 ## Access Levels
 
