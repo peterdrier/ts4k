@@ -583,6 +583,222 @@ def _install_skill(project: bool = False) -> None:
     print(f"Installed ts4k skill to {target_file}")
 
 
+async def _cmd_cal(args: argparse.Namespace) -> None:
+    """Default: show today's events."""
+    return await _cmd_cal_today(args)
+
+
+async def _cmd_cal_today(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    result = await commands.cal_today(
+        source=getattr(args, "source", None),
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
+    )
+    refs.save(_refs_path(getattr(args, "key", None)))
+    print(result.output)
+
+
+async def _cmd_cal_tomorrow(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    result = await commands.cal_tomorrow(
+        source=getattr(args, "source", None),
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
+    )
+    refs.save(_refs_path(getattr(args, "key", None)))
+    print(result.output)
+
+
+async def _cmd_cal_week(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    result = await commands.cal_week(
+        source=getattr(args, "source", None),
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
+    )
+    refs.save(_refs_path(getattr(args, "key", None)))
+    print(result.output)
+
+
+async def _cmd_cal_next(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    result = await commands.cal_next(
+        source=getattr(args, "source", None),
+        count=args.n,
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
+    )
+    refs.save(_refs_path(getattr(args, "key", None)))
+    print(result.output)
+
+
+async def _cmd_cal_range(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    result = await commands.cal_range(
+        source=getattr(args, "source", None),
+        from_date=args.from_date, to_date=args.to_date,
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
+    )
+    refs.save(_refs_path(getattr(args, "key", None)))
+    print(result.output)
+
+
+async def _cmd_cal_event(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    output = await commands.cal_event(
+        ref_or_id=args.ref,
+        source=getattr(args, "source", None),
+        fmt=getattr(args, "format", "pipe") or "pipe",
+        ref_table=refs,
+    )
+    print(output)
+
+
+async def _cmd_cal_create(args: argparse.Namespace) -> None:
+    attendees = [e.strip() for e in args.attendees.split(",")] if args.attendees else None
+    output = await commands.cal_create(
+        source=args.source, title=args.title, start=args.start, end=args.end,
+        description=args.description, location=args.location,
+        attendees=attendees,
+    )
+    print(output)
+
+
+async def _cmd_cal_update(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    fields = {}
+    for f in ("title", "start", "end", "description", "location"):
+        val = getattr(args, f, None)
+        if val is not None:
+            fields[f] = val
+    output = await commands.cal_update(
+        ref_or_id=args.ref,
+        source=getattr(args, "source", None),
+        ref_table=refs, **fields,
+    )
+    print(output)
+
+
+async def _cmd_cal_rsvp(args: argparse.Namespace) -> None:
+    refs = RefTable()
+    refs.load(_refs_path(getattr(args, "key", None)))
+    output = await commands.cal_rsvp(
+        ref_or_id=args.ref,
+        source=getattr(args, "source", None),
+        status=args.status, ref_table=refs,
+    )
+    print(output)
+
+
+async def _cmd_cal_setup(args: argparse.Namespace) -> None:
+    """Interactive calendar setup wizard."""
+    from ts4k.state import sources as src_mod
+
+    all_sources = src_mod.list_all()
+
+    # Find Google accounts from gmail sources
+    google_emails = {}
+    for pfx, cfg in all_sources.items():
+        if cfg.get("provider") == "gmail":
+            email = cfg.get("email")
+            if email:
+                google_emails[email] = pfx
+
+    if not google_emails:
+        print("No Gmail sources found. Add a Gmail source first: ts4k src add g gmail --email you@gmail.com")
+        return
+
+    # Collect all available calendars
+    all_cals = []
+    for email, gmail_prefix in google_emails.items():
+        print(f"\nFound Google account: {email} (from source '{gmail_prefix}')")
+        print(f"Fetching calendars for {email}...")
+        try:
+            cals = await commands.cal_list_calendars(email)
+        except Exception as e:
+            print(f"  Error: {e}")
+            continue
+        for cal in cals:
+            # Skip already-configured calendars
+            already = any(
+                c.get("provider") == "gcal" and c.get("email") == email and c.get("calendar_id") == cal["id"]
+                for c in all_sources.values()
+            )
+            if already:
+                print(f"  (skipped: {cal['summary']} — already configured)")
+                continue
+            all_cals.append({"email": email, **cal})
+            print(f"  {len(all_cals)}. {cal['summary']}" + (" (primary)" if cal.get("primary") else ""))
+
+    if not all_cals:
+        print("\nNo new calendars to add.")
+        return
+
+    # Selection
+    choice = input("\nWhich calendars? (comma-separated, or 'all'): ").strip()
+    if choice.lower() == "all":
+        selected = all_cals
+    else:
+        indices = [int(i.strip()) - 1 for i in choice.split(",") if i.strip().isdigit()]
+        selected = [all_cals[i] for i in indices if 0 <= i < len(all_cals)]
+
+    if not selected:
+        print("No calendars selected.")
+        return
+
+    # Assign prefixes and add
+    for cal in selected:
+        suggested = _suggest_cal_prefix(cal["summary"], all_sources)
+        prefix = input(f"Prefix for '{cal['summary']}'? [{suggested}]: ").strip() or suggested
+
+        if prefix in all_sources:
+            print(f"  Prefix '{prefix}' already in use — skipping.")
+            continue
+
+        src_mod.add(
+            prefix,
+            provider="gcal",
+            email=cal["email"],
+            calendar_id=cal["id"],
+            calendar_name=cal["summary"],
+            timezone=cal.get("timezone", "UTC"),
+            level="readonly",
+        )
+        all_sources[prefix] = {}  # Track for collision detection
+        print(f"  Added '{cal['summary']}' as '{prefix}' (readonly)")
+
+    print(f"\nAdded {len(selected)} calendar source(s).")
+
+
+def _suggest_cal_prefix(name: str, existing: dict) -> str:
+    """Suggest a short prefix for a calendar name."""
+    base = "gc"
+    # Use first letter of each word after 'gc'
+    words = name.lower().replace("@", " ").replace(".", " ").split()
+    if words and words[0] not in ("primary", "my"):
+        suffix = words[0][:1]
+        candidate = f"gc{suffix}"
+    else:
+        candidate = "gc"
+
+    # Avoid collisions
+    if candidate not in existing:
+        return candidate
+    for i in range(2, 10):
+        if f"{candidate}{i}" not in existing:
+            return f"{candidate}{i}"
+    return candidate
+
+
 def _cmd_auth(args: argparse.Namespace) -> None:
     """Handle the auth command — authenticate with a platform."""
     platform = getattr(args, "platform", None)
@@ -606,6 +822,17 @@ def _cmd_auth(args: argparse.Namespace) -> None:
                 source_level = cfg.get("level")
                 break
         scopes = scopes_for("gmail", parse_level(source_level)) or None
+
+        # Also collect gcal scopes for the same Google account
+        all_sources = sources.list_all()
+        for pfx, cfg in all_sources.items():
+            if cfg.get("provider") == "gcal" and cfg.get("email") == email:
+                gcal_level = parse_level(cfg.get("level"))
+                gcal_scopes = scopes_for("gcal", gcal_level)
+                if scopes is None:
+                    scopes = list(gcal_scopes)
+                else:
+                    scopes.extend(s for s in gcal_scopes if s not in scopes)
 
         try:
             creds = get_credentials(email, scopes=scopes)
@@ -1081,6 +1308,105 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("--source", "-s", help="Limit live stats to this source prefix")
     st.add_argument("-f", "--format", default="pipe", help="Format for mailbox section: pipe, json, xml")
     st.set_defaults(func=_cmd_status)
+
+    # -- cal -------------------------------------------------------------------
+    cal_parser = subparsers.add_parser(
+        "cal",
+        help="Calendar events",
+        description="View and manage Google Calendar events across configured calendar sources.",
+        epilog=(
+            "examples:\n"
+            "  ts4k cal                             # today's events\n"
+            "  ts4k cal today -s gc                 # today from source 'gc'\n"
+            "  ts4k cal tomorrow                    # tomorrow's events\n"
+            "  ts4k cal week                        # this week's events\n"
+            "  ts4k cal next -n 5                   # next 5 events\n"
+            "  ts4k cal range --from 2026-03-15 --to 2026-03-20\n"
+            "  ts4k cal event 1                     # detail for ref #1\n"
+            "  ts4k cal setup                       # discover & add calendar sources\n"
+            '  ts4k cal create -s gc --title "Mtg" --start 2026-03-12T10:00 --end 2026-03-12T11:00\n'
+            "  ts4k cal update 1 --title 'New title'\n"
+            "  ts4k cal rsvp 1 --status accepted"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    cal_parser.add_argument("--source", "-s", default=None)
+    cal_parser.add_argument("--format", "-f", default="pipe")
+    cal_subs = cal_parser.add_subparsers(dest="cal_cmd")
+    cal_parser.set_defaults(func=_cmd_cal)
+
+    # cal today (default)
+    cal_today_p = cal_subs.add_parser("today", help="Today's events")
+    cal_today_p.add_argument("--source", "-s", default=None)
+    cal_today_p.add_argument("--format", "-f", default="pipe")
+    cal_today_p.set_defaults(func=_cmd_cal_today)
+
+    # cal tomorrow
+    cal_tmrw_p = cal_subs.add_parser("tomorrow", help="Tomorrow's events")
+    cal_tmrw_p.add_argument("--source", "-s", default=None)
+    cal_tmrw_p.add_argument("--format", "-f", default="pipe")
+    cal_tmrw_p.set_defaults(func=_cmd_cal_tomorrow)
+
+    # cal week
+    cal_week_p = cal_subs.add_parser("week", help="This week's events")
+    cal_week_p.add_argument("--source", "-s", default=None)
+    cal_week_p.add_argument("--format", "-f", default="pipe")
+    cal_week_p.set_defaults(func=_cmd_cal_week)
+
+    # cal next
+    cal_next_p = cal_subs.add_parser("next", help="Next N events")
+    cal_next_p.add_argument("-n", type=int, default=10)
+    cal_next_p.add_argument("--source", "-s", default=None)
+    cal_next_p.add_argument("--format", "-f", default="pipe")
+    cal_next_p.set_defaults(func=_cmd_cal_next)
+
+    # cal range
+    cal_range_p = cal_subs.add_parser("range", help="Events in date range")
+    cal_range_p.add_argument("--from", dest="from_date", required=True)
+    cal_range_p.add_argument("--to", dest="to_date", required=True)
+    cal_range_p.add_argument("--source", "-s", default=None)
+    cal_range_p.add_argument("--format", "-f", default="pipe")
+    cal_range_p.set_defaults(func=_cmd_cal_range)
+
+    # cal event
+    cal_event_p = cal_subs.add_parser("event", help="Event detail")
+    cal_event_p.add_argument("ref", help="Event ref or ID")
+    cal_event_p.add_argument("--source", "-s", default=None)
+    cal_event_p.add_argument("--format", "-f", default="pipe")
+    cal_event_p.set_defaults(func=_cmd_cal_event)
+
+    # cal setup
+    cal_setup_p = cal_subs.add_parser("setup", help="Discover and add calendar sources")
+    cal_setup_p.set_defaults(func=_cmd_cal_setup)
+
+    # cal create
+    cal_create_p = cal_subs.add_parser("create", help="Create an event")
+    cal_create_p.add_argument("--title", required=True)
+    cal_create_p.add_argument("--start", required=True)
+    cal_create_p.add_argument("--end", required=True)
+    cal_create_p.add_argument("--description", default=None)
+    cal_create_p.add_argument("--location", default=None)
+    cal_create_p.add_argument("--attendees", default=None, help="Comma-separated emails")
+    cal_create_p.add_argument("--source", "-s", required=True)
+    cal_create_p.set_defaults(func=_cmd_cal_create)
+
+    # cal update
+    cal_update_p = cal_subs.add_parser("update", help="Update an event")
+    cal_update_p.add_argument("ref", help="Event ref or ID")
+    cal_update_p.add_argument("--title", default=None)
+    cal_update_p.add_argument("--start", default=None)
+    cal_update_p.add_argument("--end", default=None)
+    cal_update_p.add_argument("--description", default=None)
+    cal_update_p.add_argument("--location", default=None)
+    cal_update_p.add_argument("--source", "-s", default=None)
+    cal_update_p.set_defaults(func=_cmd_cal_update)
+
+    # cal rsvp
+    cal_rsvp_p = cal_subs.add_parser("rsvp", help="RSVP to an event")
+    cal_rsvp_p.add_argument("ref", help="Event ref or ID")
+    cal_rsvp_p.add_argument("--status", required=True, choices=["accepted", "declined", "tentative"])
+    cal_rsvp_p.add_argument("--source", "-s", default=None)
+    cal_rsvp_p.set_defaults(func=_cmd_cal_rsvp)
 
     # --- help / h ---
     hp = subparsers.add_parser(
