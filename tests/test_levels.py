@@ -97,6 +97,18 @@ class TestScopesFor:
     def test_unknown_provider_returns_empty(self):
         assert scopes_for("telegram", AccessLevel.READONLY) == []
 
+    def test_scopes_for_gcal_readonly(self):
+        scopes = scopes_for("gcal", AccessLevel.READONLY)
+        assert scopes == ["https://www.googleapis.com/auth/calendar.readonly"]
+
+    def test_scopes_for_gcal_modify(self):
+        scopes = scopes_for("gcal", AccessLevel.MODIFY)
+        assert scopes == ["https://www.googleapis.com/auth/calendar"]
+
+    def test_scopes_for_gcal_send(self):
+        scopes = scopes_for("gcal", AccessLevel.SEND)
+        assert scopes == ["https://www.googleapis.com/auth/calendar"]
+
 
 class TestAdapterLevelPassthrough:
     def test_gmail_adapter_default_readonly(self):

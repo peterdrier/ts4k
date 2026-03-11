@@ -59,6 +59,13 @@ _GMAIL_SCOPES: dict[AccessLevel, list[str]] = {
     AccessLevel.SEND: ["https://www.googleapis.com/auth/gmail.modify"],
 }
 
+_GCAL_SCOPES: dict[AccessLevel, list[str]] = {
+    AccessLevel.READONLY: ["https://www.googleapis.com/auth/calendar.readonly"],
+    AccessLevel.MODIFY: ["https://www.googleapis.com/auth/calendar"],
+    AccessLevel.DRAFT: ["https://www.googleapis.com/auth/calendar"],
+    AccessLevel.SEND: ["https://www.googleapis.com/auth/calendar"],
+}
+
 _O365_SCOPES: dict[AccessLevel, list[str]] = {
     AccessLevel.READONLY: [
         "https://graph.microsoft.com/Mail.Read",
@@ -91,4 +98,6 @@ def scopes_for(provider: str, level: AccessLevel) -> list[str]:
         return list(_GMAIL_SCOPES.get(level, []))
     if provider == "o365":
         return list(_O365_SCOPES.get(level, []))
+    if provider == "gcal":
+        return list(_GCAL_SCOPES.get(level, []))
     return []
