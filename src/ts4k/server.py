@@ -273,6 +273,132 @@ async def draft(
     )
 
 
+@mcp.tool()
+async def cal(
+    view: str = "today",
+    ref: str | None = None,
+    source: str | None = None,
+    count: int = 10,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    format: str = "pipe",
+) -> str:
+    """Calendar: view events across Google Calendar sources.
+
+    Views: today, tomorrow, week, next, range, event.
+    Use ref with view='event' for full detail.
+
+    Args:
+        view: View type — "today" (default), "tomorrow", "week", "next", "range", "event".
+        ref: Event ref or ID (required for view='event').
+        source: Source prefix (e.g. "gc") or None for all.
+        count: Number of events for 'next' view (default 10).
+        from_date: Start date for 'range' view (YYYY-MM-DD).
+        to_date: End date for 'range' view (YYYY-MM-DD).
+        format: Output format — "pipe" (default), "json", or "xml".
+    """
+    if view == "event" and ref:
+        return await commands.cal_event(
+            ref_or_id=ref, source=source, fmt=format, ref_table=_refs,
+        )
+    elif view == "tomorrow":
+        r = await commands.cal_tomorrow(source=source, fmt=format, ref_table=_refs)
+    elif view == "week":
+        r = await commands.cal_week(source=source, fmt=format, ref_table=_refs)
+    elif view == "next":
+        r = await commands.cal_next(source=source, count=count, fmt=format, ref_table=_refs)
+    elif view == "range" and from_date and to_date:
+        r = await commands.cal_range(
+            source=source, from_date=from_date, to_date=to_date,
+            fmt=format, ref_table=_refs,
+        )
+    else:  # default: today
+        r = await commands.cal_today(source=source, fmt=format, ref_table=_refs)
+
+    return r.error if r.error else r.output
+
+
+@mcp.tool()
+async def cal_create(
+    source: str,
+    title: str,
+    start: str,
+    end: str,
+    description: str | None = None,
+    location: str | None = None,
+    attendees: str | None = None,
+) -> str:
+    """Create a calendar event.
+
+    Requires draft level (no attendees) or send level (with attendees).
+    For all-day events, use date format YYYY-MM-DD (inclusive).
+    Attendees: comma-separated email addresses.
+
+    Args:
+        source: Source prefix (e.g. "gc").
+        title: Event title.
+        start: Start time (ISO 8601 datetime or YYYY-MM-DD for all-day).
+        end: End time (ISO 8601 datetime or YYYY-MM-DD for all-day).
+        description: Event description (optional).
+        location: Event location (optional).
+        attendees: Comma-separated email addresses (optional).
+    """
+    att_list = [e.strip() for e in attendees.split(",")] if attendees else None
+    return await commands.cal_create(
+        source=source, title=title, start=start, end=end,
+        description=description, location=location,
+        attendees=att_list, ref_table=_refs,
+    )
+
+
+@mcp.tool()
+async def cal_manage(
+    action: str,
+    ref: str,
+    source: str | None = None,
+    status: str | None = None,
+    title: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+) -> str:
+    """Modify a calendar event or RSVP.
+
+    Actions: update, rsvp.
+    RSVP requires status (accepted/declined/tentative).
+    Update accepts any combination of title, start, end, description, location.
+    Requires modify level.
+
+    Args:
+        action: Action to perform — "update" or "rsvp".
+        ref: Event ref or ID.
+        source: Source prefix (e.g. "gc"), optional if ref has prefix.
+        status: RSVP status — "accepted", "declined", or "tentative" (required for rsvp).
+        title: New title (for update).
+        start: New start time (for update).
+        end: New end time (for update).
+        description: New description (for update).
+        location: New location (for update).
+    """
+    if action == "rsvp":
+        if not status:
+            return "Error: --status required for rsvp (accepted/declined/tentative)"
+        return await commands.cal_rsvp(
+            ref_or_id=ref, source=source, status=status, ref_table=_refs,
+        )
+    elif action == "update":
+        fields = {}
+        for name, val in [("title", title), ("start", start), ("end", end),
+                          ("description", description), ("location", location)]:
+            if val is not None:
+                fields[name] = val
+        return await commands.cal_update(
+            ref_or_id=ref, source=source, ref_table=_refs, **fields,
+        )
+    return f"Error: unknown action '{action}'"
+
+
 # ---------------------------------------------------------------------------
 # Admin CLI router
 # ---------------------------------------------------------------------------

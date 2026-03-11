@@ -26,6 +26,9 @@ EXPECTED_TOOLS = {
     "admin",
     "manage",
     "draft",
+    "cal",
+    "cal_create",
+    "cal_manage",
 }
 
 
@@ -41,9 +44,9 @@ class TestToolRegistration:
         names = self._get_tool_names()
         assert EXPECTED_TOOLS == names, f"Missing: {EXPECTED_TOOLS - names}, Extra: {names - EXPECTED_TOOLS}"
 
-    def test_exactly_ten_tools(self):
+    def test_exactly_twelve_tools(self):
         """No extra tools registered."""
-        assert len(self._get_tool_names()) == 9
+        assert len(self._get_tool_names()) == 12
 
     def test_list_params(self):
         """list has all stackable filter parameters."""
@@ -126,6 +129,49 @@ class TestToolRegistration:
         assert len(props) == 1
         required = schema.get("required", [])
         assert "cmd" in required
+
+    def test_cal_tool_registered(self):
+        """cal tool is registered with expected params."""
+        names = self._get_tool_names()
+        assert "cal" in names
+        tool = mcp._tool_manager._tools["cal"]
+        props = tool.parameters.get("properties", {})
+        assert "view" in props
+        assert "ref" in props
+        assert "source" in props
+        assert "count" in props
+        assert "from_date" in props
+        assert "to_date" in props
+        assert "format" in props
+
+    def test_cal_create_tool_registered(self):
+        """cal_create tool is registered with expected params."""
+        names = self._get_tool_names()
+        assert "cal_create" in names
+        tool = mcp._tool_manager._tools["cal_create"]
+        props = tool.parameters.get("properties", {})
+        assert "source" in props
+        assert "title" in props
+        assert "start" in props
+        assert "end" in props
+        assert "attendees" in props
+        required = tool.parameters.get("required", [])
+        assert "source" in required
+        assert "title" in required
+
+    def test_cal_manage_tool_registered(self):
+        """cal_manage tool is registered with expected params."""
+        names = self._get_tool_names()
+        assert "cal_manage" in names
+        tool = mcp._tool_manager._tools["cal_manage"]
+        props = tool.parameters.get("properties", {})
+        assert "action" in props
+        assert "ref" in props
+        assert "status" in props
+        assert "title" in props
+        required = tool.parameters.get("required", [])
+        assert "action" in required
+        assert "ref" in required
 
 
 # ---------------------------------------------------------------------------
