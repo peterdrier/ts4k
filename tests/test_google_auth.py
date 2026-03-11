@@ -193,3 +193,20 @@ class TestGetCredentials:
                 str(shared),
                 ["https://www.googleapis.com/auth/gmail.readonly"],
             )
+
+
+def test_build_calendar_service(monkeypatch):
+    """build_calendar_service calls get_credentials and builds calendar v3."""
+    from unittest.mock import MagicMock, patch
+    from ts4k.auth.google import build_calendar_service
+
+    mock_creds = MagicMock()
+    mock_service = MagicMock()
+
+    with patch("ts4k.auth.google.get_credentials", return_value=mock_creds) as mock_get, \
+         patch("ts4k.auth.google.build", return_value=mock_service) as mock_build:
+        result = build_calendar_service("test@gmail.com", scopes=["calendar.readonly"])
+
+    mock_get.assert_called_once_with("test@gmail.com", ["calendar.readonly"], None)
+    mock_build.assert_called_once_with("calendar", "v3", credentials=mock_creds)
+    assert result is mock_service

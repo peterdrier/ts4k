@@ -168,3 +168,18 @@ def build_gmail_service(
     """
     creds = get_credentials(email, scopes=scopes, config_dir=config_dir)
     return build("gmail", "v1", credentials=creds)
+
+
+def build_calendar_service(
+    email: str,
+    config_dir: Path | None = None,
+    scopes: list[str] | None = None,
+):
+    """Build a Google Calendar API v3 service client.
+
+    Reuses the same credential flow as Gmail — tokens are shared per email.
+    If the account already has a Gmail token, adding calendar scopes triggers
+    a one-time re-auth.
+    """
+    creds = get_credentials(email, scopes or [], config_dir)
+    return build("calendar", "v3", credentials=creds)
