@@ -1910,6 +1910,18 @@ def _append_commands(lines: list[str]) -> None:
     lines.append("  Truncated results show a continuation command — copy-paste for older messages.")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
+    lines.append("")
+    lines.append("CALENDAR:")
+    lines.append("  ts4k cal [today]                                  Today's events (default)")
+    lines.append("  ts4k cal tomorrow                                 Tomorrow's events")
+    lines.append("  ts4k cal week                                     This week (Mon-Sun)")
+    lines.append("  ts4k cal next [-n N]                              Next N events (default 10)")
+    lines.append("  ts4k cal range --from DATE --to DATE              Events in date range")
+    lines.append("  ts4k cal event REF                                Full event detail")
+    lines.append("  ts4k cal setup                                    Discover and add calendar sources")
+    lines.append("  ts4k cal create -s S --title T --start DT --end DT  Create event")
+    lines.append("  ts4k cal update REF [--title T] [--start DT]     Update event fields")
+    lines.append("  ts4k cal rsvp REF --status accepted|declined|tentative  RSVP to event")
 
 
 def _append_setup(lines: list[str]) -> None:
@@ -1927,6 +1939,10 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    3. ts4k auth o365                           (device code flow)")
     lines.append("    4. ts4k src discover                        (find mailboxes)")
     lines.append("    5. ts4k list --source o --since 2d          (verify)")
+    lines.append("  Google Calendar:")
+    lines.append("    1. Same Google OAuth credentials as Gmail (shared token)")
+    lines.append("    2. ts4k cal setup                           (discover calendars, auto-adds sources)")
+    lines.append("    3. ts4k cal                                 (verify — shows today's events)")
     lines.append("  WhatsApp:")
     lines.append('    1. ts4k src add w whatsapp mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
     lines.append("    2. ts4k list --source w --since 2d          (verify)")
@@ -1977,6 +1993,10 @@ def skill_reference(level: str = "basic") -> str:
             "  manage read 1,2 -k work --dry-run|Preview with keyed refs\n"
             "draft create -s g --to alice@x.com --subject Hi --body Hello|New draft\n"
             "  draft create -s g --reply-to g:abc --body 'Sounds good!'|Reply draft with threading\n"
+            "cal create -s gc --title T --start DT --end DT [--attendees a@x,b@x]|Create event\n"
+            "cal update REF [--title T] [--start DT] [--end DT]|Update event fields\n"
+            "cal rsvp REF --status accepted|declined|tentative|RSVP to event\n"
+            "cal setup|Discover and add Google Calendar sources\n"
             "help|Human-readable help"
         )
     return (
@@ -1988,6 +2008,10 @@ def skill_reference(level: str = "basic") -> str:
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
         "manage ACTION ID [-k KEY] [--label L] [--folder F] [--dry-run]|Manage mailbox (requires level=modify)\n"
         "draft create -s S --to ADDR --subject SUBJ --body TEXT [--reply-to ID]|Create draft (requires level=draft)\n"
+        "cal [today|tomorrow|week]|Calendar events (default: today)\n"
+        "cal next [-n N]|Next N events (default 10)\n"
+        "cal range --from DATE --to DATE|Events in date range\n"
+        "cal event REF|Full event detail\n"
         "status|Health + stats\n"
         "Access levels: readonly (default), modify, draft. Set: ts4k src add PREFIX PROVIDER level=modify\n"
         "Keys: user-defined labels (life, work). Each key tracks its own read position.\n"
