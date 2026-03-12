@@ -153,6 +153,7 @@ def _resolve_prefixes(source: str | None) -> list[str]:
     provider_map = {
         "wa": "whatsapp", "outlook": "o365", "office": "o365", "365": "o365",
         "google-calendar": "gcal", "calendar": "gcal", "cal": "gcal",
+        "o365-calendar": "o365cal", "outlook-calendar": "o365cal",
     }
     provider = provider_map.get(source, source)
     matches = [
