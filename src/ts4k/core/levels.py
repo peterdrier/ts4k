@@ -43,7 +43,7 @@ def check_level(current: AccessLevel, required: AccessLevel, operation: str,
     but permitted for calendar providers (invites are a normal workflow).
     """
     if required >= AccessLevel.SEND:
-        if provider != "gcal":
+        if provider not in ("gcal", "o365cal"):
             raise NotImplementedError(
                 f"Operation '{operation}' requires level 'send', which is "
                 "intentionally not implemented for messaging. "
@@ -71,6 +71,25 @@ _GCAL_SCOPES: dict[AccessLevel, list[str]] = {
     AccessLevel.MODIFY: ["https://www.googleapis.com/auth/calendar"],
     AccessLevel.DRAFT: ["https://www.googleapis.com/auth/calendar"],
     AccessLevel.SEND: ["https://www.googleapis.com/auth/calendar"],
+}
+
+_O365_CAL_SCOPES: dict[AccessLevel, list[str]] = {
+    AccessLevel.READONLY: [
+        "https://graph.microsoft.com/Calendars.Read",
+        "https://graph.microsoft.com/User.Read",
+    ],
+    AccessLevel.MODIFY: [
+        "https://graph.microsoft.com/Calendars.ReadWrite",
+        "https://graph.microsoft.com/User.Read",
+    ],
+    AccessLevel.DRAFT: [
+        "https://graph.microsoft.com/Calendars.ReadWrite",
+        "https://graph.microsoft.com/User.Read",
+    ],
+    AccessLevel.SEND: [
+        "https://graph.microsoft.com/Calendars.ReadWrite",
+        "https://graph.microsoft.com/User.Read",
+    ],
 }
 
 _O365_SCOPES: dict[AccessLevel, list[str]] = {
@@ -107,4 +126,6 @@ def scopes_for(provider: str, level: AccessLevel) -> list[str]:
         return list(_O365_SCOPES.get(level, []))
     if provider == "gcal":
         return list(_GCAL_SCOPES.get(level, []))
+    if provider == "o365cal":
+        return list(_O365_CAL_SCOPES.get(level, []))
     return []
