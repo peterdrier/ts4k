@@ -499,3 +499,142 @@ class TestCalFetchEventsMultiSource:
         # Earlier event should come first after sorting
         assert result[0]["title"] == "Earlier"
         assert result[1]["title"] == "Later"
+
+
+# --- O365 Calendar integration tests ---
+
+
+@pytest.fixture
+def mock_o365cal_sources(tmp_path, monkeypatch):
+    """Set up mock sources with an o365cal source."""
+    sources_file = tmp_path / "sources.json"
+    sources_file.write_text(
+        '{"oc": {"provider": "o365cal", "email": "user@contoso.com", '
+        '"client_id": "test-cid", "tenant_id": "test-tid", '
+        '"calendar_id": "default", "calendar_name": "Work", '
+        '"timezone": "UTC", "level": "readonly"}}'
+    )
+    monkeypatch.setattr(sources, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(sources, "_SOURCES_FILE", sources_file)
+
+
+@pytest.fixture
+def mock_mixed_sources(tmp_path, monkeypatch):
+    """Sources with both gcal and o365cal."""
+    sources_file = tmp_path / "sources.json"
+    sources_file.write_text(
+        '{"gc": {"provider": "gcal", "email": "test@gmail.com", '
+        '"calendar_id": "primary", "calendar_name": "Main", '
+        '"timezone": "UTC", "level": "readonly"}, '
+        '"oc": {"provider": "o365cal", "email": "user@contoso.com", '
+        '"client_id": "test-cid", "tenant_id": "test-tid", '
+        '"calendar_id": "default", "calendar_name": "Work", '
+        '"timezone": "Europe/Amsterdam", "level": "readonly"}}'
+    )
+    monkeypatch.setattr(sources, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(sources, "_SOURCES_FILE", sources_file)
+
+
+class TestCalTodayO365:
+    @pytest.mark.asyncio
+    async def test_o365cal_source(self, mock_o365cal_sources):
+        mock_events = [
+            {
+                "id": "oc:e1", "source": "oc", "title": "O365 Standup",
+                "start": "2026-03-11T09:00:00Z", "end": "2026-03-11T09:30:00Z",
+                "all_day": False, "duration_minutes": 30, "location": "",
+                "attendees_summary": "", "status": "confirmed",
+                "your_status": None, "recurring_event_id": None,
+            },
+        ]
+        with patch("ts4k.commands.O365CalAdapter") as MockAdapter:
+            instance = AsyncMock()
+            instance.list_events = AsyncMock(return_value=mock_events)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockAdapter.return_value = instance
+
+            result = await cal_today(source=None, fmt="pipe")
+
+        assert "O365 Standup" in result.output
+
+
+class TestCalFetchEventsMultiProvider:
+    @pytest.mark.asyncio
+    async def test_merges_gcal_and_o365cal(self, mock_mixed_sources):
+        """Events from gcal and o365cal sources merge and sort by start."""
+        gcal_events = [
+            {"id": "gc:e1", "source": "gc", "title": "Google Event",
+             "start": "2026-03-11T10:00:00Z", "end": "2026-03-11T11:00:00Z",
+             "all_day": False, "duration_minutes": 60, "location": "",
+             "attendees_summary": "", "status": "confirmed",
+             "your_status": None, "recurring_event_id": None},
+        ]
+        o365_events = [
+            {"id": "oc:e2", "source": "oc", "title": "Outlook Event",
+             "start": "2026-03-11T08:00:00Z", "end": "2026-03-11T09:00:00Z",
+             "all_day": False, "duration_minutes": 60, "location": "",
+             "attendees_summary": "", "status": "confirmed",
+             "your_status": None, "recurring_event_id": None},
+        ]
+
+        adapter_call_count = [0]
+
+        async def mock_list_events(**kwargs):
+            adapter_call_count[0] += 1
+            if adapter_call_count[0] == 1:
+                return gcal_events
+            return o365_events
+
+        with patch("ts4k.commands.GcalAdapter") as MockGcal, \
+             patch("ts4k.commands.O365CalAdapter") as MockO365:
+            for MockCls in (MockGcal, MockO365):
+                inst = AsyncMock()
+                inst.list_events = AsyncMock(side_effect=mock_list_events)
+                inst.__aenter__ = AsyncMock(return_value=inst)
+                inst.__aexit__ = AsyncMock(return_value=False)
+                MockCls.return_value = inst
+
+            result = await _cal_fetch_events(
+                source=None,
+                time_min="2026-03-11T00:00:00Z",
+                time_max="2026-03-12T00:00:00Z",
+            )
+
+        assert len(result) == 2
+        assert result[0]["title"] == "Outlook Event"
+        assert result[1]["title"] == "Google Event"
+
+
+class TestCalEventO365:
+    @pytest.mark.asyncio
+    async def test_o365cal_event_detail(self, mock_o365cal_sources):
+        mock_event = {
+            "id": "oc:e1", "source": "oc", "title": "O365 Review",
+            "start": "2026-03-11T11:00:00Z", "end": "2026-03-11T12:00:00Z",
+            "all_day": False, "duration_minutes": 60, "location": "Teams",
+            "organizer": "sarah@contoso.com", "status": "confirmed",
+            "your_status": "accepted", "attendees": [],
+            "description": "Review.", "meeting_link": "",
+            "recurrence_summary": "", "recurring_event_id": None,
+        }
+        with patch("ts4k.commands.O365CalAdapter") as MockAdapter:
+            instance = AsyncMock()
+            instance.read_event = AsyncMock(return_value=mock_event)
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            MockAdapter.return_value = instance
+
+            result = await cal_event(ref_or_id="oc:e1", source="oc", fmt="pipe")
+
+        assert "O365 Review" in result
+
+
+class TestGetCalTimezoneO365:
+    def test_returns_o365cal_tz(self, mock_o365cal_sources):
+        tz = _get_cal_timezone(None)
+        assert tz == "UTC"
+
+    def test_returns_specific_o365cal_tz(self, mock_mixed_sources):
+        tz = _get_cal_timezone("oc")
+        assert tz == "Europe/Amsterdam"

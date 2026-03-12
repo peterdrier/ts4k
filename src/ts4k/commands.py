@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
+from ts4k.adapters.o365cal import O365CalAdapter, O365CalAdapterConfig
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
@@ -131,6 +132,23 @@ def _make_adapter(
             level=cfg.get("level", "readonly"),
         )
         return GcalAdapter(config, prefix=prefix)
+
+    if provider == "o365cal":
+        email = cfg.get("email")
+        client_id = cfg.get("client_id", "")
+        if not email or not client_id:
+            return None
+        config = O365CalAdapterConfig(
+            email=email,
+            client_id=client_id,
+            tenant_id=cfg.get("tenant_id", "common"),
+            calendar_id=cfg.get("calendar_id", "default"),
+            calendar_name=cfg.get("calendar_name", ""),
+            timezone=cfg.get("timezone", "UTC"),
+            config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
+            level=cfg.get("level", "readonly"),
+        )
+        return O365CalAdapter(config, prefix=prefix)
 
     logger.warning("Unknown provider %r for source %r", provider, prefix)
     return None
@@ -2073,7 +2091,7 @@ async def _cal_fetch_events(
     all_sources = src_mod.list_all()
     prefixes = []
     for pfx, cfg in all_sources.items():
-        if cfg.get("provider") != "gcal":
+        if cfg.get("provider") not in ("gcal", "o365cal"):
             continue
         if source and pfx != source and cfg.get("provider") != source:
             continue
@@ -2118,7 +2136,7 @@ def _get_cal_timezone(source: str | None) -> str:
 
     all_sources = src_mod.list_all()
     for pfx, cfg in all_sources.items():
-        if cfg.get("provider") != "gcal":
+        if cfg.get("provider") not in ("gcal", "o365cal"):
             continue
         if source and pfx != source:
             continue
@@ -2213,8 +2231,8 @@ async def cal_event(
     prefix = event_id.split(":")[0] if ":" in event_id else source
     all_sources = src_mod.list_all()
     cfg = all_sources.get(prefix)
-    if not cfg or cfg.get("provider") != "gcal":
-        return f"Error: no gcal source with prefix '{prefix}'"
+    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+        return f"Error: no calendar source with prefix '{prefix}'"
 
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
@@ -2248,8 +2266,8 @@ async def cal_create(
     from ts4k.state import sources as src_mod
 
     cfg = src_mod.list_all().get(source)
-    if not cfg or cfg.get("provider") != "gcal":
-        return f"Error: '{source}' is not a gcal source"
+    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+        return f"Error: '{source}' is not a calendar source"
 
     adapter = _make_adapter(source, cfg)
     if adapter is None:
@@ -2276,8 +2294,8 @@ async def cal_update(ref_or_id: str, source: str | None, ref_table: RefTable | N
 
     prefix = event_id.split(":")[0] if ":" in event_id else source
     cfg = src_mod.list_all().get(prefix)
-    if not cfg or cfg.get("provider") != "gcal":
-        return f"Error: no gcal source with prefix '{prefix}'"
+    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+        return f"Error: no calendar source with prefix '{prefix}'"
 
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
@@ -2301,8 +2319,8 @@ async def cal_rsvp(ref_or_id: str, source: str | None, status: str, ref_table: R
 
     prefix = event_id.split(":")[0] if ":" in event_id else source
     cfg = src_mod.list_all().get(prefix)
-    if not cfg or cfg.get("provider") != "gcal":
-        return f"Error: no gcal source with prefix '{prefix}'"
+    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+        return f"Error: no calendar source with prefix '{prefix}'"
 
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
