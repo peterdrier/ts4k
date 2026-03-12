@@ -60,9 +60,11 @@ Graph API uses `isAllDay: true` with `dateTime` fields in date-only format. Adap
 
 Reuses `build_graph_client()` from `auth/microsoft.py`, passing `client_id` and `tenant_id` from the config (same values as the linked O365 mail source). Gets an `httpx.AsyncClient` with Bearer token at `connect()` time via `asyncio.to_thread()`. Requests calendar-specific scopes via `scopes_for("o365cal", level)`. Uses the same `_get()`, `_post()`, `_patch()` helper pattern as `O365Adapter`.
 
+Level-checking helpers follow the gcal pattern: `_check_modify()`, `_check_draft()`, `_check_send()` each call `check_level(required, self._access_level, provider="o365cal")`. The `provider="o365cal"` argument is required so the SEND guard in `check_level()` correctly allows calendar invites.
+
 ### RSVP
 
-Graph uses separate endpoints per response (`/accept`, `/decline`, `/tentativelyAccept`) rather than patching attendee status. The adapter maps the `status` parameter (`accepted`/`declined`/`tentative`) to the correct endpoint.
+Graph uses separate endpoints per response (`/accept`, `/decline`, `/tentativelyAccept`) rather than patching attendee status. The adapter maps the `status` parameter (`accepted`/`declined`/`tentative`) to the correct endpoint. These endpoints return HTTP 202 with an empty body (no JSON), so the `rsvp()` method must not call `resp.json()` on the response. Instead, after a successful RSVP POST, re-fetch the event via `read_event()` to return the updated normalized event.
 
 ## 2. Scopes & Levels (`core/levels.py`)
 
@@ -82,12 +84,13 @@ Add `"o365cal"` branch to `scopes_for()`: `if provider == "o365cal": return list
 ## 3. Commands & Wiring (`commands.py`)
 
 - **`_make_adapter()`**: Add `o365cal` branch constructing `O365CalAdapter` from source config (reads `client_id`, `tenant_id`, `email`, `calendar_id`, `calendar_name`, `timezone`, `level`, `config_dir`).
-- **`_cal_fetch_events()`**: Expand provider filter from `gcal` only to include `o365cal`. Both providers iterated, events merged and sorted by `start`.
+- **`_cal_fetch_events()`**: Expand provider filter from `gcal` only to include `o365cal`. The first filter clause (`provider != "gcal"`) becomes `provider not in ("gcal", "o365cal")`. The second clause (`source and pfx != source and cfg.get("provider") != source`) already works for `--source o365cal` by provider name — no change needed there. Both providers iterated, events merged and sorted by `start`.
 - **`cal_event`, `cal_create`, `cal_update`, `cal_rsvp`**: These functions contain hardcoded `provider != "gcal"` guards that reject non-gcal sources. Expand all four to accept `o365cal` as well (e.g., `provider not in ("gcal", "o365cal")`).
 - **`_get_cal_timezone()`**: Expand to include `o365cal` sources. When `source=None` and both gcal and o365cal sources exist, use the first source found (same as current behavior — the `--source` flag is the intended disambiguation mechanism).
 - **`cal_list_o365_calendars(email, client_id, tenant_id, config_dir)`**: New command function (parallel to `cal_list_calendars` for gcal) that creates a temporary `O365CalAdapter`, calls `list_calendars()`, and returns the result. Used by the setup wizard.
 - **Ref resolution**: Already works by parsing source prefix from event ID. No changes needed.
 - **Format layer**: Zero changes. Operates on normalized dicts.
+- **`_resolve_prefixes()` provider_map**: Add aliases for `o365cal`: `"o365-calendar": "o365cal"`, `"outlook-calendar": "o365cal"`. This enables `--source o365-calendar` as a shorthand (matching the `"google-calendar": "gcal"` pattern).
 - **CLI handlers**: Zero changes. Delegate to command functions.
 - **MCP tools**: Zero changes. Delegate to command functions.
 
