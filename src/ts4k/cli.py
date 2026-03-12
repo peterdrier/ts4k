@@ -1409,7 +1409,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cal_parser = subparsers.add_parser(
         "cal",
         help="Calendar events",
-        description="View and manage Google Calendar events across configured calendar sources.",
+        description="View and manage calendar events across configured calendar sources (Google Calendar and O365).",
         epilog=(
             "examples:\n"
             "  ts4k cal                             # today's events\n"
