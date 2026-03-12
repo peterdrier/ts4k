@@ -327,6 +327,95 @@ class O365CalAdapter(BaseAdapter):
 
         return calendars
 
+    # -- Write methods -----------------------------------------------------
+
+    async def create_event(
+        self,
+        title: str,
+        start: str,
+        end: str,
+        description: str | None = None,
+        location: str | None = None,
+        attendees: list[str] | None = None,
+    ) -> dict:
+        """Create a calendar event with level-gated attendee support."""
+        if attendees:
+            self._check_send("create_event")
+        else:
+            self._check_draft("create_event")
+
+        body: dict[str, Any] = {"subject": title}
+        if description:
+            body["body"] = {"contentType": "text", "content": description}
+        if location:
+            body["location"] = {"displayName": location}
+
+        # Date handling: detect all-day (no 'T' in string)
+        if "T" not in start:
+            from datetime import timedelta
+            end_date = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)
+            body["start"] = {"dateTime": start, "timeZone": self._config.timezone}
+            body["end"] = {"dateTime": end_date.strftime("%Y-%m-%d"), "timeZone": self._config.timezone}
+            body["isAllDay"] = True
+        else:
+            body["start"] = {"dateTime": start, "timeZone": self._config.timezone}
+            body["end"] = {"dateTime": end, "timeZone": self._config.timezone}
+
+        if attendees:
+            body["attendees"] = [
+                {"emailAddress": {"address": e}, "type": "required"}
+                for e in attendees
+            ]
+
+        cal_path = self._calendar_path()
+        events_path = f"{cal_path}/events" if cal_path != "/me" else "/me/events"
+        resp = await self._post(events_path, json=body)
+        event = resp.json()
+        return self._normalize_event(event)
+
+    async def update_event(self, event_id: str, **fields: Any) -> dict:
+        """Update an existing event. Requires MODIFY level."""
+        self._check_modify("update_event")
+        raw_id = self._strip_prefix(event_id)
+
+        body: dict[str, Any] = {}
+        if "title" in fields:
+            body["subject"] = fields["title"]
+        if "description" in fields:
+            body["body"] = {"contentType": "text", "content": fields["description"]}
+        if "location" in fields:
+            body["location"] = {"displayName": fields["location"]}
+        if "start" in fields:
+            s = fields["start"]
+            body["start"] = {"dateTime": s, "timeZone": self._config.timezone}
+        if "end" in fields:
+            e = fields["end"]
+            body["end"] = {"dateTime": e, "timeZone": self._config.timezone}
+
+        event = await self._patch(f"/me/events/{raw_id}", json=body)
+        return self._normalize_event(event)
+
+    _RSVP_ENDPOINTS = {
+        "accepted": "accept",
+        "declined": "decline",
+        "tentative": "tentativelyAccept",
+    }
+
+    async def rsvp(self, event_id: str, status: str) -> dict:
+        """RSVP to an event. Requires MODIFY level."""
+        self._check_modify("rsvp")
+        raw_id = self._strip_prefix(event_id)
+
+        endpoint = self._RSVP_ENDPOINTS.get(status)
+        if not endpoint:
+            raise ValueError(f"Invalid RSVP status: {status!r}")
+
+        # POST returns 202 with empty body — don't parse JSON
+        await self._post(f"/me/events/{raw_id}/{endpoint}", json={"sendResponse": True})
+
+        # Re-fetch to return updated normalized event
+        return await self.read_event(event_id)
+
     # -- Helpers -----------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:
