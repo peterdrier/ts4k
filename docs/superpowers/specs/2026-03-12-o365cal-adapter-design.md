@@ -13,6 +13,8 @@ Separate adapter file (`adapters/o365cal.py`) mirroring the `gcal.py` / `gmail.p
 New `O365CalAdapter` class with config dataclass:
 
 - `email` — O365 account email (links to MSAL token cache)
+- `client_id` — Azure app registration client ID (same as O365 mail source)
+- `tenant_id` — Azure tenant ID (same as O365 mail source)
 - `calendar_id` — Graph calendar ID or `"default"` for primary
 - `calendar_name` — human display name
 - `timezone` — IANA timezone string (from `GET /me/calendars`)
@@ -46,13 +48,17 @@ Produces the same dict shape as `GcalAdapter`:
 
 `/me/calendarView` automatically expands recurring events into instances (analogous to Google's `singleEvents=True`). Each instance has a `seriesMasterId` field mapped to `recurring_event_id`. The format layer's existing `_collapse_recurring()` works unchanged.
 
+### Recurrence Summary
+
+Graph API returns a structured `recurrence` object with `pattern` (type, interval, daysOfWeek) and `range`, not RRULE strings. The adapter implements `graph_recurrence_to_human(recurrence_dict)` to convert this to a human string (e.g., `{"pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["monday", "thursday"]}}` → `"weekly on Mon+Thu"`). This is the Graph equivalent of `rrule_to_human()` in `gcal.py`. The raw recurrence dict is stored in the `recurrence` field; the human string goes in `recurrence_summary`.
+
 ### All-Day Events
 
 Graph API uses `isAllDay: true` with `dateTime` fields in date-only format. Adapter detects this and sets `all_day: True`. End date handling: Graph uses exclusive end dates (same as Google), so the same display-side -1 day adjustment applies.
 
 ### Auth
 
-Reuses `build_graph_client()` from `auth/microsoft.py`. Gets an `httpx.AsyncClient` with Bearer token at `connect()` time via `asyncio.to_thread()`. Uses the same `_get()`, `_post()`, `_patch()` helper pattern as `O365Adapter`.
+Reuses `build_graph_client()` from `auth/microsoft.py`, passing `client_id` and `tenant_id` from the config (same values as the linked O365 mail source). Gets an `httpx.AsyncClient` with Bearer token at `connect()` time via `asyncio.to_thread()`. Requests calendar-specific scopes via `scopes_for("o365cal", level)`. Uses the same `_get()`, `_post()`, `_patch()` helper pattern as `O365Adapter`.
 
 ### RSVP
 
@@ -69,13 +75,17 @@ Add `_O365_CAL_SCOPES`:
 | MODIFY | `Calendars.ReadWrite` |
 | SEND | `Calendars.ReadWrite` |
 
-Extend `check_level()` SEND exception for calendar invites to include `o365cal` provider.
+Extend `check_level()` SEND exception for calendar invites: change `provider != "gcal"` guard to `provider not in ("gcal", "o365cal")`.
+
+Add `"o365cal"` branch to `scopes_for()`: `if provider == "o365cal": return list(_O365_CAL_SCOPES.get(level, []))`.
 
 ## 3. Commands & Wiring (`commands.py`)
 
-- **`_make_adapter()`**: Add `o365cal` branch constructing `O365CalAdapter` from source config.
+- **`_make_adapter()`**: Add `o365cal` branch constructing `O365CalAdapter` from source config (reads `client_id`, `tenant_id`, `email`, `calendar_id`, `calendar_name`, `timezone`, `level`, `config_dir`).
 - **`_cal_fetch_events()`**: Expand provider filter from `gcal` only to include `o365cal`. Both providers iterated, events merged and sorted by `start`.
-- **`_get_cal_timezone()`**: Expand to include `o365cal` sources.
+- **`cal_event`, `cal_create`, `cal_update`, `cal_rsvp`**: These functions contain hardcoded `provider != "gcal"` guards that reject non-gcal sources. Expand all four to accept `o365cal` as well (e.g., `provider not in ("gcal", "o365cal")`).
+- **`_get_cal_timezone()`**: Expand to include `o365cal` sources. When `source=None` and both gcal and o365cal sources exist, use the first source found (same as current behavior — the `--source` flag is the intended disambiguation mechanism).
+- **`cal_list_o365_calendars(email, client_id, tenant_id, config_dir)`**: New command function (parallel to `cal_list_calendars` for gcal) that creates a temporary `O365CalAdapter`, calls `list_calendars()`, and returns the result. Used by the setup wizard.
 - **Ref resolution**: Already works by parsing source prefix from event ID. No changes needed.
 - **Format layer**: Zero changes. Operates on normalized dicts.
 - **CLI handlers**: Zero changes. Delegate to command functions.
@@ -85,7 +95,7 @@ Extend `check_level()` SEND exception for calendar invites to include `o365cal` 
 
 ### Auth
 
-`ts4k auth o365` currently requests only mail scopes. Add calendar scopes by default with `--no-calendar` opt-out (matching the Gmail auth pattern). Scopes added to the MSAL device code flow request.
+`ts4k auth o365` currently requests only mail scopes via `get_credentials()` with default `GRAPH_MAIL_READ_SCOPES`. Add `Calendars.Read` by default (matching the Gmail auth pattern where `calendar.readonly` is included by default). Add `--no-calendar` argparse flag to `au_o365` subparser to opt out. When existing `o365cal` sources exist with levels above READONLY, collect the higher scopes (`Calendars.ReadWrite`) from their configs — same logic as the Gmail auth flow does for gcal sources (cli.py lines 839-847).
 
 ### Setup
 
@@ -106,6 +116,8 @@ If no O365 mail source exists, prompt user to run `ts4k auth o365` first.
   "oc": {
     "provider": "o365cal",
     "email": "user@company.com",
+    "client_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "tenant_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
     "calendar_id": "AAMkAG...",
     "calendar_name": "Work Calendar",
     "timezone": "Europe/Amsterdam",
