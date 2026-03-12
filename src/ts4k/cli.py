@@ -725,8 +725,18 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
             if email:
                 google_emails[email] = pfx
 
-    if not google_emails:
-        print("No Gmail sources found. Add a Gmail source first: ts4k src add g gmail --email you@gmail.com")
+    # Find O365 accounts from o365 sources
+    o365_accounts = {}
+    for pfx, cfg in all_sources.items():
+        if cfg.get("provider") == "o365":
+            email = cfg.get("mailbox") or "primary"
+            client_id = cfg.get("client_id", "")
+            tenant_id = cfg.get("tenant_id", "common")
+            if client_id:
+                o365_accounts[email] = (pfx, client_id, tenant_id)
+
+    if not google_emails and not o365_accounts:
+        print("No Gmail or O365 sources found. Add a source first.")
         return
 
     # Collect all available calendars
@@ -750,6 +760,26 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
                 continue
             all_cals.append({"email": email, **cal})
             print(f"  {len(all_cals)}. {cal['summary']}" + (" (primary)" if cal.get("primary") else ""))
+
+    for email, (o365_prefix, client_id, tenant_id) in o365_accounts.items():
+        email_display = email if email != "primary" else f"(primary, from source '{o365_prefix}')"
+        print(f"\nFound O365 account: {email_display}")
+        print(f"Fetching calendars...")
+        try:
+            cals = await commands.cal_list_o365_calendars(email, client_id, tenant_id)
+        except Exception as e:
+            print(f"  Error: {e}")
+            continue
+        for cal in cals:
+            already = any(
+                c.get("provider") == "o365cal" and c.get("client_id") == client_id and c.get("calendar_id") == cal["id"]
+                for c in all_sources.values()
+            )
+            if already:
+                print(f"  (skipped: {cal['summary']} — already configured)")
+                continue
+            all_cals.append({"email": email, "client_id": client_id, "tenant_id": tenant_id, "provider": "o365cal", **cal})
+            print(f"  {len(all_cals)}. {cal['summary']}" + (" (primary)" if cal.get("primary") else "") + " [O365]")
 
     if not all_cals:
         print("\nNo new calendars to add.")
@@ -776,15 +806,29 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
             print(f"  Prefix '{prefix}' already in use — skipping.")
             continue
 
-        src_mod.add(
-            prefix,
-            provider="gcal",
-            email=cal["email"],
-            calendar_id=cal["id"],
-            calendar_name=cal["summary"],
-            timezone=cal.get("timezone", "UTC"),
-            level="readonly",
-        )
+        provider = cal.get("provider", "gcal")
+        if provider == "o365cal":
+            src_mod.add(
+                prefix,
+                provider="o365cal",
+                email=cal["email"],
+                client_id=cal["client_id"],
+                tenant_id=cal["tenant_id"],
+                calendar_id=cal["id"],
+                calendar_name=cal["summary"],
+                timezone=cal.get("timezone", "UTC"),
+                level="readonly",
+            )
+        else:
+            src_mod.add(
+                prefix,
+                provider="gcal",
+                email=cal["email"],
+                calendar_id=cal["id"],
+                calendar_name=cal["summary"],
+                timezone=cal.get("timezone", "UTC"),
+                level="readonly",
+            )
         all_sources[prefix] = {}  # Track for collision detection
         print(f"  Added '{cal['summary']}' as '{prefix}' (readonly)")
 

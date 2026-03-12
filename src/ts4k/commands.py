@@ -2256,6 +2256,20 @@ async def cal_list_calendars(email: str, config_dir: Path | None = None) -> list
         return await adapter.list_calendars()
 
 
+async def cal_list_o365_calendars(
+    email: str, client_id: str, tenant_id: str, config_dir: Path | None = None,
+) -> list[dict]:
+    """List available calendars for an O365 account (non-interactive, for setup wizard)."""
+    config = O365CalAdapterConfig(
+        email=email, client_id=client_id, tenant_id=tenant_id,
+        calendar_id="default", calendar_name="",
+        timezone="UTC", config_dir=config_dir, level="readonly",
+    )
+    adapter = O365CalAdapter(config, prefix="_setup")
+    async with adapter:
+        return await adapter.list_calendars()
+
+
 async def cal_create(
     source: str, title: str, start: str, end: str,
     description: str | None, location: str | None,
