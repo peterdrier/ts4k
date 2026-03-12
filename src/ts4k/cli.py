@@ -915,11 +915,34 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         from ts4k.auth.microsoft import get_credentials as get_ms_credentials
+        from ts4k.core.levels import scopes_for, parse_level, AccessLevel
 
         check_only = getattr(args, "check", False)
 
+        # Start with mail scopes from source level
+        source_level = cfg.get("level")
+        scopes = scopes_for("o365", parse_level(source_level)) or None
+
+        # Include calendar scopes by default (enables `cal setup` without
+        # a separate re-auth). Skip with --no-calendar.
+        no_calendar = getattr(args, "no_calendar", False)
+        if not no_calendar:
+            cal_readonly_scopes = scopes_for("o365cal", AccessLevel.READONLY)
+            if scopes is None:
+                scopes = list(cal_readonly_scopes)
+            else:
+                scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
+
+            # Collect higher o365cal scopes if o365cal sources already exist
+            all_sources_cfg = src_mod.list_all()
+            for pfx, src_cfg in all_sources_cfg.items():
+                if src_cfg.get("provider") == "o365cal" and src_cfg.get("client_id") == client_id:
+                    cal_level = parse_level(src_cfg.get("level"))
+                    cal_scopes = scopes_for("o365cal", cal_level)
+                    scopes.extend(s for s in cal_scopes if s not in scopes)
+
         try:
-            creds = get_ms_credentials(client_id, tenant_id=tenant_id)
+            creds = get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes)
             if check_only:
                 if "access_token" in creds:
                     print(f"Credentials valid for client {client_id}.")
@@ -1471,6 +1494,7 @@ def _build_parser() -> argparse.ArgumentParser:
     au_o365 = au_sub.add_parser("o365", help="Authenticate with Microsoft 365 (device code flow)")
     au_o365.add_argument("source", nargs="?", default=None, help="Source prefix to authenticate (e.g. 'o'). Uses first O365 source if omitted.")
     au_o365.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
+    au_o365.add_argument("--no-calendar", action="store_true", help="Skip requesting O365 Calendar scopes")
 
     au.set_defaults(func=_cmd_auth)
 
