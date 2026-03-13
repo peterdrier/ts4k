@@ -91,7 +91,7 @@ Reply drafts automatically set threading headers and blockquote the original mes
 
 ### Calendar
 
-Requires a Gmail source and Google Calendar API enabled in your Cloud project.
+Supports Google Calendar and O365 Calendar. Google Calendar requires a Gmail source; O365 Calendar requires an O365 mail source.
 
 ```bash
 ts4k cal setup                        # Discover and add calendar sources
@@ -141,7 +141,8 @@ ts4k (normalize → filter → format)
   |── Gmail Adapter     → Google Gmail API (direct)
   |── O365 Adapter      → Microsoft Graph API (direct, httpx)
   |── WhatsApp Adapter  → whatsapp-mcp (local SQLite)
-  |── Calendar Adapter  → Google Calendar API (direct)
+  |── GCal Adapter      → Google Calendar API (direct)
+  |── O365 Cal Adapter  → Microsoft Graph Calendar API (direct, httpx)
   '── Future adapters   → Slack, Teams, Telegram, ...
 ```
 

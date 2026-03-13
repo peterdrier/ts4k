@@ -283,7 +283,7 @@ async def cal(
     to_date: str | None = None,
     format: str = "pipe",
 ) -> str:
-    """Calendar: view events across Google Calendar sources.
+    """Calendar: view events across configured calendar sources (Google Calendar and O365).
 
     Views: today, tomorrow, week, next, range, event.
     Use ref with view='event' for full detail.

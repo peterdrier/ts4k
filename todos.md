@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-11T12:15 (v0.1.16)
+Last synced: 2026-03-11T23:21 (v0.1.17)
 
 ## P1 — Bugs / Reliability
 
@@ -46,11 +46,11 @@ Last synced: 2026-03-11T12:15 (v0.1.16)
 - [x] ~~Public release docs~~ — README, setup guides, usage docs (73543c3). Docker/contributing docs pending. *(Setup doc improvements tracked in [#5](https://github.com/peterdrier/ts4k/issues/5))*
 - [x] ~~Help system~~ — Human-readable `help` + LLM-optimized `skill` reference, both working. *(Improvements tracked in [#4](https://github.com/peterdrier/ts4k/issues/4))*
 
-## Phase 6 — Calendar (not started)
+## Phase 6 — Calendar
 
-- [ ] **Google Calendar adapter** — Wrap `@cocal/google-calendar-mcp`. New `src/ts4k/adapters/gcal.py`. (Phase 6a)
+- [x] ~~**Google Calendar adapter**~~ — Direct Google Calendar API via `src/ts4k/adapters/gcal.py`. List/create/update events, RSVP, recurring event support, adaptive time formatting. (Phase 6a, v0.1.17)
+- [x] ~~**`ts4k cal` command**~~ — `today`, `week`, `next`, `range`, `event`, `create`, `update`, `rsvp` subcommands with setup wizard. MCP tools: `cal`, `cal_create`, `cal_manage`. (Phase 6a, v0.1.17)
 - [ ] **O365 Calendar extension** — Add calendar tool calls to existing O365 adapter (same Graph auth). (Phase 6b)
-- [ ] **`ts4k cal` command** — `today`, `week`, `next`, `range`, `event` subcommands. Unified view across calendar sources. (Phase 6a-b)
 - [ ] **Attendee context enrichment** — Cross-reference calendar attendees with contacts map + message cache. The headline feature: "You have 3 unread from Sarah, last thread: Q1 budget review." (Phase 6c) *Depends on at least one calendar adapter (6a or 6b).*
 
 ## P4 — Future Adapters
@@ -87,3 +87,6 @@ Last synced: 2026-03-11T12:15 (v0.1.16)
 - [x] **Public release docs** — README, contributing guide, etc. (73543c3)
 - [x] **Intentions doc + deploy plan refresh** — Created `docs/intentions.md` as stable vision doc. Updated deploy-plan.md for direct API reality. (4b3769a)
 - [x] **Code review fixes** — O365 token filename mismatch, CLAUDE.md repo layout/platform list, base.py docstring, WhatsApp architecture in deploy-plan.
+- [x] **Google Calendar adapter (Phase 6a)** [v0.1.17] — GcalAdapter with list/create/update/RSVP, `cal` CLI subcommand with setup wizard, 3 MCP tools, help/skill docs updated. (15 commits, 24e6487)
+- [x] **Draft message creation** [#18](https://github.com/peterdrier/ts4k/issues/18) — Gmail + O365 draft creation with reply threading. (closed)
+- [x] **Non-destructive mailbox management** [#19](https://github.com/peterdrier/ts4k/issues/19) — Archive, label, read/unread, trash for Gmail + O365. (closed)

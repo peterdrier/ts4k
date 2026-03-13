@@ -72,7 +72,7 @@ def _ensure_sources() -> dict[str, dict[str, Any]]:
 
 def _make_adapter(
     prefix: str, cfg: dict[str, Any]
-) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GcalAdapter | None:
+) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GcalAdapter | O365CalAdapter | None:
     """Create an adapter instance from a source config entry."""
     provider = cfg.get("provider", "").lower()
 
@@ -867,7 +867,7 @@ def get_status(
     total_msgs = st.get("total_messages", 0)
     pct = stats.savings_pct()
 
-    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365"}
+    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "o365cal": "O365 Cal", "gcal": "GCal"}
 
     lines.append("")
     lines.append("Stats:")
@@ -883,7 +883,7 @@ def get_status(
         lines.append("  By source:")
         for src in sorted(all_cfg.keys()):
             provider = all_cfg[src].get("provider", "")
-            if provider == "gcal":
+            if provider in ("gcal", "o365cal"):
                 continue  # Calendar events tracked separately
             base_label = _provider_labels.get(provider, provider)
             label = base_label if src == provider[0:1] else f"{base_label}({src})"
@@ -1956,14 +1956,16 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    5. ts4k list --source g --since 2d           (verify)")
     lines.append("  O365:")
     lines.append("    1. Register app: Azure Portal > App registrations > New > add Mail.Read permission")
+    lines.append("       Permission GUIDs: https://learn.microsoft.com/en-us/graph/permissions-reference")
     lines.append("    2. ts4k src add o o365 client_id=<id> tenant_id=<tid>")
     lines.append("    3. ts4k auth o365                           (device code flow)")
     lines.append("    4. ts4k src discover                        (find mailboxes)")
     lines.append("    5. ts4k list --source o --since 2d          (verify)")
-    lines.append("  Google Calendar:")
-    lines.append("    1. Same Google OAuth credentials as Gmail (shared token)")
-    lines.append("    2. ts4k cal setup                           (discover calendars, auto-adds sources)")
-    lines.append("    3. ts4k cal                                 (verify — shows today's events)")
+    lines.append("  Calendar (Google & O365):")
+    lines.append("    1. Google: same OAuth credentials as Gmail (shared token)")
+    lines.append("    2. O365: same auth as O365 mail (calendar scopes added automatically)")
+    lines.append("    3. ts4k cal setup                           (discover calendars, auto-adds sources)")
+    lines.append("    4. ts4k cal                                 (verify — shows today's events)")
     lines.append("  WhatsApp:")
     lines.append('    1. ts4k src add w whatsapp mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
     lines.append("    2. ts4k list --source w --since 2d          (verify)")
@@ -2017,7 +2019,7 @@ def skill_reference(level: str = "basic") -> str:
             "cal create -s gc --title T --start DT --end DT [--attendees a@x,b@x]|Create event\n"
             "cal update REF [--title T] [--start DT] [--end DT]|Update event fields\n"
             "cal rsvp REF --status accepted|declined|tentative|RSVP to event\n"
-            "cal setup|Discover and add Google Calendar sources\n"
+            "cal setup|Discover and add calendar sources\n"
             "help|Human-readable help"
         )
     return (
@@ -2036,7 +2038,7 @@ def skill_reference(level: str = "basic") -> str:
         "cal create -s S --title T --start DT --end DT [--attendees a@b,c@d] [--location L]|Create event (requires level=draft/send)\n"
         "cal update REF [--title T] [--start DT] [--end DT]|Update event (requires level=modify)\n"
         "cal rsvp REF --status accepted|declined|tentative|RSVP to event (requires level=modify)\n"
-        "cal setup|Discover & add calendar sources from Gmail accounts\n"
+        "cal setup|Discover & add calendar sources from Gmail and O365 accounts\n"
         "status|Health + stats\n"
         "Access levels: readonly (default), modify, draft, send. Set: ts4k src add PREFIX PROVIDER level=modify\n"
         "Keys: user-defined labels (life, work). Each key tracks its own read position.\n"
@@ -2085,7 +2087,7 @@ async def _cal_fetch_events(
     time_max: str,
     count: int = 250,
 ) -> list[dict]:
-    """Fetch events from all gcal sources (or a specific one), merge by start time."""
+    """Fetch events from all calendar sources (or a specific one), merge by start time."""
     from ts4k.state import sources as src_mod
 
     all_sources = src_mod.list_all()

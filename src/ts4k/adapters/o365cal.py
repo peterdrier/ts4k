@@ -301,6 +301,14 @@ class O365CalAdapter(BaseAdapter):
 
     async def list_calendars(self) -> list[dict]:
         """List available calendars for the authenticated user."""
+        # Fetch user's timezone from mailbox settings
+        user_tz = "UTC"
+        try:
+            settings = await self._get("/me/mailboxSettings")
+            user_tz = settings.get("timeZone", "UTC")
+        except Exception:
+            pass  # Fall back to UTC if mailbox settings unavailable
+
         calendars: list[dict] = []
         next_link: str | None = None
 
@@ -319,6 +327,7 @@ class O365CalAdapter(BaseAdapter):
                     "summary": cal.get("name", cal["id"]),
                     "access_role": "owner" if cal.get("canEdit") else "reader",
                     "primary": cal.get("isDefaultCalendar", False),
+                    "timezone": user_tz,
                 })
 
             next_link = data.get("@odata.nextLink")

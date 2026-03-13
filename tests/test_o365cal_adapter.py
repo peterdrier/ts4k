@@ -257,13 +257,14 @@ class TestReadEvent:
 
 class TestListCalendars:
     async def test_returns_calendars(self, adapter: O365CalAdapter):
-        graph_resp = {
+        settings_resp = _mock_response({"timeZone": "Europe/Amsterdam"})
+        graph_resp = _mock_response({
             "value": [
                 {"id": "AAMkCal1", "name": "Calendar", "isDefaultCalendar": True, "canEdit": True, "owner": {"name": "User", "address": "user@contoso.com"}},
                 {"id": "AAMkCal2", "name": "Team Events", "isDefaultCalendar": False, "canEdit": True, "owner": {"name": "User", "address": "user@contoso.com"}},
             ],
-        }
-        adapter._client.get = AsyncMock(return_value=_mock_response(graph_resp))
+        })
+        adapter._client.get = AsyncMock(side_effect=[settings_resp, graph_resp])
 
         result = await adapter.list_calendars()
 
@@ -271,9 +272,12 @@ class TestListCalendars:
         assert result[0]["id"] == "AAMkCal1"
         assert result[0]["summary"] == "Calendar"
         assert result[0]["primary"] is True
+        assert result[0]["timezone"] == "Europe/Amsterdam"
         assert result[1]["primary"] is False
+        assert result[1]["timezone"] == "Europe/Amsterdam"
 
     async def test_pagination(self, adapter: O365CalAdapter):
+        settings_resp = _mock_response({"timeZone": "UTC"})
         page1 = _mock_response({
             "value": [{"id": "c1", "name": "A", "isDefaultCalendar": True, "canEdit": True}],
             "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendars?$skip=1",
@@ -281,10 +285,24 @@ class TestListCalendars:
         page2 = _mock_response({
             "value": [{"id": "c2", "name": "B", "isDefaultCalendar": False, "canEdit": True}],
         })
-        adapter._client.get = AsyncMock(side_effect=[page1, page2])
+        adapter._client.get = AsyncMock(side_effect=[settings_resp, page1, page2])
 
         result = await adapter.list_calendars()
         assert len(result) == 2
+
+    async def test_timezone_fallback_on_error(self, adapter: O365CalAdapter):
+        """Falls back to UTC when mailboxSettings fails."""
+        error_resp = MagicMock(spec=httpx.Response)
+        error_resp.status_code = 403
+        error_resp.raise_for_status.side_effect = httpx.HTTPStatusError("forbidden", request=MagicMock(), response=error_resp)
+        graph_resp = _mock_response({
+            "value": [{"id": "c1", "name": "Cal", "isDefaultCalendar": True, "canEdit": True}],
+        })
+        adapter._client.get = AsyncMock(side_effect=[error_resp, graph_resp])
+
+        result = await adapter.list_calendars()
+        assert len(result) == 1
+        assert result[0]["timezone"] == "UTC"
 
 
 class TestGraphRecurrenceToHuman:

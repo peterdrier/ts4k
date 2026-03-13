@@ -725,14 +725,20 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
             if email:
                 google_emails[email] = pfx
 
-    # Find O365 accounts from o365 sources
+    # Find O365 accounts from o365 sources (skip shared-mailbox sources)
     o365_accounts = {}
     for pfx, cfg in all_sources.items():
         if cfg.get("provider") == "o365":
-            email = cfg.get("mailbox") or "primary"
+            if cfg.get("mailbox"):
+                continue  # Shared mailbox — O365CalAdapter only supports /me
+            email = cfg.get("email") or ""
+            if not email:
+                # Resolve from MSAL token cache
+                from ts4k.commands import _resolve_o365_username
+                email = _resolve_o365_username(cfg) or ""
             client_id = cfg.get("client_id", "")
             tenant_id = cfg.get("tenant_id", "common")
-            if client_id:
+            if client_id and email:
                 o365_accounts[email] = (pfx, client_id, tenant_id)
 
     if not google_emails and not o365_accounts:
@@ -762,7 +768,7 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
             print(f"  {len(all_cals)}. {cal['summary']}" + (" (primary)" if cal.get("primary") else ""))
 
     for email, (o365_prefix, client_id, tenant_id) in o365_accounts.items():
-        email_display = email if email != "primary" else f"(primary, from source '{o365_prefix}')"
+        email_display = email
         print(f"\nFound O365 account: {email_display}")
         print(f"Fetching calendars...")
         try:
@@ -799,7 +805,7 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
 
     # Assign prefixes and add
     for cal in selected:
-        suggested = _suggest_cal_prefix(cal["summary"], all_sources)
+        suggested = _suggest_cal_prefix(cal["summary"], all_sources, provider=cal.get("provider", "gcal"))
         prefix = input(f"Prefix for '{cal['summary']}'? [{suggested}]: ").strip() or suggested
 
         if prefix in all_sources:
@@ -835,16 +841,16 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
     print(f"\nAdded {len(selected)} calendar source(s).")
 
 
-def _suggest_cal_prefix(name: str, existing: dict) -> str:
+def _suggest_cal_prefix(name: str, existing: dict, provider: str = "gcal") -> str:
     """Suggest a short prefix for a calendar name."""
-    base = "gc"
-    # Use first letter of each word after 'gc'
+    base = "oc" if provider == "o365cal" else "gc"
+    # Use first letter of each word after base
     words = name.lower().replace("@", " ").replace(".", " ").split()
     if words and words[0] not in ("primary", "my"):
         suffix = words[0][:1]
-        candidate = f"gc{suffix}"
+        candidate = f"{base}{suffix}"
     else:
-        candidate = "gc"
+        candidate = base
 
     # Avoid collisions
     if candidate not in existing:
