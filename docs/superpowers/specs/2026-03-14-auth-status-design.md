@@ -95,14 +95,30 @@ class TokenHealth:
 **Microsoft tokens:**
 
 - Load MSAL cache, call `acquire_token_silent()` (lightweight — local cache if fresh, refresh grant if expired)
-- `access_token` in result → `ok`. Parse `expires_in` to compute expiry
+- `access_token` in result → `ok`. Compute expiry as `datetime.now() + timedelta(seconds=result["expires_in"])` (MSAL returns relative seconds, not absolute timestamps)
 - Silent acquisition fails → `auth`
 - No cache file → `auth`
 - No `client_id` → `na`
 
 **WhatsApp:** Skip (session-based, no token to validate)
 
-**Calendar sources (gcal, o365cal):** Validate the same way as their mail counterpart — same token file, same auth mechanism. A gcal source can exist without a gmail source, so each is checked independently.
+**Calendar sources (gcal, o365cal):** Use the same token validation code as their mail counterpart, branching on provider:
+- `gcal` → Google token path (keyed on `email` from source config, token at `google/<email>/token.json`)
+- `o365cal` → Microsoft token path (keyed on `client_id` from source config, token at `microsoft/<client_id>/token_cache.json`)
+
+A gcal source can exist without a gmail source, so each is checked independently.
+
+**Provider → auth path mapping:**
+
+| Provider | Auth path | Key field |
+|----------|-----------|-----------|
+| `gmail` | Google | `email` |
+| `gcal` | Google | `email` |
+| `o365` | Microsoft | `client_id` |
+| `o365cal` | Microsoft | `client_id` |
+| `whatsapp` | None (skip) | — |
+
+**Edge case — prefix vs provider collision:** Source prefix is checked first. If a source is named `gmail`, `ts4k auth gmail` resolves to that source, not "all Gmail sources." This is intentional (prefix wins). Users shouldn't name sources after providers, but the behavior is deterministic.
 
 ### 3. Status Command Integration
 
