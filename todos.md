@@ -1,8 +1,9 @@
 # ts4k — Open Work
-Last synced: 2026-03-11T23:21 (v0.1.17)
+Last synced: 2026-03-15T01:00 (v0.1.18)
 
 ## P1 — Bugs / Reliability
 
+- [x] ~~**`status` reports false [ok] for expired tokens**~~ [#21](https://github.com/peterdrier/ts4k/issues/21) — Fixed: unified `ts4k auth [target]` command, token health validation with scope checking, `[ok]`/`[auth]`/`[error]`/`[na]` tags in status output. (v0.1.18)
 - [x] ~~**Deploy plan drift**~~ — deploy-plan.md updated: connector table reflects direct APIs for Gmail/O365, submodule scope reduced, s6 justification revised. Intentions doc created at `docs/intentions.md`. (codex-issues #3)
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
 - [x] ~~**CLI help cleanup**~~ [#4](https://github.com/peterdrier/ts4k/issues/4) — `-h` deduplicated with `aliases=`; cross-references `help`; auth errors link to setup docs; first-run `help` shows quick setup guide.
@@ -50,7 +51,7 @@ Last synced: 2026-03-11T23:21 (v0.1.17)
 
 - [x] ~~**Google Calendar adapter**~~ — Direct Google Calendar API via `src/ts4k/adapters/gcal.py`. List/create/update events, RSVP, recurring event support, adaptive time formatting. (Phase 6a, v0.1.17)
 - [x] ~~**`ts4k cal` command**~~ — `today`, `week`, `next`, `range`, `event`, `create`, `update`, `rsvp` subcommands with setup wizard. MCP tools: `cal`, `cal_create`, `cal_manage`. (Phase 6a, v0.1.17)
-- [ ] **O365 Calendar extension** — Add calendar tool calls to existing O365 adapter (same Graph auth). (Phase 6b)
+- [x] ~~**O365 Calendar extension**~~ — O365CalAdapter with list/create/update events, setup wizard, `list_o365_calendars`. (Phase 6b, 873f527)
 - [ ] **Attendee context enrichment** — Cross-reference calendar attendees with contacts map + message cache. The headline feature: "You have 3 unread from Sarah, last thread: Q1 budget review." (Phase 6c) *Depends on at least one calendar adapter (6a or 6b).*
 
 ## P4 — Future Adapters
@@ -88,5 +89,6 @@ Last synced: 2026-03-11T23:21 (v0.1.17)
 - [x] **Intentions doc + deploy plan refresh** — Created `docs/intentions.md` as stable vision doc. Updated deploy-plan.md for direct API reality. (4b3769a)
 - [x] **Code review fixes** — O365 token filename mismatch, CLAUDE.md repo layout/platform list, base.py docstring, WhatsApp architecture in deploy-plan.
 - [x] **Google Calendar adapter (Phase 6a)** [v0.1.17] — GcalAdapter with list/create/update/RSVP, `cal` CLI subcommand with setup wizard, 3 MCP tools, help/skill docs updated. (15 commits, 24e6487)
+- [x] **O365 Calendar adapter (Phase 6b)** — O365CalAdapter wired into calendar commands, setup wizard, `list_o365_calendars` command. (873f527)
 - [x] **Draft message creation** [#18](https://github.com/peterdrier/ts4k/issues/18) — Gmail + O365 draft creation with reply threading. (closed)
 - [x] **Non-destructive mailbox management** [#19](https://github.com/peterdrier/ts4k/issues/19) — Archive, label, read/unread, trash for Gmail + O365. (closed)
