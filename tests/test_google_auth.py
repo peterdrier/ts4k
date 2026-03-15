@@ -12,6 +12,7 @@ from ts4k.auth.google import (
     _resolve_client_secret,
     _token_path,
     get_credentials,
+    validate_token,
 )
 
 
@@ -193,6 +194,97 @@ class TestGetCredentials:
                 str(shared),
                 ["https://www.googleapis.com/auth/gmail.readonly"],
             )
+
+
+# ---------------------------------------------------------------------------
+# Token health validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateToken:
+    """Tests for validate_token() — lightweight check without browser flow."""
+
+    def test_valid_token(self, tmp_path):
+        """Valid, non-expired token returns ok status."""
+        from unittest.mock import MagicMock, patch
+        from datetime import datetime, timezone, timedelta
+
+        email = "alice@test.com"
+        token_file = tmp_path / "google" / email / "token.json"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text('{"token": "x", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        mock_creds.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+        with patch("ts4k.auth.google.Credentials.from_authorized_user_file", return_value=mock_creds):
+            result = validate_token(email, config_dir=tmp_path)
+
+        assert result.status == "ok"
+        assert result.expiry is not None
+        assert len(result.scopes) > 0
+
+    def test_expired_token_refresh_succeeds(self, tmp_path):
+        """Expired token with successful refresh returns ok."""
+        from unittest.mock import MagicMock, patch
+        from datetime import datetime, timezone, timedelta
+
+        email = "alice@test.com"
+        token_file = tmp_path / "google" / email / "token.json"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text('{"token": "x", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "refresh-tok"
+        mock_creds.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        mock_creds.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+        mock_creds.to_json.return_value = '{"token": "refreshed"}'
+
+        with patch("ts4k.auth.google.Credentials.from_authorized_user_file", return_value=mock_creds):
+            result = validate_token(email, config_dir=tmp_path)
+
+        assert result.status == "ok"
+        mock_creds.refresh.assert_called_once()
+
+    def test_expired_token_refresh_fails(self, tmp_path):
+        """Expired token with failed refresh returns auth status."""
+        from unittest.mock import MagicMock, patch
+
+        email = "alice@test.com"
+        token_file = tmp_path / "google" / email / "token.json"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text('{"token": "x", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "refresh-tok"
+        mock_creds.refresh.side_effect = Exception("Token revoked")
+
+        with patch("ts4k.auth.google.Credentials.from_authorized_user_file", return_value=mock_creds):
+            result = validate_token(email, config_dir=tmp_path)
+
+        assert result.status == "auth"
+        assert "revoked" in result.detail.lower() or "expired" in result.detail.lower()
+
+    def test_no_token_file(self, tmp_path):
+        """Missing token file returns auth status."""
+        result = validate_token("alice@test.com", config_dir=tmp_path)
+        assert result.status == "auth"
+
+    def test_corrupt_token_file(self, tmp_path):
+        """Corrupt token file returns error status."""
+        email = "alice@test.com"
+        token_file = tmp_path / "google" / email / "token.json"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text("not json at all{{{")
+
+        result = validate_token(email, config_dir=tmp_path)
+        assert result.status == "error"
 
 
 def test_build_calendar_service(monkeypatch):
