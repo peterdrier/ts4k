@@ -929,9 +929,7 @@ def _auth_check(targets: list[tuple[str, dict]]) -> None:
         provider = cfg.get("provider", "?")
         detail = cfg.get("email") or cfg.get("mailbox") or ""
         suffix = ""
-        if health.status == "ok" and health.expiry:
-            suffix = f" expires {health.expiry.strftime('%Y-%m-%d %H:%M')}"
-        elif health.status == "auth":
+        if health.status == "auth":
             suffix = f" — ts4k auth {prefix}"
             any_bad = True
         elif health.status == "error":
@@ -1011,9 +1009,6 @@ def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
         scope_labels = sorted(s.rsplit("/", 1)[-1] for s in granted)
         print(f"Scopes: {', '.join(scope_labels)}")
 
-        # Show expiry
-        if creds.expiry:
-            print(f"Expires: {creds.expiry.strftime('%Y-%m-%d %H:%M')}")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
@@ -1027,7 +1022,6 @@ def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
     from ts4k.auth.microsoft import get_credentials as get_ms_credentials
     from ts4k.core.levels import scopes_for, parse_level, AccessLevel
     from ts4k.state import sources as src_mod
-    from datetime import datetime, timedelta, timezone
 
     client_id = cfg.get("client_id", "")
     tenant_id = cfg.get("tenant_id", "common") or "common"
@@ -1059,10 +1053,6 @@ def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
         creds = get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes or None)
         print(f"Authenticated {prefix} (client {client_id[:8]}...) successfully.")
 
-        # Show expiry
-        expires_in = creds.get("expires_in", 3600)
-        expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-        print(f"Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
     except Exception as exc:
         print(f"Authentication failed for {prefix}: {exc}")
         sys.exit(1)

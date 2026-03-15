@@ -76,7 +76,6 @@ class TestStatusTokenHealth:
 
         result = commands.get_status()
         assert "[ok]" in result
-        assert "expires" in result
 
     @patch("ts4k.commands.check_token_health")
     @patch("ts4k.commands._ensure_sources")

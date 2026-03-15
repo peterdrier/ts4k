@@ -820,9 +820,7 @@ def get_status(
             health = check_token_health(prefix, cfg)
             tag = health.status  # ok, auth, error, na
             suffix = ""
-            if health.status == "ok" and health.expiry:
-                suffix = f" expires {health.expiry.strftime('%Y-%m-%d %H:%M')}"
-            elif health.status == "auth":
+            if health.status == "auth":
                 suffix = f" — ts4k auth {prefix}"
             elif health.status == "error":
                 suffix = f" — {health.detail}"
