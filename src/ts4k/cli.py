@@ -981,24 +981,24 @@ def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
         print(f"Error: source '{prefix}' has no email configured.")
         sys.exit(1)
 
-    # Build scopes from source level
+    # Build scopes: union of ALL Google sources for this email.
+    # Gmail and gcal share one token per email, so authing any source
+    # must request scopes for all sources to avoid overwriting.
     source_level = cfg.get("level")
     provider = cfg.get("provider", "gmail")
     scopes = scopes_for(provider, parse_level(source_level)) or []
 
-    # Include calendar scopes by default
-    if not no_calendar:
-        cal_provider = "gcal" if provider in ("gmail", "gcal") else provider
-        cal_readonly_scopes = scopes_for(cal_provider, AccessLevel.READONLY)
-        scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
+    all_sources = src_mod.list_all()
+    for pfx, src_cfg in all_sources.items():
+        src_provider = src_cfg.get("provider", "")
+        if src_provider in ("gmail", "gcal") and src_cfg.get("email") == email:
+            src_scopes = scopes_for(src_provider, parse_level(src_cfg.get("level")))
+            scopes.extend(s for s in src_scopes if s not in scopes)
 
-        # Collect higher gcal scopes if gcal sources exist for this email
-        all_sources = src_mod.list_all()
-        for pfx, src_cfg in all_sources.items():
-            if src_cfg.get("provider") == "gcal" and src_cfg.get("email") == email:
-                gcal_level = parse_level(src_cfg.get("level"))
-                gcal_scopes = scopes_for("gcal", gcal_level)
-                scopes.extend(s for s in gcal_scopes if s not in scopes)
+    # Include calendar readonly by default (enables cal setup without re-auth)
+    if not no_calendar:
+        cal_readonly = scopes_for("gcal", AccessLevel.READONLY)
+        scopes.extend(s for s in cal_readonly if s not in scopes)
 
     try:
         creds = get_credentials(email, scopes=scopes or None)
