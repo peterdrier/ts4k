@@ -1890,6 +1890,39 @@ def llm_help() -> str:
     return "\n".join(lines)
 
 
+def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
+    """Check token health for a source, dispatching by provider.
+
+    Returns a TokenHealth with status ok/auth/error/na.
+    WhatsApp returns ok (session-based, no token to validate).
+    Unknown providers return na.
+
+    Uses lazy imports so patches on validate_token() work correctly in tests.
+    """
+    from ts4k.auth.health import TokenHealth
+
+    provider = cfg.get("provider", "").lower()
+
+    if provider == "whatsapp":
+        return TokenHealth(status="ok", expiry=None, scopes=[], detail="session-based")
+
+    if provider in ("gmail", "gcal"):
+        from ts4k.auth.google import validate_token
+        email = cfg.get("email", "")
+        if not email:
+            return TokenHealth(status="na", expiry=None, scopes=[], detail="no email configured")
+        return validate_token(email)
+
+    if provider in ("o365", "o365cal"):
+        from ts4k.auth.microsoft import validate_token
+        client_id = cfg.get("client_id", "")
+        tenant_id = cfg.get("tenant_id", "common") or "common"
+        username = cfg.get("mailbox") or cfg.get("email")
+        return validate_token(client_id, tenant_id=tenant_id, username=username)
+
+    return TokenHealth(status="na", expiry=None, scopes=[], detail=f"unknown provider: {provider}")
+
+
 def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
     """Return prefixes of sources that likely need (re-)authentication."""
     from ts4k import state
