@@ -1869,12 +1869,7 @@ def llm_help() -> str:
         if needs_auth:
             lines.append("ACTION REQUIRED: Re-authenticate stale sources:")
             for prefix in needs_auth:
-                cfg = all_cfg[prefix]
-                provider = cfg.get("provider", "")
-                if provider == "gmail":
-                    lines.append(f"  ts4k auth gmail {cfg.get('email', '<email>')}")
-                elif provider == "o365":
-                    lines.append(f"  ts4k auth o365 {prefix}")
+                lines.append(f"  ts4k auth {prefix}")
             lines.append("")
 
         _append_commands(lines)
@@ -1928,23 +1923,11 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
 
 def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
     """Return prefixes of sources that likely need (re-)authentication."""
-    from ts4k import state
-
-    config_dir = state.get_config_dir().path
     needs: list[str] = []
     for prefix, cfg in all_cfg.items():
-        provider = cfg.get("provider", "").lower()
-        if provider == "gmail":
-            email = cfg.get("email", "")
-            token = config_dir / "google" / email / "token.json"
-            if not token.is_file():
-                needs.append(prefix)
-        elif provider == "o365":
-            client_id = cfg.get("client_id", "")
-            token = config_dir / "microsoft" / client_id / "token_cache.json"
-            if not token.is_file():
-                needs.append(prefix)
-        # WhatsApp doesn't have a token file — auth is session-based
+        health = check_token_health(prefix, cfg)
+        if health.status in ("auth", "error"):
+            needs.append(prefix)
     return needs
 
 
