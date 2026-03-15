@@ -816,14 +816,17 @@ def get_status(
                     detail = username
                     extra = {k: v for k, v in cfg.items() if k != "provider"}
                     sources.add(prefix, provider=provider, **extra, email=username)
-            ok = True
-            if provider == "whatsapp":
-                cwd = cfg.get("mcp_cwd", "")
-                ok = bool(cwd) and os.path.isdir(cwd)
-            elif provider == "o365":
-                ok = bool(cfg.get("mailbox") or cfg.get("client_id"))
-            status_str = "ok" if ok else "not found"
-            lines.append(f"  {prefix}: {provider} [{status_str}] ({detail})")
+            health = check_token_health(prefix, cfg)
+            tag = health.status  # ok, auth, error, na
+            suffix = ""
+            if health.status == "ok" and health.expiry:
+                suffix = f" expires {health.expiry.strftime('%Y-%m-%d %H:%M')}"
+            elif health.status == "auth":
+                suffix = f" — ts4k auth {prefix}"
+            elif health.status == "error":
+                suffix = f" — {health.detail}"
+
+            lines.append(f"  {prefix:<4}{provider:<10}{detail:<30}[{tag}]{suffix}")
     else:
         lines.append("  (none — run: ts4k src add <prefix> <provider> ...)")
 
