@@ -28,9 +28,20 @@ Each messaging platform needs a one-time setup. One provider is enough to get st
 
 ### 2. Check it works
 
-```bash
-ts4k status --live    # Shows connected providers and mailbox counts
 ```
+$ ts4k status --live
+Sources:
+  g   gmail     you@gmail.com        [ok]
+  o   o365      you@company.com      [ok]
+  w   whatsapp  /path/to/whatsapp    [ok]
+
+Mailbox (g, gmail):
+  LABEL|TOTAL|UNREAD
+  Inbox|1423|42
+  Primary|890|12
+```
+
+Each source gets a short ID (`g`, `o`, `w`) that you use in commands to target that account.
 
 ### 3. Read your messages
 
@@ -53,10 +64,12 @@ ts4k thread 2        # Read full thread
 
 ### Reading messages
 
+The key (e.g. `life`, `work`) in `whatsnew` names a watermark — ts4k remembers the last timestamp per key so each call returns only new messages. The key also scopes ref-number mapping, so `get 1` resolves to the right message from that session.
+
 ```bash
 ts4k whatsnew life               # New messages since last check (keyed watermark)
 ts4k updates --since 2d          # Messages from last 2 days (stateless)
-ts4k updates --source g          # Gmail only
+ts4k updates --source g          # Only this source (e.g. your Gmail account "g")
 ts4k get g:19abc123              # Read message by native ID
 ts4k list -q "budget" -n 10     # Search messages
 ts4k overview                    # Hierarchical cache summary
@@ -78,7 +91,7 @@ ts4k cal event 3                 # Full detail for ref #3
 
 ### Managing messages
 
-Requires `modify` access level or higher. All actions are non-destructive and reversible.
+Requires `modify` [access level](#access-levels) or higher. All actions are non-destructive and reversible.
 
 ```bash
 ts4k manage archive g:abc123              # Archive a message
@@ -92,7 +105,7 @@ ts4k manage archive g:abc --dry-run       # Preview without acting
 
 ### Creating drafts
 
-Requires `draft` access level. ts4k **never sends messages** — drafts appear in your mailbox for manual review.
+Requires `draft` [access level](#access-levels). ts4k **never sends messages** — drafts appear in your mailbox for manual review.
 
 ```bash
 ts4k draft create -s g --to alice@x.com --subject "Hi" --body "Hello"
@@ -105,12 +118,12 @@ Reply drafts automatically set threading headers and blockquote the original mes
 
 Each source has a permission level that controls what's allowed. The default is `readonly` — you opt in to more:
 
-| Level | What it unlocks |
-|-------|-----------------|
-| `readonly` | Read, list, search |
-| `modify` | + archive, label, mark read/unread, trash, RSVP |
-| `draft` | + create draft messages, create events (no attendees) |
-| `send` | + create events with attendees (calendar only) |
+| Level | Email | Calendar |
+|-------|-------|----------|
+| `readonly` | Read, list, search | View events |
+| `modify` | + archive, label, mark read/unread, trash | + RSVP |
+| `draft` | + create draft messages | + create events (no attendees) |
+| `send` | *(not implemented)* | + create events with attendees |
 
 Set the level when adding a source:
 
