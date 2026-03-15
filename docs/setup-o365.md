@@ -97,7 +97,7 @@ This tells ts4k: "I have a mailbox nicknamed `o`, it's on Microsoft 365, and her
 ### Step 5: Sign In
 
 ```bash
-ts4k auth o365
+ts4k auth o
 ```
 
 This opens a device code flow — you'll see something like:
@@ -123,14 +123,14 @@ You don't need another app registration. ts4k inherits the client_id and tenant_
 
 ```bash
 ts4k src add ow o365 mailbox=peter@work.com    # work account
-ts4k auth o365 ow                               # sign in to it
+ts4k auth ow                               # sign in to it
 ```
 
 Add as many as you need:
 
 ```bash
 ts4k src add os o365 mailbox=shared@team.com   # shared mailbox
-ts4k auth o365 os
+ts4k auth os
 ```
 
 Query them separately or together:
@@ -165,5 +165,5 @@ Shared mailboxes require two things:
 Once delegate access is granted, add the shared mailbox to ts4k:
 ```bash
 ts4k src add oh o365 mailbox=help@example.com
-ts4k auth o365 oh
+ts4k auth oh
 ```

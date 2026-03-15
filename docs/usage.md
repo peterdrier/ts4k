@@ -168,15 +168,15 @@ ts4k src discover
 ### Gmail
 
 ```bash
-ts4k auth gmail alice@gmail.com            # OAuth flow (opens browser)
-ts4k auth gmail alice@gmail.com --check    # Verify credentials
+ts4k auth g                    # OAuth flow (opens browser)
+ts4k auth g --check            # Verify credentials
 ```
 
 ### O365
 
 ```bash
-ts4k auth o365 --client-id abc123 --tenant-id common    # Device code flow
-ts4k auth o365 --client-id abc123 --check                # Verify credentials
+ts4k auth o                    # Device code flow
+ts4k auth o --check            # Verify credentials
 ```
 
 WhatsApp has no authentication step — it reads from a local database.

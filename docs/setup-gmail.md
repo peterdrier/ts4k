@@ -71,7 +71,7 @@ ts4k src list
 ## Step 6: Authenticate
 
 ```bash
-ts4k auth gmail alice@gmail.com
+ts4k auth g
 ```
 
 This opens your browser for Google's OAuth consent flow. Sign in, grant read-only access to Gmail, and the token is saved to:
@@ -87,7 +87,7 @@ The token refreshes automatically on subsequent uses. You won't need to re-authe
 If you're running ts4k on a headless machine (e.g. a NUC over SSH), the browser can't open automatically. ts4k will fall back to a copy-paste flow:
 
 ```
-$ ts4k auth gmail alice@gmail.com
+$ ts4k auth g
 No browser available. Open this URL in any browser:
 
   https://accounts.google.com/o/oauth2/auth?client_id=...&scope=...&redirect_uri=http://localhost:8085/&...
@@ -116,7 +116,7 @@ No SSH tunnels, no file transfers, no extra flags needed.
 ts4k wn --source g
 ```
 
-You should see your recent Gmail messages in pipe-delimited format. If you get an auth error, run `ts4k auth gmail alice@gmail.com` again.
+You should see your recent Gmail messages in pipe-delimited format. If you get an auth error, run `ts4k auth g` again.
 
 Check overall status:
 
@@ -132,8 +132,8 @@ Use different prefixes for each account:
 ts4k src add g  gmail email=alice@gmail.com        # personal
 ts4k src add gw gmail email=alice@company.com      # work
 
-ts4k auth gmail alice@gmail.com
-ts4k auth gmail alice@company.com
+ts4k auth g
+ts4k auth gw
 ```
 
 Now you can query them separately or together:
@@ -156,7 +156,7 @@ ts4k requests `gmail.readonly` — it can read messages but cannot send, delete,
 This is normal for apps in Testing mode. Click **Continue** (or **Advanced > Go to ts4k**). Only test users you added in Step 3 can authorize.
 
 **"Token has been expired or revoked"**
-Run `ts4k auth gmail alice@gmail.com` to re-authenticate.
+Run `ts4k auth g` to re-authenticate.
 
 **"File not found: client_secret.json"**
 Make sure the file is at `~/.config/ts4k/google/client_secret.json` or `~/.config/ts4k/google/{email}/client_secret.json`.
