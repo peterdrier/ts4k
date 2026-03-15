@@ -200,7 +200,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  filter show|add-*|rm-*|reset                Manage filters               [f]")
     print("  preload --source S [--query Q] [--bg]       Paginate history into cache")
     print("  cache stats|clear [--source S] [--stale]    Manage message cache")
-    print("  auth gmail|o365                              Authenticate with a platform")
+    print("  auth [source|provider]                       Authenticate or validate tokens")
     print("  skill                                       Agent-oriented command reference")
     print()
     print("Calendar:")
@@ -221,7 +221,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
         print()
         print("Quick setup:")
         print("  1. ts4k src add g gmail email=you@gmail.com")
-        print("  2. ts4k auth gmail you@gmail.com")
+        print("  2. ts4k auth g")
         print("  3. ts4k list --since 2d")
 
 
