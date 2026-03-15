@@ -60,8 +60,14 @@ def _token_path(email: str, config_dir: Path) -> Path:
 def validate_token(
     email: str,
     config_dir: Path | None = None,
+    required_scopes: list[str] | None = None,
 ) -> TokenHealth:
     """Check token health without triggering interactive auth flows.
+
+    When *required_scopes* is provided, also verifies that the token's
+    granted scopes are a superset of the required scopes.  A token that
+    is valid but under-scoped returns ``"auth"`` (needs re-auth to add
+    the missing scopes).
 
     Returns a TokenHealth with status:
       - "ok": token is valid (possibly after a silent refresh)
@@ -91,6 +97,17 @@ def validate_token(
             expiry=None,
             scopes=[],
             detail=f"token load failed: {exc}",
+        )
+
+    # Check scope coverage before checking validity
+    if required_scopes and not set(required_scopes).issubset(set(granted)):
+        missing = set(required_scopes) - set(granted)
+        short = [s.rsplit("/", 1)[-1] for s in missing]
+        return TokenHealth(
+            status="auth",
+            expiry=creds.expiry,
+            scopes=list(granted),
+            detail=f"missing scopes: {', '.join(short)}",
         )
 
     if creds.valid:

@@ -803,7 +803,8 @@ def get_status(
     all_cfg = _ensure_sources()
     lines: list[str] = []
 
-    # Sources
+    # Sources — check_token_health() may attempt network-based token refresh
+    # for expired tokens. This is intentional: accurate status > fast status.
     lines.append("Sources:")
     if all_cfg:
         for prefix, cfg in sorted(all_cfg.items()):
@@ -1909,14 +1910,20 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         email = cfg.get("email", "")
         if not email:
             return TokenHealth(status="na", expiry=None, scopes=[], detail="no email configured")
-        return validate_token(email)
+        # Pass required scopes so we can detect under-scoped tokens
+        from ts4k.core.levels import scopes_for, parse_level
+        required = scopes_for(provider, parse_level(cfg.get("level")))
+        return validate_token(email, required_scopes=required or None)
 
     if provider in ("o365", "o365cal"):
         from ts4k.auth.microsoft import validate_token
         client_id = cfg.get("client_id", "")
         tenant_id = cfg.get("tenant_id", "common") or "common"
         username = cfg.get("mailbox") or cfg.get("email")
-        return validate_token(client_id, tenant_id=tenant_id, username=username)
+        # Pass source-specific scopes instead of defaulting to mail-read
+        from ts4k.core.levels import scopes_for, parse_level
+        required = scopes_for(provider, parse_level(cfg.get("level")))
+        return validate_token(client_id, tenant_id=tenant_id, scopes=required or None, username=username)
 
     return TokenHealth(status="na", expiry=None, scopes=[], detail=f"unknown provider: {provider}")
 

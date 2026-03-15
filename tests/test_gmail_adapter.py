@@ -951,7 +951,7 @@ class TestGmailAdapterIntegration:
         pytest -m integration tests/test_gmail_adapter.py -v
 
     Prerequisites:
-    - Valid Google OAuth credentials (run ``ts4k auth gmail <email>`` first)
+    - Valid Google OAuth credentials (run ``ts4k auth <prefix>`` first)
     - Set env var TS4K_TEST_EMAIL to the Google email to use
     """
 

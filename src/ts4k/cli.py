@@ -886,7 +886,7 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             else:
                 print(f"Error: '{target}' is not a known source prefix or provider.")
                 print(f"Sources: {', '.join(all_sources.keys()) or '(none)'}")
-                print(f"Providers: gmail, o365")
+                print(f"Providers: gmail, o365 (gcal/o365cal share auth with gmail/o365)")
                 sys.exit(1)
     elif check_only:
         # --check with no target -> check all
@@ -944,18 +944,32 @@ def _auth_check(targets: list[tuple[str, dict]]) -> None:
 
 
 def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> None:
-    """Run interactive auth for one or more sources."""
+    """Run interactive auth for one or more sources.
+
+    Processes all targets even if some fail — reports errors inline
+    and exits 1 at the end if any source failed.
+    """
+    any_failed = False
     for prefix, cfg in targets:
         provider = cfg.get("provider", "").lower()
 
-        if provider in ("gmail", "gcal"):
-            _auth_google(prefix, cfg, no_calendar)
-        elif provider in ("o365", "o365cal"):
-            _auth_o365(prefix, cfg, no_calendar)
-        elif provider == "whatsapp":
-            print(f"  {prefix}: whatsapp — session-based, no auth needed")
-        else:
-            print(f"  {prefix}: unknown provider '{provider}' — skipping")
+        try:
+            if provider in ("gmail", "gcal"):
+                _auth_google(prefix, cfg, no_calendar)
+            elif provider in ("o365", "o365cal"):
+                _auth_o365(prefix, cfg, no_calendar)
+            elif provider == "whatsapp":
+                print(f"  {prefix}: whatsapp — session-based, no auth needed")
+            else:
+                print(f"  {prefix}: unknown provider '{provider}' — skipping")
+        except SystemExit:
+            any_failed = True
+        except Exception as exc:
+            print(f"  {prefix}: error — {exc}")
+            any_failed = True
+
+    if any_failed:
+        sys.exit(1)
 
 
 def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
@@ -1002,7 +1016,6 @@ def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
             print(f"Expires: {creds.expiry.strftime('%Y-%m-%d %H:%M')}")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
-        print(f"Run: ts4k auth {prefix}")
         sys.exit(1)
     except Exception as exc:
         print(f"Authentication failed for {prefix}: {exc}")
