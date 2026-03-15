@@ -862,152 +862,196 @@ def _suggest_cal_prefix(name: str, existing: dict, provider: str = "gcal") -> st
 
 
 def _cmd_auth(args: argparse.Namespace) -> None:
-    """Handle the auth command — authenticate with a platform."""
-    platform = getattr(args, "platform", None)
+    """Handle the unified auth command — authenticate or validate tokens."""
+    from ts4k.state import sources as src_mod
 
-    if platform == "gmail":
-        email = getattr(args, "email", None)
-        if not email:
-            print("Error: email is required.")
-            sys.exit(1)
+    target = getattr(args, "target", None)
+    check_only = getattr(args, "check", False)
+    no_calendar = getattr(args, "no_calendar", False)
 
-        from ts4k.auth.google import get_credentials
-        from ts4k.core.levels import scopes_for, parse_level
+    all_sources = src_mod.list_all()
 
-        check_only = getattr(args, "check", False)
-        no_calendar = getattr(args, "no_calendar", False)
-
-        # Look up source config to get the correct scopes for this email's level
-        gmail_sources = sources.by_provider("gmail")
-        source_level = None
-        for _pfx, cfg in gmail_sources.items():
-            if cfg.get("email") == email:
-                source_level = cfg.get("level")
-                break
-        scopes = scopes_for("gmail", parse_level(source_level)) or None
-
-        # Include calendar scopes by default (enables `cal setup` without
-        # a separate re-auth). Skip with --no-calendar.
-        if not no_calendar:
-            from ts4k.core.levels import AccessLevel
-            cal_readonly_scopes = scopes_for("gcal", AccessLevel.READONLY)
-            if scopes is None:
-                scopes = list(cal_readonly_scopes)
-            else:
-                scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
-
-            # Collect higher gcal scopes if gcal sources already exist
-            all_sources = sources.list_all()
-            for pfx, cfg in all_sources.items():
-                if cfg.get("provider") == "gcal" and cfg.get("email") == email:
-                    gcal_level = parse_level(cfg.get("level"))
-                    gcal_scopes = scopes_for("gcal", gcal_level)
-                    scopes.extend(s for s in gcal_scopes if s not in scopes)
-
-        try:
-            creds = get_credentials(email, scopes=scopes)
-            if check_only:
-                if creds.valid:
-                    print(f"Credentials valid for {email}.")
-                else:
-                    print(f"Credentials exist but are not valid for {email}.")
-                    sys.exit(1)
-            else:
-                print(f"Authenticated {email} successfully.")
-
-            # Show granted scopes
-            granted = set(creds.scopes or [])
-            scope_labels = []
-            for s in sorted(granted):
-                # Show short human-readable labels
-                label = s.rsplit("/", 1)[-1]
-                scope_labels.append(label)
-            print(f"Scopes: {', '.join(scope_labels)}")
-        except FileNotFoundError as exc:
-            if check_only:
-                print(f"No credentials found for {email}.")
-                print(f"Run: ts4k auth gmail {email}")
-            else:
-                print(f"Error: {exc}")
-            sys.exit(1)
-        except Exception as exc:
-            print(f"Authentication failed: {exc}")
-            sys.exit(1)
-    elif platform == "o365":
-        source_prefix = getattr(args, "source", None)
-
-        from ts4k.state import sources as src_mod
-
-        if source_prefix:
-            cfg = src_mod.get(source_prefix)
-            if not cfg or cfg.get("provider") != "o365":
-                print(f"Error: source {source_prefix!r} is not an O365 source.")
-                print("Check your sources: ts4k src list")
-                sys.exit(1)
+    # Resolve target -> list of (prefix, cfg) pairs to process
+    targets: list[tuple[str, dict]] = []
+    if target:
+        # 1. Try as source prefix
+        cfg = src_mod.get(target)
+        if cfg:
+            targets = [(target, cfg)]
         else:
-            o365_sources = src_mod.by_provider("o365")
-            if not o365_sources:
-                print("Error: no O365 sources configured.")
-                print("Add one first: ts4k src add o o365 client_id=<id> tenant_id=<tid>")
+            # 2. Try as provider name
+            by_prov = src_mod.by_provider(target)
+            if by_prov:
+                targets = list(by_prov.items())
+            else:
+                print(f"Error: '{target}' is not a known source prefix or provider.")
+                print(f"Sources: {', '.join(all_sources.keys()) or '(none)'}")
+                print(f"Providers: gmail, o365")
                 sys.exit(1)
-            source_prefix = next(iter(o365_sources))
-            cfg = o365_sources[source_prefix]
-            if len(o365_sources) > 1:
-                print(f"Multiple O365 sources found, using {source_prefix!r}.")
-                print(f"Specify one explicitly: ts4k auth o365 <prefix>")
-
-        client_id = cfg.get("client_id", "")
-        tenant_id = cfg.get("tenant_id", "common") or "common"
-
-        if not client_id:
-            print(f"Error: source {source_prefix!r} is missing client_id.")
-            print(f"Fix it: ts4k src add {source_prefix} o365 client_id=<id> tenant_id=<tid>")
-            sys.exit(1)
-
-        from ts4k.auth.microsoft import get_credentials as get_ms_credentials
-        from ts4k.core.levels import scopes_for, parse_level, AccessLevel
-
-        check_only = getattr(args, "check", False)
-
-        # Start with mail scopes from source level
-        source_level = cfg.get("level")
-        scopes = scopes_for("o365", parse_level(source_level)) or None
-
-        # Include calendar scopes by default (enables `cal setup` without
-        # a separate re-auth). Skip with --no-calendar.
-        no_calendar = getattr(args, "no_calendar", False)
-        if not no_calendar:
-            cal_readonly_scopes = scopes_for("o365cal", AccessLevel.READONLY)
-            if scopes is None:
-                scopes = list(cal_readonly_scopes)
-            else:
-                scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
-
-            # Collect higher o365cal scopes if o365cal sources already exist
-            all_sources_cfg = src_mod.list_all()
-            for pfx, src_cfg in all_sources_cfg.items():
-                if src_cfg.get("provider") == "o365cal" and src_cfg.get("client_id") == client_id:
-                    cal_level = parse_level(src_cfg.get("level"))
-                    cal_scopes = scopes_for("o365cal", cal_level)
-                    scopes.extend(s for s in cal_scopes if s not in scopes)
-
-        try:
-            creds = get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes)
-            if check_only:
-                if "access_token" in creds:
-                    print(f"Credentials valid for client {client_id}.")
-                else:
-                    print(f"Credentials exist but are not valid for client {client_id}.")
-                    sys.exit(1)
-            else:
-                print(f"Authenticated client {client_id} successfully.")
-        except Exception as exc:
-            print(f"Authentication failed: {exc}")
-            sys.exit(1)
+    elif check_only:
+        # --check with no target -> check all
+        targets = list(all_sources.items())
     else:
-        print("Usage: ts4k auth gmail <email>")
-        print("       ts4k auth o365          (authenticates first O365 source)")
-        print("       ts4k auth o365 <prefix> (authenticates a specific O365 source)")
+        # No target, no --check -> show help
+        print("Usage: ts4k auth [target] [--check] [--no-calendar]")
+        print()
+        print("Target resolution:")
+        print("  1. Source prefix first (g, gn, o, oc) — auths that specific source")
+        print("  2. Provider name (gmail, o365) — auths all sources of that provider")
+        print("  3. Omitted + --check — validates all sources")
+        print("  4. Omitted without --check — shows this help")
+        print()
+        print("Examples:")
+        print("  ts4k auth g                  Auth source 'g' (resolves email from config)")
+        print("  ts4k auth gmail              Auth all Gmail sources")
+        print("  ts4k auth o                  Auth source 'o' (O365, device code flow)")
+        print("  ts4k auth --check            Validate all sources, no re-auth")
+        print("  ts4k auth g --check          Validate just source 'g'")
+        sys.exit(0)
+
+    if not targets:
+        print("No sources configured. Add one first: ts4k src add <prefix> <provider> ...")
+        sys.exit(1)
+
+    if check_only:
+        _auth_check(targets)
+    else:
+        _auth_interactive(targets, no_calendar)
+
+
+def _auth_check(targets: list[tuple[str, dict]]) -> None:
+    """Validate tokens for one or more sources — no interactive flows."""
+    from ts4k.commands import check_token_health
+
+    any_bad = False
+    for prefix, cfg in targets:
+        health = check_token_health(prefix, cfg)
+        provider = cfg.get("provider", "?")
+        detail = cfg.get("email") or cfg.get("mailbox") or ""
+        suffix = ""
+        if health.status == "ok" and health.expiry:
+            suffix = f" expires {health.expiry.strftime('%Y-%m-%d %H:%M')}"
+        elif health.status == "auth":
+            suffix = f" — ts4k auth {prefix}"
+            any_bad = True
+        elif health.status == "error":
+            suffix = f" — {health.detail}"
+            any_bad = True
+        print(f"  {prefix:<4}{provider:<10}{detail:<30}[{health.status}]{suffix}")
+
+    if any_bad:
+        sys.exit(1)
+
+
+def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> None:
+    """Run interactive auth for one or more sources."""
+    for prefix, cfg in targets:
+        provider = cfg.get("provider", "").lower()
+
+        if provider in ("gmail", "gcal"):
+            _auth_google(prefix, cfg, no_calendar)
+        elif provider in ("o365", "o365cal"):
+            _auth_o365(prefix, cfg, no_calendar)
+        elif provider == "whatsapp":
+            print(f"  {prefix}: whatsapp — session-based, no auth needed")
+        else:
+            print(f"  {prefix}: unknown provider '{provider}' — skipping")
+
+
+def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
+    """Authenticate a Google source (gmail or gcal)."""
+    from ts4k.auth.google import get_credentials
+    from ts4k.core.levels import scopes_for, parse_level, AccessLevel
+    from ts4k.state import sources as src_mod
+
+    email = cfg.get("email", "")
+    if not email:
+        print(f"Error: source '{prefix}' has no email configured.")
+        sys.exit(1)
+
+    # Build scopes from source level
+    source_level = cfg.get("level")
+    provider = cfg.get("provider", "gmail")
+    scopes = scopes_for(provider, parse_level(source_level)) or []
+
+    # Include calendar scopes by default
+    if not no_calendar:
+        cal_provider = "gcal" if provider in ("gmail", "gcal") else provider
+        cal_readonly_scopes = scopes_for(cal_provider, AccessLevel.READONLY)
+        scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
+
+        # Collect higher gcal scopes if gcal sources exist for this email
+        all_sources = src_mod.list_all()
+        for pfx, src_cfg in all_sources.items():
+            if src_cfg.get("provider") == "gcal" and src_cfg.get("email") == email:
+                gcal_level = parse_level(src_cfg.get("level"))
+                gcal_scopes = scopes_for("gcal", gcal_level)
+                scopes.extend(s for s in gcal_scopes if s not in scopes)
+
+    try:
+        creds = get_credentials(email, scopes=scopes or None)
+        print(f"Authenticated {prefix} ({email}) successfully.")
+
+        # Show granted scopes
+        granted = set(creds.scopes or [])
+        scope_labels = sorted(s.rsplit("/", 1)[-1] for s in granted)
+        print(f"Scopes: {', '.join(scope_labels)}")
+
+        # Show expiry
+        if creds.expiry:
+            print(f"Expires: {creds.expiry.strftime('%Y-%m-%d %H:%M')}")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
+        print(f"Run: ts4k auth {prefix}")
+        sys.exit(1)
+    except Exception as exc:
+        print(f"Authentication failed for {prefix}: {exc}")
+        sys.exit(1)
+
+
+def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
+    """Authenticate an O365 source (o365 or o365cal)."""
+    from ts4k.auth.microsoft import get_credentials as get_ms_credentials
+    from ts4k.core.levels import scopes_for, parse_level, AccessLevel
+    from ts4k.state import sources as src_mod
+    from datetime import datetime, timedelta, timezone
+
+    client_id = cfg.get("client_id", "")
+    tenant_id = cfg.get("tenant_id", "common") or "common"
+
+    if not client_id:
+        print(f"Error: source '{prefix}' is missing client_id.")
+        print(f"Fix it: ts4k src add {prefix} o365 client_id=<id> tenant_id=<tid>")
+        sys.exit(1)
+
+    # Build scopes from source level
+    source_level = cfg.get("level")
+    provider = cfg.get("provider", "o365")
+    scopes = scopes_for(provider, parse_level(source_level)) or []
+
+    # Include calendar scopes by default
+    if not no_calendar:
+        cal_readonly_scopes = scopes_for("o365cal", AccessLevel.READONLY)
+        scopes.extend(s for s in cal_readonly_scopes if s not in scopes)
+
+        # Collect higher o365cal scopes if they exist for this client_id
+        all_sources = src_mod.list_all()
+        for pfx, src_cfg in all_sources.items():
+            if src_cfg.get("provider") == "o365cal" and src_cfg.get("client_id") == client_id:
+                cal_level = parse_level(src_cfg.get("level"))
+                cal_scopes = scopes_for("o365cal", cal_level)
+                scopes.extend(s for s in cal_scopes if s not in scopes)
+
+    try:
+        creds = get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes or None)
+        print(f"Authenticated {prefix} (client {client_id[:8]}...) successfully.")
+
+        # Show expiry
+        expires_in = creds.get("expires_in", 3600)
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        print(f"Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
+    except Exception as exc:
+        print(f"Authentication failed for {prefix}: {exc}")
         sys.exit(1)
 
 
@@ -1523,29 +1567,31 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- auth ---
     au = subparsers.add_parser(
         "auth",
-        help="Authenticate with a platform",
-        description="Authenticate with a messaging platform. Gmail uses browser-based OAuth; O365 uses device code flow.",
+        help="Authenticate or validate tokens",
+        description=(
+            "Authenticate with a messaging platform or validate existing tokens.\n\n"
+            "Target resolution:\n"
+            "  1. Source prefix first (g, gn, o, oc) — auths that specific source\n"
+            "  2. Provider name (gmail, o365) — auths all sources of that provider\n"
+            "  3. Omitted + --check — validates all sources\n"
+            "  4. Omitted without --check — shows this help"
+        ),
         epilog=(
             "examples:\n"
-            "  ts4k auth gmail you@gmail.com    # OAuth in browser\n"
-            "  ts4k auth gmail you@gmail.com --check  # verify creds\n"
-            "  ts4k auth o365                   # device code flow\n"
-            "  ts4k auth o365 o --check         # verify O365 creds"
+            "  ts4k auth g                  Auth source 'g' (resolves email from config)\n"
+            "  ts4k auth gmail              Auth all Gmail sources\n"
+            "  ts4k auth o                  Auth source 'o' (O365, device code flow)\n"
+            "  ts4k auth --check            Validate all sources, no re-auth\n"
+            "  ts4k auth g --check          Validate just source 'g'"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    au_sub = au.add_subparsers(dest="platform")
-
-    au_gmail = au_sub.add_parser("gmail", help="Authenticate with Gmail (opens browser)")
-    au_gmail.add_argument("email", help="Google email to authenticate")
-    au_gmail.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
-    au_gmail.add_argument("--no-calendar", action="store_true", help="Skip requesting Google Calendar scopes")
-
-    au_o365 = au_sub.add_parser("o365", help="Authenticate with Microsoft 365 (device code flow)")
-    au_o365.add_argument("source", nargs="?", default=None, help="Source prefix to authenticate (e.g. 'o'). Uses first O365 source if omitted.")
-    au_o365.add_argument("--check", action="store_true", help="Verify credentials without re-auth")
-    au_o365.add_argument("--no-calendar", action="store_true", help="Skip requesting O365 Calendar scopes")
-
+    au.add_argument("target", nargs="?", default=None,
+                    help="Source prefix (g, o) or provider name (gmail, o365)")
+    au.add_argument("--check", action="store_true",
+                    help="Validate tokens without re-auth")
+    au.add_argument("--no-calendar", action="store_true",
+                    help="Skip requesting calendar scopes")
     au.set_defaults(func=_cmd_auth)
 
     # --- skill ---
