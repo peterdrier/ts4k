@@ -15,8 +15,12 @@ import logging
 import sys
 from pathlib import Path
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import msal
+
+from ts4k.auth.health import TokenHealth
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +132,77 @@ def _find_account(accounts: list[dict], username: str | None) -> dict:
             if acct.get("username", "").lower() == needle:
                 return acct
     return accounts[0]
+
+
+def validate_token(
+    client_id: str,
+    tenant_id: str = "common",
+    scopes: list[str] | None = None,
+    config_dir: Path | None = None,
+    username: str | None = None,
+) -> TokenHealth:
+    """Check token health via silent acquisition — no device code flow.
+
+    Returns a TokenHealth with status:
+      - "ok": silent token acquisition succeeded
+      - "auth": no cached token or refresh failed — needs re-auth
+      - "na": client_id is empty (not configured)
+      - "error": unexpected error during validation
+    """
+    if not client_id:
+        return TokenHealth(status="na", expiry=None, scopes=[], detail="no client_id")
+
+    scopes = scopes or GRAPH_MAIL_READ_SCOPES
+    config_dir = config_dir or _default_config_dir()
+
+    cache_file = _cache_path(client_id, config_dir)
+    if not cache_file.is_file():
+        return TokenHealth(
+            status="auth", expiry=None, scopes=[], detail="no token cache"
+        )
+
+    try:
+        cache = msal.SerializableTokenCache()
+        cache.deserialize(cache_file.read_text(encoding="utf-8"))
+
+        authority = f"https://login.microsoftonline.com/{tenant_id}"
+        app = msal.PublicClientApplication(
+            client_id, authority=authority, token_cache=cache
+        )
+
+        accounts = app.get_accounts()
+        if not accounts:
+            return TokenHealth(
+                status="auth", expiry=None, scopes=[], detail="no cached accounts"
+            )
+
+        account = _find_account(accounts, username)
+        result = app.acquire_token_silent(scopes, account=account)
+
+        if result and "access_token" in result:
+            _persist_cache(cache, cache_file)
+            expires_in = result.get("expires_in", 3600)
+            expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            return TokenHealth(
+                status="ok",
+                expiry=expiry,
+                scopes=scopes,
+                detail="valid",
+            )
+
+        error_desc = ""
+        if isinstance(result, dict):
+            error_desc = result.get("error_description", "")
+        return TokenHealth(
+            status="auth",
+            expiry=None,
+            scopes=scopes,
+            detail=f"silent acquisition failed: {error_desc}".strip(),
+        )
+    except Exception as exc:
+        return TokenHealth(
+            status="error", expiry=None, scopes=[], detail=f"validation error: {exc}"
+        )
 
 
 def _persist_cache(cache: msal.SerializableTokenCache, cache_file: Path) -> None:

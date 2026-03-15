@@ -15,6 +15,7 @@ from ts4k.auth.microsoft import (
     _cache_path,
     build_graph_client,
     get_credentials,
+    validate_token,
 )
 
 
@@ -204,3 +205,74 @@ class TestBuildGraphClient:
             "cid", tenant_id="common", scopes=None, config_dir=Path("/custom"),
             username=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# validate_token
+# ---------------------------------------------------------------------------
+
+
+class TestValidateToken:
+    """Tests for validate_token() — silent check without device code flow."""
+
+    @patch("ts4k.auth.microsoft.msal.PublicClientApplication")
+    def test_valid_token(self, mock_app_cls, tmp_path):
+        """Silent acquisition succeeds — returns ok with expiry."""
+        mock_app = MagicMock()
+        mock_app_cls.return_value = mock_app
+        mock_app.get_accounts.return_value = [{"username": "user@contoso.com"}]
+        mock_app.acquire_token_silent.return_value = {
+            "access_token": "tok-123",
+            "expires_in": 3600,
+        }
+
+        mock_cache = MagicMock()
+        mock_cache.has_state_changed = False
+
+        cache_file = tmp_path / "microsoft" / "test-client" / "token_cache.json"
+        cache_file.parent.mkdir(parents=True)
+        cache_file.write_text("{}")
+
+        with patch("ts4k.auth.microsoft.msal.SerializableTokenCache", return_value=mock_cache):
+            result = validate_token(
+                "test-client",
+                tenant_id="test-tenant",
+                config_dir=tmp_path,
+            )
+
+        assert result.status == "ok"
+        assert result.expiry is not None
+
+    @patch("ts4k.auth.microsoft.msal.PublicClientApplication")
+    def test_silent_fails(self, mock_app_cls, tmp_path):
+        """Silent acquisition returns None — needs re-auth."""
+        mock_app = MagicMock()
+        mock_app_cls.return_value = mock_app
+        mock_app.get_accounts.return_value = [{"username": "user@contoso.com"}]
+        mock_app.acquire_token_silent.return_value = None
+
+        mock_cache = MagicMock()
+        mock_cache.has_state_changed = False
+
+        cache_file = tmp_path / "microsoft" / "test-client" / "token_cache.json"
+        cache_file.parent.mkdir(parents=True)
+        cache_file.write_text("{}")
+
+        with patch("ts4k.auth.microsoft.msal.SerializableTokenCache", return_value=mock_cache):
+            result = validate_token(
+                "test-client",
+                tenant_id="test-tenant",
+                config_dir=tmp_path,
+            )
+
+        assert result.status == "auth"
+
+    def test_no_cache_file(self, tmp_path):
+        """No token cache file — returns auth."""
+        result = validate_token("test-client", config_dir=tmp_path)
+        assert result.status == "auth"
+
+    def test_no_client_id(self, tmp_path):
+        """Empty client_id — returns na."""
+        result = validate_token("", config_dir=tmp_path)
+        assert result.status == "na"
