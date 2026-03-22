@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-03-22T09:00
+Last synced: 2026-03-22T09:00 (v0.1.20)
 
 ## P1 — Bugs / Reliability
 
