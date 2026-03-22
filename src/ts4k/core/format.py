@@ -445,7 +445,7 @@ def _size(msg: dict) -> str:
     """Estimate size from body or return pre-computed size."""
     if "size" in msg:
         return msg["size"]
-    return estimate_size(msg.get("body", ""))
+    return estimate_size(msg.get("body", "") or msg.get("snippet", ""))
 
 
 # ---------------------------------------------------------------------------
