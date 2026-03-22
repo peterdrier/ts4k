@@ -1,8 +1,11 @@
 # ts4k — Open Work
-Last synced: 2026-03-15T01:00 (v0.1.18)
+Last synced: 2026-03-22T09:00
 
 ## P1 — Bugs / Reliability
 
+- [ ] **whatsnew watermark skips unread messages** [#23](https://github.com/peterdrier/ts4k/issues/23) — When `count < total new`, watermark advances past all messages but only returns `count`. Permanently skips the rest.
+- [ ] **O365 bodyPreview cached as full body** [#24](https://github.com/peterdrier/ts4k/issues/24) — O365 adapter stores `bodyPreview` as `body`; cache treats it as full content. `get` returns truncated snippet instead of real body.
+- [ ] **count applied before filters under-fills results** [#25](https://github.com/peterdrier/ts4k/issues/25) — Sort+slice to `count` happens before `apply_filters()`. Filtered messages consume result slots, returning fewer actionable messages than requested.
 - [x] ~~**`status` reports false [ok] for expired tokens**~~ [#21](https://github.com/peterdrier/ts4k/issues/21) — Fixed: unified `ts4k auth [target]` command, token health validation with scope checking, `[ok]`/`[auth]`/`[error]`/`[na]` tags in status output. (v0.1.18)
 - [x] ~~**Deploy plan drift**~~ — deploy-plan.md updated: connector table reflects direct APIs for Gmail/O365, submodule scope reduced, s6 justification revised. Intentions doc created at `docs/intentions.md`. (codex-issues #3)
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
@@ -56,6 +59,7 @@ Last synced: 2026-03-15T01:00 (v0.1.18)
 
 ## P4 — Future Adapters
 
+- [ ] **GitHub adapter** [#22](https://github.com/peterdrier/ts4k/issues/22) — Notifications, issues, PRs via GitHub REST API. Category-based filtering (ci, review, mention, dependabot). Source prefix `gh:`, PAT auth.
 - [ ] Slack adapter (`slack_sdk`)
 - [ ] Teams Chat adapter (reuse Graph auth)
 - [ ] Telegram adapter (`python-telegram-bot` or `Telethon`)
@@ -64,7 +68,6 @@ Last synced: 2026-03-15T01:00 (v0.1.18)
 
 - [ ] Bundled OAuth credentials for easier onboarding
 - [ ] Discord adapter
-- [ ] GitHub Notifications adapter
 
 ## Recently Completed
 

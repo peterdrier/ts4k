@@ -445,13 +445,13 @@ async def _fetch_messages(
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
 
-    total_fetched = len(all_messages)
-    truncated = all_messages[:count]
-    has_more = total_fetched > count
-    remaining = total_fetched - count if has_more else 0
-
     if filter:
-        truncated = apply_filters(truncated, filters.get_config())
+        all_messages = apply_filters(all_messages, filters.get_config())
+
+    total_available = len(all_messages)
+    truncated = all_messages[:count]
+    has_more = total_available > count
+    remaining = total_available - count if has_more else 0
 
     if not truncated:
         return CommandResult(error="No new messages.")
@@ -554,14 +554,29 @@ async def whatsnew(
         domain=domain,
     )
 
-    # Advance watermarks per source to newest returned message
+    # Advance watermarks per source.
+    # When has_more is True, advance to the OLDEST returned message per
+    # source so the next call picks up where this one left off (some
+    # overlap, but no permanent message loss).  When all messages were
+    # returned, advance to the newest (standard behaviour).
     if result._messages:
-        new_watermarks: dict[str, str] = {}
-        for msg in result._messages:
-            src = msg.get("source", "")
-            date = msg.get("date", "")
-            if src and date and date > new_watermarks.get(src, ""):
-                new_watermarks[src] = date
+        if result.has_more:
+            # Oldest per source — prevents skipping unreturned messages
+            new_watermarks: dict[str, str] = {}
+            for msg in result._messages:
+                src = msg.get("source", "")
+                date = msg.get("date", "")
+                if src and date:
+                    if src not in new_watermarks or date < new_watermarks[src]:
+                        new_watermarks[src] = date
+        else:
+            # All messages returned — safe to advance to newest
+            new_watermarks = {}
+            for msg in result._messages:
+                src = msg.get("source", "")
+                date = msg.get("date", "")
+                if src and date and date > new_watermarks.get(src, ""):
+                    new_watermarks[src] = date
         if new_watermarks:
             keyed_watermarks.update(key, new_watermarks)
 
@@ -706,10 +721,11 @@ async def list_messages(
         return CommandResult(error="No messages found.")
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
-    all_messages = all_messages[:count]
 
     if filter:
         all_messages = apply_filters(all_messages, filters.get_config())
+
+    all_messages = all_messages[:count]
 
     if not all_messages:
         return CommandResult(error="No messages found.")
