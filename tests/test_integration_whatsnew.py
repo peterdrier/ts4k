@@ -155,6 +155,113 @@ class TestIndependentKeys:
         assert peter_wm
 
 
+class TestWatermarkDoesNotSkip:
+    """Bug #23: watermark must not skip unreturned messages when count < total."""
+
+    @pytest.mark.asyncio
+    async def test_watermark_advances_to_oldest_when_truncated(self, monkeypatch):
+        """When has_more, watermark advances to oldest returned (not newest)."""
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            if prefix != "g":
+                return []
+            # 10 messages from g only, count will be 3
+            return _fake_messages("g", 10, base_hour=10)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        result = await commands.whatsnew(key="skip_test", source="g", count=3)
+        assert result.has_more is True
+
+        # 10 messages: hours 10-19, sorted newest-first, top 3 = 19, 18, 17
+        # Oldest returned = T17:00:00Z
+        wm_g = kwm.get("skip_test", "g")
+        assert wm_g is not None
+        assert "T17:" in wm_g  # oldest returned, not T19 (newest)
+
+    @pytest.mark.asyncio
+    async def test_watermark_advances_to_newest_when_all_returned(self, monkeypatch):
+        """When all messages returned, watermark advances to newest (standard)."""
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            if prefix != "g":
+                return []
+            return _fake_messages("g", 3, base_hour=10)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        result = await commands.whatsnew(key="all_test", source="g", count=20)
+        assert result.has_more is False
+
+        wm_g = kwm.get("all_test", "g")
+        assert wm_g is not None
+        assert "T12:" in wm_g  # newest of 3 messages (hours 10, 11, 12)
+
+    @pytest.mark.asyncio
+    async def test_per_source_watermark_when_mixed(self, monkeypatch):
+        """Source A truncated → oldest; source B fully returned → newest."""
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            if prefix == "g":
+                # 10 messages at hours 1-10, will be truncated
+                return _fake_messages("g", 10, base_hour=1)
+            if prefix == "o":
+                # 2 messages at hours 20-21, newer than all g — fully returned
+                return _fake_messages("o", 2, base_hour=20)
+            return []
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        # count=5: top 5 = o:msg1(T21), o:msg0(T20), g:msg9(T10), g:msg8(T09), g:msg7(T08)
+        # g has 7 more dropped, o has 0 dropped
+        result = await commands.whatsnew(key="mixed_test", count=5)
+        assert result.has_more is True
+
+        # g had messages truncated → watermark at oldest returned (T08)
+        wm_g = kwm.get("mixed_test", "g")
+        assert wm_g is not None
+        assert "T08:" in wm_g
+        # o was fully returned → watermark at newest (T21)
+        wm_o = kwm.get("mixed_test", "o")
+        assert wm_o is not None
+        assert "T21:" in wm_o
+
+
+class TestFilterBeforeCount:
+    """Bug #25: filters must apply before count truncation."""
+
+    @pytest.mark.asyncio
+    async def test_filter_does_not_consume_count_slots(self, monkeypatch):
+        """Requesting count=5 with filters returns 5 passing messages, not fewer."""
+        from ts4k.state import filters as filters_mod
+
+        def make_messages(prefix, n, base_hour=10):
+            msgs = []
+            for i in range(n):
+                msgs.append({
+                    "id": f"{prefix}:msg{i}",
+                    "source": prefix,
+                    "thread_id": f"{prefix}:t{i}",
+                    "from": "newsletter@spam.com" if i % 2 == 0 else f"real{i}@test.com",
+                    "subject": f"Subj {i}",
+                    "date": f"2026-03-08T{base_hour + i:02d}:00:00Z",
+                    "body": f"Body {i}",
+                })
+            return msgs
+
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            # 20 messages, half from newsletter@spam.com
+            return make_messages(prefix, 20, base_hour=1)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        # Set up a skip filter for newsletter@spam.com
+        filter_cfg = filters_mod.get_config()
+        filter_cfg.setdefault("skip_senders", []).append("newsletter@spam.com")
+        monkeypatch.setattr(filters_mod, "get_config", lambda: filter_cfg)
+
+        result = await commands.updates(since="1d", count=5, filter=True)
+        # Should get 5 real messages, not 5 minus filtered ones
+        assert result.messages_processed == 5
+
+
 class TestMultiSourceFetch:
     @pytest.mark.asyncio
     async def test_messages_sorted_newest_first(self, monkeypatch):

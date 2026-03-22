@@ -127,7 +127,7 @@ def _list_response_to_dicts(data: dict | list, prefix: str) -> list[dict]:
             "from": _format_from(msg),
             "subject": msg.get("subject", ""),
             "date": msg.get("receivedDateTime", ""),
-            "body": msg.get("bodyPreview", ""),
+            "snippet": msg.get("bodyPreview", ""),
             "has_attachments": msg.get("hasAttachments", False),
         })
 

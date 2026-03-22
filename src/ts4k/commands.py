@@ -57,6 +57,7 @@ class CommandResult:
     has_more: bool = False
     remaining: int = 0
     _messages: list[dict] | None = None  # internal: raw messages for watermark tracking
+    _truncated_sources: set[str] | None = None  # internal: sources with messages dropped by count
     _continuation_hint: str = ""  # internal: actionable "get more" command
 
 
@@ -445,13 +446,22 @@ async def _fetch_messages(
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
 
-    total_fetched = len(all_messages)
-    truncated = all_messages[:count]
-    has_more = total_fetched > count
-    remaining = total_fetched - count if has_more else 0
-
     if filter:
-        truncated = apply_filters(truncated, filters.get_config())
+        all_messages = apply_filters(all_messages, filters.get_config())
+
+    total_available = len(all_messages)
+    truncated = all_messages[:count]
+    has_more = total_available > count
+    remaining = total_available - count if has_more else 0
+
+    # Track which sources had messages dropped by count truncation
+    truncated_sources: set[str] = set()
+    if has_more:
+        returned_ids = {m.get("id") for m in truncated}
+        for m in all_messages[count:]:
+            src = m.get("source", "")
+            if src:
+                truncated_sources.add(src)
 
     if not truncated:
         return CommandResult(error="No new messages.")
@@ -488,6 +498,7 @@ async def _fetch_messages(
         has_more=has_more,
         remaining=remaining,
         _messages=truncated,
+        _truncated_sources=truncated_sources or None,
         _continuation_hint=continuation_hint,
     )
 
@@ -554,14 +565,31 @@ async def whatsnew(
         domain=domain,
     )
 
-    # Advance watermarks per source to newest returned message
+    # Advance watermarks per source.
+    # Sources that had messages dropped by count truncation advance to the
+    # OLDEST returned message (some overlap, no permanent loss).  Sources
+    # that were fully returned advance to the NEWEST (standard behaviour).
     if result._messages:
-        new_watermarks: dict[str, str] = {}
+        truncated_srcs = result._truncated_sources or set()
+        oldest: dict[str, str] = {}
+        newest: dict[str, str] = {}
         for msg in result._messages:
             src = msg.get("source", "")
             date = msg.get("date", "")
-            if src and date and date > new_watermarks.get(src, ""):
-                new_watermarks[src] = date
+            if not src or not date:
+                continue
+            if src not in oldest or date < oldest[src]:
+                oldest[src] = date
+            if date > newest.get(src, ""):
+                newest[src] = date
+
+        new_watermarks: dict[str, str] = {}
+        for src in {*oldest, *newest}:
+            if src in truncated_srcs:
+                new_watermarks[src] = oldest[src]
+            else:
+                new_watermarks[src] = newest[src]
+
         if new_watermarks:
             keyed_watermarks.update(key, new_watermarks)
 
@@ -706,10 +734,11 @@ async def list_messages(
         return CommandResult(error="No messages found.")
 
     all_messages.sort(key=lambda m: m.get("date", ""), reverse=True)
-    all_messages = all_messages[:count]
 
     if filter:
         all_messages = apply_filters(all_messages, filters.get_config())
+
+    all_messages = all_messages[:count]
 
     if not all_messages:
         return CommandResult(error="No messages found.")

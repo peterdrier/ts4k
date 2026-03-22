@@ -233,9 +233,10 @@ class TestListResponseToDicts:
         results = _list_response_to_dicts(LIST_RESPONSE_DATA, "oa")
         assert results[0]["date"] == "2026-02-20T14:30:00Z"
 
-    def test_extracts_body_preview(self):
+    def test_extracts_body_preview_as_snippet(self):
         results = _list_response_to_dicts(LIST_RESPONSE_DATA, "oa")
-        assert "Q4 budget numbers" in results[0]["body"]
+        assert "Q4 budget numbers" in results[0]["snippet"]
+        assert "body" not in results[0]  # bodyPreview must not pollute body
 
     def test_extracts_has_attachments(self):
         results = _list_response_to_dicts(LIST_RESPONSE_DATA, "oa")
