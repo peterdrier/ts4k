@@ -195,6 +195,34 @@ class TestWatermarkDoesNotSkip:
         assert wm_g is not None
         assert "T12:" in wm_g  # newest of 3 messages (hours 10, 11, 12)
 
+    @pytest.mark.asyncio
+    async def test_per_source_watermark_when_mixed(self, monkeypatch):
+        """Source A truncated → oldest; source B fully returned → newest."""
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            if prefix == "g":
+                # 10 messages at hours 1-10, will be truncated
+                return _fake_messages("g", 10, base_hour=1)
+            if prefix == "o":
+                # 2 messages at hours 20-21, newer than all g — fully returned
+                return _fake_messages("o", 2, base_hour=20)
+            return []
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        # count=5: top 5 = o:msg1(T21), o:msg0(T20), g:msg9(T10), g:msg8(T09), g:msg7(T08)
+        # g has 7 more dropped, o has 0 dropped
+        result = await commands.whatsnew(key="mixed_test", count=5)
+        assert result.has_more is True
+
+        # g had messages truncated → watermark at oldest returned (T08)
+        wm_g = kwm.get("mixed_test", "g")
+        assert wm_g is not None
+        assert "T08:" in wm_g
+        # o was fully returned → watermark at newest (T21)
+        wm_o = kwm.get("mixed_test", "o")
+        assert wm_o is not None
+        assert "T21:" in wm_o
+
 
 class TestFilterBeforeCount:
     """Bug #25: filters must apply before count truncation."""
