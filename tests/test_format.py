@@ -141,7 +141,7 @@ class TestPipeFormatListing:
     def test_has_header_row(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe")
         lines = result.split("\n")
-        assert lines[0] == "SOURCE|FROM|SUBJECT|DATE|ID|SIZE"
+        assert lines[0] == " |SOURCE|FROM|SUBJECT|DATE|ID|SIZE"
 
     def test_correct_row_count(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe")
@@ -168,13 +168,14 @@ class TestPipeFormatListing:
         result = format_listing(SAMPLE_MESSAGES[:1], "pipe")
         lines = result.split("\n")
         fields = lines[1].split("|")
-        assert fields[0] == "g"
-        assert fields[1] == "alice@acme.com"
-        assert fields[2] == "Meeting tomorrow"
-        assert fields[3] == "2026-02-20T09:15:00Z"
-        assert fields[4] == "g:18f6a2b3c4e5f6a7"
+        # fields[0] is unread marker column (space for read/unknown)
+        assert fields[1] == "g"
+        assert fields[2] == "alice@acme.com"
+        assert fields[3] == "Meeting tomorrow"
+        assert fields[4] == "2026-02-20T09:15:00Z"
+        assert fields[5] == "g:18f6a2b3c4e5f6a7"
         # Size should be present and non-empty
-        assert fields[5]
+        assert fields[6]
 
     def test_missing_fields_are_empty(self):
         """Messages with missing fields should have empty pipe segments."""
@@ -182,17 +183,17 @@ class TestPipeFormatListing:
         result = format_listing(sparse, "pipe")
         lines = result.split("\n")
         assert len(lines) == 2
-        # Should have 6 pipe-separated fields even if empty
-        assert lines[1].count("|") == 5
+        # Should have 7 pipe-separated fields (unread marker + 6 data fields)
+        assert lines[1].count("|") == 6
 
     def test_alias_p(self):
         """Format alias 'p' should work."""
         result = format_listing(SAMPLE_MESSAGES[:1], "p")
-        assert "SOURCE|FROM" in result
+        assert "|SOURCE|FROM" in result
 
     def test_empty_list(self):
         result = format_listing([], "pipe")
-        assert result == "SOURCE|FROM|SUBJECT|DATE|ID|SIZE"
+        assert result == " |SOURCE|FROM|SUBJECT|DATE|ID|SIZE"
 
 
 class TestPipeFormatMessage:
@@ -420,13 +421,13 @@ class TestSourceInference:
         msg = [{"id": "g:abc123", "from": "a@b.com", "subject": "X", "date": "2026-01-01", "body": "test"}]
         result = format_listing(msg, "pipe")
         lines = result.split("\n")
-        assert lines[1].startswith("g|")
+        assert "|g|" in lines[1]
 
     def test_explicit_source_takes_precedence(self):
         msg = [{"id": "g:abc123", "source": "gmail", "from": "a@b.com", "subject": "X", "date": "2026-01-01", "body": ""}]
         result = format_listing(msg, "pipe")
         lines = result.split("\n")
-        assert lines[1].startswith("gmail|")
+        assert "|gmail|" in lines[1]
 
 
 # ---------------------------------------------------------------------------
@@ -464,17 +465,17 @@ class TestPipeFormatWithRefs:
     def test_header_has_ref_column(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
         header = result.split("\n")[0]
-        assert header.startswith("N|SOURCE|")
+        assert "|N|SOURCE|" in header
         assert "ID" not in header
 
-    def test_ref_in_first_column(self):
+    def test_ref_in_second_column(self):
         result = format_listing(SAMPLE_MESSAGES[:1], "pipe", ref_map=SAMPLE_REF_MAP)
         lines = result.split("\n")
-        # Data lines start with a digit (bare ref number)
-        data_lines = [l for l in lines[1:] if l and not l.startswith("---") and not l.startswith("N|")]
+        data_lines = [l for l in lines[1:] if l and not l.startswith("---") and not l.startswith(" |N|")]
         assert data_lines
         fields = data_lines[0].split("|")
-        assert fields[0] == "1"
+        # fields[0] is unread marker, fields[1] is ref number
+        assert fields[1] == "1"
 
     def test_no_full_id_in_ref_mode(self):
         result = format_listing(SAMPLE_MESSAGES, "pipe", ref_map=SAMPLE_REF_MAP)
@@ -632,48 +633,48 @@ class TestUnreadFlagPipeLegacy:
     def test_unread_message_has_star(self):
         result = format_listing(UNREAD_MESSAGES[:1], "pipe")
         lines = result.split("\n")
-        assert lines[1].startswith("*g|")
+        assert lines[1].startswith("*|g|")
 
     def test_read_message_no_star(self):
         result = format_listing(UNREAD_MESSAGES[1:2], "pipe")
         lines = result.split("\n")
-        assert lines[1].startswith("g|")
+        assert lines[1].startswith(" |g|")
 
     def test_missing_unread_no_star(self):
-        """Messages without unread key get no marker."""
+        """Messages without unread key get space marker."""
         result = format_listing(UNREAD_MESSAGES[2:3], "pipe")
         lines = result.split("\n")
-        assert lines[1].startswith("w|")
+        assert lines[1].startswith(" |w|")
 
     def test_mixed_unread_and_read(self):
         result = format_listing(UNREAD_MESSAGES, "pipe")
         lines = result.split("\n")
         data_lines = lines[1:]
-        assert data_lines[0].startswith("*g|")   # unread
-        assert data_lines[1].startswith("g|")     # read
-        assert data_lines[2].startswith("w|")     # no flag
+        assert data_lines[0].startswith("*|g|")   # unread
+        assert data_lines[1].startswith(" |g|")    # read
+        assert data_lines[2].startswith(" |w|")    # no flag
 
 
 class TestUnreadFlagPipeRefs:
     """Test * marker for unread messages in ref-based pipe format."""
 
-    def test_unread_message_has_star_before_ref(self):
+    def test_unread_message_has_star_own_column(self):
         result = format_listing(UNREAD_MESSAGES[:1], "pipe", ref_map=UNREAD_REF_MAP)
         lines = result.split("\n")
         data_lines = [l for l in lines[1:] if l and not l.startswith("---")]
-        assert data_lines[0].startswith("*1|")
+        assert data_lines[0].startswith("*|1|")
 
-    def test_read_message_no_star(self):
+    def test_read_message_space_marker(self):
         result = format_listing(UNREAD_MESSAGES[1:2], "pipe", ref_map=UNREAD_REF_MAP)
         lines = result.split("\n")
         data_lines = [l for l in lines[1:] if l and not l.startswith("---")]
-        assert data_lines[0].startswith("2|")
+        assert data_lines[0].startswith(" |2|")
 
-    def test_missing_unread_no_star(self):
+    def test_missing_unread_space_marker(self):
         result = format_listing(UNREAD_MESSAGES[2:3], "pipe", ref_map=UNREAD_REF_MAP)
         lines = result.split("\n")
         data_lines = [l for l in lines[1:] if l and not l.startswith("---")]
-        assert data_lines[0].startswith("3|")
+        assert data_lines[0].startswith(" |3|")
 
 
 class TestUnreadFlagJson:
