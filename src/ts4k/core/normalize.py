@@ -292,10 +292,10 @@ def _html_to_text(html: str) -> str:
     h = html2text.HTML2Text()
     h.body_width = 0  # No line wrapping (LLMs don't need it)
     h.ignore_images = True  # Already handled tracking pixels, skip remainder
-    h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
+    h.ignore_emphasis = False  # Preserve **bold** and _italic_ for readability
     h.ignore_links = False  # We want to keep meaningful links
     h.protect_links = True  # Don't wrap links
-    h.single_line_break = True  # More compact output
+    h.single_line_break = False  # Preserve paragraph breaks
     h.unicode_snob = True  # Use unicode instead of ASCII approximations
     h.skip_internal_links = True  # Skip anchor links
     h.inline_links = True  # [text](url) format
