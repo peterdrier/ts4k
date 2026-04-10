@@ -405,6 +405,27 @@ class TestMsgToHeaders:
         assert result["raw_id"] == "18f6a2b3c4e5f6a7"
         assert result["raw_thread_id"] == "18f6a2b3c4e5f6a8"
 
+    def test_unread_true_when_label_present(self):
+        """Messages with UNREAD in labelIds should have unread=True."""
+        msg = _make_api_message(format="metadata")
+        msg["labelIds"] = ["INBOX", "UNREAD", "CATEGORY_PERSONAL"]
+        result = _msg_to_headers(msg, "g")
+        assert result["unread"] is True
+
+    def test_unread_false_when_label_absent(self):
+        """Messages without UNREAD in labelIds should have unread=False."""
+        msg = _make_api_message(format="metadata")
+        msg["labelIds"] = ["INBOX", "CATEGORY_PERSONAL"]
+        result = _msg_to_headers(msg, "g")
+        assert result["unread"] is False
+
+    def test_unread_false_when_no_labels(self):
+        """Messages with no labelIds at all should have unread=False."""
+        msg = _make_api_message(format="metadata")
+        # No labelIds key at all
+        result = _msg_to_headers(msg, "g")
+        assert result["unread"] is False
+
 
 class TestMsgToFull:
     """Tests for _msg_to_full()."""

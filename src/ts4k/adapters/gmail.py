@@ -172,6 +172,7 @@ def _msg_to_headers(msg: dict, prefix: str) -> dict:
         "date": _internal_date_to_iso(msg.get("internalDate")),
         "snippet": msg.get("snippet", ""),
         "source": prefix,
+        "unread": "UNREAD" in msg.get("labelIds", []),
     }
     if size_estimate:
         from ts4k.core.format import estimate_size

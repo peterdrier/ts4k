@@ -582,3 +582,122 @@ class TestCompactTimestamps:
         ref_map = {"g:1": 1}
         result = format_listing(msgs, "pipe", ref_map=ref_map)
         assert "1|" in result
+
+
+# ---------------------------------------------------------------------------
+# Unread flag in output
+# ---------------------------------------------------------------------------
+
+
+UNREAD_MESSAGES = [
+    {
+        "id": "g:unread1",
+        "from": "alice@acme.com",
+        "subject": "Urgent",
+        "date": "2026-02-20T09:15:00Z",
+        "body": "",
+        "source": "g",
+        "unread": True,
+    },
+    {
+        "id": "g:read1",
+        "from": "bob@corp.com",
+        "subject": "FYI",
+        "date": "2026-02-20T10:00:00Z",
+        "body": "",
+        "source": "g",
+        "unread": False,
+    },
+    {
+        "id": "w:noflag1",
+        "from": "charlie",
+        "subject": "",
+        "date": "2026-02-20T11:00:00Z",
+        "body": "",
+        "source": "w",
+        # No "unread" key — WhatsApp doesn't provide it
+    },
+]
+
+UNREAD_REF_MAP = {
+    "g:unread1": 1,
+    "g:read1": 2,
+    "w:noflag1": 3,
+}
+
+
+class TestUnreadFlagPipeLegacy:
+    """Test * marker for unread messages in legacy pipe format."""
+
+    def test_unread_message_has_star(self):
+        result = format_listing(UNREAD_MESSAGES[:1], "pipe")
+        lines = result.split("\n")
+        assert lines[1].startswith("*g|")
+
+    def test_read_message_no_star(self):
+        result = format_listing(UNREAD_MESSAGES[1:2], "pipe")
+        lines = result.split("\n")
+        assert lines[1].startswith("g|")
+
+    def test_missing_unread_no_star(self):
+        """Messages without unread key get no marker."""
+        result = format_listing(UNREAD_MESSAGES[2:3], "pipe")
+        lines = result.split("\n")
+        assert lines[1].startswith("w|")
+
+    def test_mixed_unread_and_read(self):
+        result = format_listing(UNREAD_MESSAGES, "pipe")
+        lines = result.split("\n")
+        data_lines = lines[1:]
+        assert data_lines[0].startswith("*g|")   # unread
+        assert data_lines[1].startswith("g|")     # read
+        assert data_lines[2].startswith("w|")     # no flag
+
+
+class TestUnreadFlagPipeRefs:
+    """Test * marker for unread messages in ref-based pipe format."""
+
+    def test_unread_message_has_star_before_ref(self):
+        result = format_listing(UNREAD_MESSAGES[:1], "pipe", ref_map=UNREAD_REF_MAP)
+        lines = result.split("\n")
+        data_lines = [l for l in lines[1:] if l and not l.startswith("---")]
+        assert data_lines[0].startswith("*1|")
+
+    def test_read_message_no_star(self):
+        result = format_listing(UNREAD_MESSAGES[1:2], "pipe", ref_map=UNREAD_REF_MAP)
+        lines = result.split("\n")
+        data_lines = [l for l in lines[1:] if l and not l.startswith("---")]
+        assert data_lines[0].startswith("2|")
+
+    def test_missing_unread_no_star(self):
+        result = format_listing(UNREAD_MESSAGES[2:3], "pipe", ref_map=UNREAD_REF_MAP)
+        lines = result.split("\n")
+        data_lines = [l for l in lines[1:] if l and not l.startswith("---")]
+        assert data_lines[0].startswith("3|")
+
+
+class TestUnreadFlagJson:
+    """Test unread field in JSON output."""
+
+    def test_unread_true_in_json(self):
+        result = format_listing(UNREAD_MESSAGES[:1], "json")
+        data = json.loads(result)
+        assert data[0]["unread"] is True
+
+    def test_unread_false_in_json(self):
+        result = format_listing(UNREAD_MESSAGES[1:2], "json")
+        data = json.loads(result)
+        assert data[0]["unread"] is False
+
+    def test_missing_unread_omitted_in_json(self):
+        """Messages without unread key should not have it in JSON output."""
+        result = format_listing(UNREAD_MESSAGES[2:3], "json")
+        data = json.loads(result)
+        assert "unread" not in data[0]
+
+    def test_mixed_messages_json(self):
+        result = format_listing(UNREAD_MESSAGES, "json")
+        data = json.loads(result)
+        assert data[0]["unread"] is True
+        assert data[1]["unread"] is False
+        assert "unread" not in data[2]

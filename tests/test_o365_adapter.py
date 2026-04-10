@@ -243,6 +243,42 @@ class TestListResponseToDicts:
         assert results[0]["has_attachments"] is True
         assert results[1]["has_attachments"] is False
 
+    def test_unread_true_when_not_read(self):
+        """Messages with isRead=False should have unread=True."""
+        data = {"value": [{
+            "id": "msg1",
+            "subject": "Test",
+            "from": {"emailAddress": {"name": "A", "address": "a@b.com"}},
+            "receivedDateTime": "2026-02-20T14:30:00Z",
+            "bodyPreview": "preview",
+            "conversationId": "conv1",
+            "hasAttachments": False,
+            "isRead": False,
+        }]}
+        results = _list_response_to_dicts(data, "oa")
+        assert results[0]["unread"] is True
+
+    def test_unread_false_when_read(self):
+        """Messages with isRead=True should have unread=False."""
+        data = {"value": [{
+            "id": "msg1",
+            "subject": "Test",
+            "from": {"emailAddress": {"name": "A", "address": "a@b.com"}},
+            "receivedDateTime": "2026-02-20T14:30:00Z",
+            "bodyPreview": "preview",
+            "conversationId": "conv1",
+            "hasAttachments": False,
+            "isRead": True,
+        }]}
+        results = _list_response_to_dicts(data, "oa")
+        assert results[0]["unread"] is False
+
+    def test_unread_false_when_isread_missing(self):
+        """Messages without isRead field default to unread=False."""
+        results = _list_response_to_dicts(LIST_RESPONSE_DATA, "oa")
+        # The fixture has no isRead field, should default to False (read)
+        assert results[0]["unread"] is False
+
     def test_empty_response(self):
         results = _list_response_to_dicts(LIST_RESPONSE_EMPTY, "oa")
         assert results == []
