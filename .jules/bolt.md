@@ -1,0 +1,3 @@
+## 2026-03-01 - Compiling Regexes Outside Loops
+**Learning:** In `src/ts4k/core/normalize.py`, the `_remove_tracking_pixels` function loops over all images and evaluates a list of uncompiled regex patterns for each image URL. In addition, `_looks_like_html` compiles its large regex internally on every invocation. Combining multiple static regexes into a single compiled pattern and moving regex compilation to the module level produces significant performance improvements when normalising many or large HTML fragments.
+**Action:** Lift static regexes out of functions and compile them once at module loading time. Combine multiple alternatives into a single large regex where possible to leverage the regex engine's internal optimisations.
