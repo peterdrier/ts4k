@@ -1,0 +1,3 @@
+## 2024-07-17 - Compiled regex patterns in loops vs module level
+**Learning:** Re-compiling regex patterns inside functions (e.g. `_remove_tracking_pixels` building a list of uncompiled string patterns and using `re.search` repeatedly or module functions instantiating `re.compile` on every call instead of using global compiled constants) creates massive overhead, particularly when there's no match (worst-case evaluation time).
+**Action:** When a function executes a regex multiple times per function call, or per HTML tag (like processing images), compile the regular expressions at the module level rather than rebuilding or re-matching string patterns repeatedly.
