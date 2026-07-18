@@ -107,6 +107,15 @@ def normalize_headers(raw_headers: dict) -> dict:
 # HTML detection
 # ---------------------------------------------------------------------------
 
+# ⚡ Bolt: Cache compiled regex globally to avoid re-compilation
+_HTML_TAG_PATTERN = re.compile(
+    r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
+    r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
+    r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_html(text: str) -> bool:
     """Determine if text is HTML rather than plain text.
 
@@ -114,18 +123,22 @@ def _looks_like_html(text: str) -> bool:
     like <alice@example.com> which appear in plain-text reply headers.
     """
     # Look for common HTML structural tags (not just any angle-bracket pattern)
-    html_tag_pattern = re.compile(
-        r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
-        r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
-        r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
-        re.IGNORECASE,
-    )
-    return bool(html_tag_pattern.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 # ---------------------------------------------------------------------------
 # HTML preprocessing (BeautifulSoup phase)
 # ---------------------------------------------------------------------------
+
+# ⚡ Bolt: Cache combined tracking regex and style regexes globally
+_TRACKING_PATTERN = re.compile(
+    r"track|pixel|beacon|open\.|(?:\.gif\?)|mailtrack|t\.co/|click\.|/o\.gif|spacer|transparent|/t\?|wf\.gif",
+    re.IGNORECASE
+)
+_TINY_WIDTH_RE = re.compile(r"width\s*:\s*[01]px")
+_TINY_HEIGHT_RE = re.compile(r"height\s*:\s*[01]px")
+_DISPLAY_NONE_RE = re.compile(r"display\s*:\s*none")
+
 
 def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
     """Remove 1x1 images, pixel trackers, and invisible images."""
@@ -147,19 +160,14 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
         # Check style for tiny dimensions
         style = img.get("style", "")
         if style:
-            if re.search(r"width\s*:\s*[01]px", style) or \
-               re.search(r"height\s*:\s*[01]px", style) or \
-               re.search(r"display\s*:\s*none", style):
+            if _TINY_WIDTH_RE.search(style) or \
+               _TINY_HEIGHT_RE.search(style) or \
+               _DISPLAY_NONE_RE.search(style):
                 is_tiny = True
 
         # Check for common tracking pixel URL patterns
         src = img.get("src", "")
-        tracking_patterns = [
-            r"track", r"pixel", r"beacon", r"open\.", r"\.gif\?",
-            r"mailtrack", r"t\.co/", r"click\.", r"/o\.gif",
-            r"spacer", r"transparent", r"/t\?", r"wf\.gif",
-        ]
-        if src and any(re.search(p, src, re.IGNORECASE) for p in tracking_patterns):
+        if src and _TRACKING_PATTERN.search(src):
             is_tiny = True
 
         # Check for images with no alt text and very small size
@@ -169,19 +177,35 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
             img.decompose()
 
 
+# ⚡ Bolt: Cache regex patterns for _remove_hidden_elements
+_STYLE_DISPLAY_NONE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
+_STYLE_VISIBILITY_HIDDEN = re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)
+_STYLE_ZERO_SIZE = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
+
+
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=re.compile(r"display\s*:\s*none", re.IGNORECASE)):
+    for el in soup.find_all(style=_STYLE_DISPLAY_NONE):
         el.decompose()
-    for el in soup.find_all(style=re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)):
+    for el in soup.find_all(style=_STYLE_VISIBILITY_HIDDEN):
         el.decompose()
     for el in soup.find_all(attrs={"hidden": True}):
         el.decompose()
     # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)):
+    for el in soup.find_all(style=_STYLE_ZERO_SIZE):
         # Only remove if element has no visible text content
         if not el.get_text(strip=True):
             el.decompose()
+
+
+# ⚡ Bolt: Cache regex patterns for _remove_unsubscribe_blocks_html
+_UNSUB_HTML_PATTERNS = re.compile(
+    r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
+    r"|update\s+(?:your\s+)?preferences|notification\s+settings"
+    r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
+    r"|stop\s+receiving\s+these\s+emails",
+    re.IGNORECASE,
+)
 
 
 def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
@@ -189,14 +213,6 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
 
     These are typically in footer divs, tables, or paragraphs at the end.
     """
-    unsub_patterns = re.compile(
-        r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
-        r"|update\s+(?:your\s+)?preferences|notification\s+settings"
-        r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
-        r"|stop\s+receiving\s+these\s+emails",
-        re.IGNORECASE,
-    )
-
     # Remove links that are unsubscribe links.
     # Collect first, then decompose, to avoid mutating the tree during iteration.
     unsub_links = []
@@ -225,7 +241,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if unsub_patterns.search(el_text) and len(el_text) < 1000:
+        if _UNSUB_HTML_PATTERNS.search(el_text) and len(el_text) < 1000:
             unsub_elements.append(el)
 
     for el in unsub_elements:
@@ -287,8 +303,9 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 # HTML → Text conversion
 # ---------------------------------------------------------------------------
 
-def _html_to_text(html: str) -> str:
-    """Convert HTML to plain text using html2text with LLM-friendly settings."""
+
+def _get_h2t_instance() -> html2text.HTML2Text:
+    """Create and configure a new html2text instance."""
     h = html2text.HTML2Text()
     h.body_width = 0  # No line wrapping (LLMs don't need it)
     h.ignore_images = True  # Already handled tracking pixels, skip remainder
@@ -301,7 +318,12 @@ def _html_to_text(html: str) -> str:
     h.inline_links = True  # [text](url) format
     h.wrap_links = False
     h.wrap_list_items = False
+    return h
 
+
+def _html_to_text(html: str) -> str:
+    """Convert HTML to plain text using html2text with LLM-friendly settings."""
+    h = _get_h2t_instance()
     text = h.handle(html)
 
     # Post-process html2text output: convert markdown links to compact format
