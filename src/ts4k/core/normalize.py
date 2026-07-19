@@ -9,11 +9,30 @@ Target: 70%+ byte reduction on typical HTML emails.
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import html2text
 from bs4 import BeautifulSoup, Tag
+
+# Pre-compiled regex patterns for HTML preprocessing
+_HTML_TAG_PATTERN = re.compile(
+    r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
+    r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
+    r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
+    re.IGNORECASE,
+)
+_HIDDEN_DISPLAY_PATTERN = re.compile(r"display\s*:\s*none", re.IGNORECASE)
+_HIDDEN_VISIBILITY_PATTERN = re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)
+_HIDDEN_SIZE_PATTERN = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
+_UNSUB_PATTERNS = re.compile(
+    r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
+    r"|update\s+(?:your\s+)?preferences|notification\s+settings"
+    r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
+    r"|stop\s+receiving\s+these\s+emails",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -113,14 +132,7 @@ def _looks_like_html(text: str) -> bool:
     We need to distinguish actual HTML tags from angle-bracket email addresses
     like <alice@example.com> which appear in plain-text reply headers.
     """
-    # Look for common HTML structural tags (not just any angle-bracket pattern)
-    html_tag_pattern = re.compile(
-        r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
-        r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
-        r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
-        re.IGNORECASE,
-    )
-    return bool(html_tag_pattern.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +183,14 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
 
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=re.compile(r"display\s*:\s*none", re.IGNORECASE)):
+    for el in soup.find_all(style=_HIDDEN_DISPLAY_PATTERN):
         el.decompose()
-    for el in soup.find_all(style=re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)):
+    for el in soup.find_all(style=_HIDDEN_VISIBILITY_PATTERN):
         el.decompose()
     for el in soup.find_all(attrs={"hidden": True}):
         el.decompose()
     # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)):
+    for el in soup.find_all(style=_HIDDEN_SIZE_PATTERN):
         # Only remove if element has no visible text content
         if not el.get_text(strip=True):
             el.decompose()
@@ -189,14 +201,6 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
 
     These are typically in footer divs, tables, or paragraphs at the end.
     """
-    unsub_patterns = re.compile(
-        r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
-        r"|update\s+(?:your\s+)?preferences|notification\s+settings"
-        r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
-        r"|stop\s+receiving\s+these\s+emails",
-        re.IGNORECASE,
-    )
-
     # Remove links that are unsubscribe links.
     # Collect first, then decompose, to avoid mutating the tree during iteration.
     unsub_links = []
@@ -225,7 +229,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if unsub_patterns.search(el_text) and len(el_text) < 1000:
+        if _UNSUB_PATTERNS.search(el_text) and len(el_text) < 1000:
             unsub_elements.append(el)
 
     for el in unsub_elements:
@@ -287,21 +291,33 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 # HTML → Text conversion
 # ---------------------------------------------------------------------------
 
+_thread_local = threading.local()
+
+def _get_html2text() -> html2text.HTML2Text:
+    """Get a thread-local HTML2Text instance.
+    HTML2Text is stateful but reinitializes state on each .handle() call,
+    so we can safely reuse instances per thread to avoid instantiation overhead.
+    """
+    if not hasattr(_thread_local, "h"):
+        h = html2text.HTML2Text()
+        h.body_width = 0  # No line wrapping (LLMs don't need it)
+        h.ignore_images = True  # Already handled tracking pixels, skip remainder
+        h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
+        h.ignore_links = False  # We want to keep meaningful links
+        h.protect_links = True  # Don't wrap links
+        h.single_line_break = True  # More compact output
+        h.unicode_snob = True  # Use unicode instead of ASCII approximations
+        h.skip_internal_links = True  # Skip anchor links
+        h.inline_links = True  # [text](url) format
+        h.wrap_links = False
+        h.wrap_list_items = False
+        _thread_local.h = h
+    return _thread_local.h
+
+
 def _html_to_text(html: str) -> str:
     """Convert HTML to plain text using html2text with LLM-friendly settings."""
-    h = html2text.HTML2Text()
-    h.body_width = 0  # No line wrapping (LLMs don't need it)
-    h.ignore_images = True  # Already handled tracking pixels, skip remainder
-    h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
-    h.ignore_links = False  # We want to keep meaningful links
-    h.protect_links = True  # Don't wrap links
-    h.single_line_break = True  # More compact output
-    h.unicode_snob = True  # Use unicode instead of ASCII approximations
-    h.skip_internal_links = True  # Skip anchor links
-    h.inline_links = True  # [text](url) format
-    h.wrap_links = False
-    h.wrap_list_items = False
-
+    h = _get_html2text()
     text = h.handle(html)
 
     # Post-process html2text output: convert markdown links to compact format

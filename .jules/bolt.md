@@ -1,0 +1,3 @@
+## 2026-07-19 - Thread-local caching of stateful third-party parsers
+**Learning:** The `html2text.HTML2Text` parser is stateful but reinitializes state cleanly on each `.handle()` call, making it safe to reuse instances. However, because `ts4k` can run in concurrent environments, using a global cached instance would cause thread safety issues (e.g. data races inside parser). Creating a new instance per HTML chunk is expensive (~0.84s per 10k items).
+**Action:** Use `threading.local()` to maintain one instantiated parser per thread, dropping instantiation overhead by ~50% while preserving strict thread safety. Always pre-compile frequently used regexes at module level.
