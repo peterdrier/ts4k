@@ -9,6 +9,7 @@ Target: 70%+ byte reduction on typical HTML emails.
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -107,6 +108,13 @@ def normalize_headers(raw_headers: dict) -> dict:
 # HTML detection
 # ---------------------------------------------------------------------------
 
+_HTML_TAG_PATTERN = re.compile(
+    r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
+    r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
+    r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
+    re.IGNORECASE,
+)
+
 def _looks_like_html(text: str) -> bool:
     """Determine if text is HTML rather than plain text.
 
@@ -114,13 +122,7 @@ def _looks_like_html(text: str) -> bool:
     like <alice@example.com> which appear in plain-text reply headers.
     """
     # Look for common HTML structural tags (not just any angle-bracket pattern)
-    html_tag_pattern = re.compile(
-        r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
-        r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
-        r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
-        re.IGNORECASE,
-    )
-    return bool(html_tag_pattern.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -287,21 +289,29 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 # HTML → Text conversion
 # ---------------------------------------------------------------------------
 
+_html2text_local = threading.local()
+
+def _get_html2text() -> html2text.HTML2Text:
+    """Get a thread-local HTML2Text instance to avoid repeated instantiation overhead."""
+    if not hasattr(_html2text_local, "h"):
+        h = html2text.HTML2Text()
+        h.body_width = 0  # No line wrapping (LLMs don't need it)
+        h.ignore_images = True  # Already handled tracking pixels, skip remainder
+        h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
+        h.ignore_links = False  # We want to keep meaningful links
+        h.protect_links = True  # Don't wrap links
+        h.single_line_break = True  # More compact output
+        h.unicode_snob = True  # Use unicode instead of ASCII approximations
+        h.skip_internal_links = True  # Skip anchor links
+        h.inline_links = True  # [text](url) format
+        h.wrap_links = False
+        h.wrap_list_items = False
+        _html2text_local.h = h
+    return _html2text_local.h
+
 def _html_to_text(html: str) -> str:
     """Convert HTML to plain text using html2text with LLM-friendly settings."""
-    h = html2text.HTML2Text()
-    h.body_width = 0  # No line wrapping (LLMs don't need it)
-    h.ignore_images = True  # Already handled tracking pixels, skip remainder
-    h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
-    h.ignore_links = False  # We want to keep meaningful links
-    h.protect_links = True  # Don't wrap links
-    h.single_line_break = True  # More compact output
-    h.unicode_snob = True  # Use unicode instead of ASCII approximations
-    h.skip_internal_links = True  # Skip anchor links
-    h.inline_links = True  # [text](url) format
-    h.wrap_links = False
-    h.wrap_list_items = False
-
+    h = _get_html2text()
     text = h.handle(html)
 
     # Post-process html2text output: convert markdown links to compact format
