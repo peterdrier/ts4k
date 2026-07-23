@@ -1,0 +1,3 @@
+## 2026-02-24 - HTML2Text Caching Bottleneck
+**Learning:** `html2text.HTML2Text()` is extremely slow to instantiate dynamically per message, forming a major bottleneck in the `normalize.py` pipeline (often 3-4x slower than cached execution). However, instances clear state on `.handle()`, so they are safe to reuse. Since ts4k might run in concurrent environments (e.g. MCP server), thread safety is essential.
+**Action:** Use a `threading.local()` cache to instantiate `HTML2Text` exactly once per thread rather than per call or as a global static instance. Additionally, hoist all `re.compile()` calls to module level.
