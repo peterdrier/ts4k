@@ -1,0 +1,3 @@
+## 2024-05-18 - regex compilation overhead
+**Learning:** Re-compiling large regex patterns inside hot loop functions (like `_looks_like_html` and `_remove_unsubscribe_blocks_html`) is a noticeable performance bottleneck in the normalization pipeline. Note: caching stateful objects like `html2text.HTML2Text` in a thread local to save instantiation time leads to catastrophic memory and cross-document data leaks, so it was reverted.
+**Action:** Move frequently used complex regular expressions to module-level pre-compiled variables, but do not cache highly stateful parsers without verifying they can cleanly reset state between invocations.

@@ -107,6 +107,15 @@ def normalize_headers(raw_headers: dict) -> dict:
 # HTML detection
 # ---------------------------------------------------------------------------
 
+# Pre-compiled for performance optimization
+_HTML_TAG_PATTERN = re.compile(
+    r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
+    r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
+    r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_html(text: str) -> bool:
     """Determine if text is HTML rather than plain text.
 
@@ -114,13 +123,7 @@ def _looks_like_html(text: str) -> bool:
     like <alice@example.com> which appear in plain-text reply headers.
     """
     # Look for common HTML structural tags (not just any angle-bracket pattern)
-    html_tag_pattern = re.compile(
-        r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
-        r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
-        r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
-        re.IGNORECASE,
-    )
-    return bool(html_tag_pattern.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -184,19 +187,21 @@ def _remove_hidden_elements(soup: BeautifulSoup) -> None:
             el.decompose()
 
 
+# Pre-compiled for performance optimization
+_UNSUB_PATTERNS = re.compile(
+    r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
+    r"|update\s+(?:your\s+)?preferences|notification\s+settings"
+    r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
+    r"|stop\s+receiving\s+these\s+emails",
+    re.IGNORECASE,
+)
+
+
 def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     """Remove unsubscribe / email preference sections from HTML before text conversion.
 
     These are typically in footer divs, tables, or paragraphs at the end.
     """
-    unsub_patterns = re.compile(
-        r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
-        r"|update\s+(?:your\s+)?preferences|notification\s+settings"
-        r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
-        r"|stop\s+receiving\s+these\s+emails",
-        re.IGNORECASE,
-    )
-
     # Remove links that are unsubscribe links.
     # Collect first, then decompose, to avoid mutating the tree during iteration.
     unsub_links = []
@@ -225,7 +230,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if unsub_patterns.search(el_text) and len(el_text) < 1000:
+        if _UNSUB_PATTERNS.search(el_text) and len(el_text) < 1000:
             unsub_elements.append(el)
 
     for el in unsub_elements:
