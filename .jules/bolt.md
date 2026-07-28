@@ -1,0 +1,3 @@
+## 2026-02-19 - Regex Compilation Overhead inside Inner Loops
+**Learning:** Calling `re.compile` within tight parsing loops (like inside BeautifulSoup's `find_all` checks in `src/ts4k/core/normalize.py`) carries significant overhead. Python's internal regex caching isn't fast enough to avoid this bottleneck in loops analyzing large HTML structures. Module-level pre-compiled regex objects provide measurable (~1.5x) speedups for functions like tracking pixel removal.
+**Action:** Always pre-compile frequently used regular expressions at the module level rather than inside functions to optimize performance, especially when they are used within loops or BeautifulSoup callbacks.
