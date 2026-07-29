@@ -107,6 +107,14 @@ def normalize_headers(raw_headers: dict) -> dict:
 # HTML detection
 # ---------------------------------------------------------------------------
 
+# ⚡ Bolt: Pre-compile frequent regexes at module level to save compilation overhead
+_HTML_TAG_PATTERN = re.compile(
+    r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
+    r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
+    r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
+    re.IGNORECASE,
+)
+
 def _looks_like_html(text: str) -> bool:
     """Determine if text is HTML rather than plain text.
 
@@ -114,13 +122,7 @@ def _looks_like_html(text: str) -> bool:
     like <alice@example.com> which appear in plain-text reply headers.
     """
     # Look for common HTML structural tags (not just any angle-bracket pattern)
-    html_tag_pattern = re.compile(
-        r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
-        r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
-        r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
-        re.IGNORECASE,
-    )
-    return bool(html_tag_pattern.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -169,33 +171,42 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
             img.decompose()
 
 
+# ⚡ Bolt: Combine multiple pattern searches into a single pre-compiled regex for speedup
+_HIDDEN_STYLE_PATTERN = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.IGNORECASE)
+_ZERO_SIZE_PATTERN = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
+
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=re.compile(r"display\s*:\s*none", re.IGNORECASE)):
-        el.decompose()
-    for el in soup.find_all(style=re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)):
-        el.decompose()
-    for el in soup.find_all(attrs={"hidden": True}):
-        el.decompose()
-    # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)):
-        # Only remove if element has no visible text content
-        if not el.get_text(strip=True):
-            el.decompose()
+    # ⚡ Bolt: Use a single custom filter function to combine find_all iterations for performance
+    def is_hidden(tag: Tag) -> bool:
+        if tag.has_attr("hidden"):
+            return True
+        style = tag.get("style", "")
+        if style:
+            if _HIDDEN_STYLE_PATTERN.search(style):
+                return True
+            if _ZERO_SIZE_PATTERN.search(style) and not tag.get_text(strip=True):
+                return True
+        return False
 
+    for el in soup.find_all(is_hidden):
+        el.decompose()
+
+
+# ⚡ Bolt: Pre-compile unsub patterns at module level
+_UNSUB_HTML_PATTERNS = re.compile(
+    r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
+    r"|update\s+(?:your\s+)?preferences|notification\s+settings"
+    r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
+    r"|stop\s+receiving\s+these\s+emails",
+    re.IGNORECASE,
+)
 
 def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     """Remove unsubscribe / email preference sections from HTML before text conversion.
 
     These are typically in footer divs, tables, or paragraphs at the end.
     """
-    unsub_patterns = re.compile(
-        r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
-        r"|update\s+(?:your\s+)?preferences|notification\s+settings"
-        r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
-        r"|stop\s+receiving\s+these\s+emails",
-        re.IGNORECASE,
-    )
 
     # Remove links that are unsubscribe links.
     # Collect first, then decompose, to avoid mutating the tree during iteration.
@@ -225,7 +236,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if unsub_patterns.search(el_text) and len(el_text) < 1000:
+        if _UNSUB_HTML_PATTERNS.search(el_text) and len(el_text) < 1000:
             unsub_elements.append(el)
 
     for el in unsub_elements:

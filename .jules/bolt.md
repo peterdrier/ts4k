@@ -1,0 +1,3 @@
+## 2026-03-01 - [Pre-compiled module-level regexes and single-pass BS4 filters]
+**Learning:** In ts4k's normalize pipeline, performing multiple `soup.find_all(...)` passes with inline regex compilations creates significant CPU overhead when processing large HTML emails. Combining multiple regex patterns using the OR (`|`) operator and executing them inside a single custom `BeautifulSoup` filter function reduces traversal overhead significantly. Pre-compiling the regexes at the module level avoids redundant compilation per message.
+**Action:** When working with BeautifulSoup DOM traversals, always aim to combine multiple filtering passes into a single pass using a combined filter function. Always precompile frequent regex patterns at the module level.
