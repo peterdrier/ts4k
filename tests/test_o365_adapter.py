@@ -716,6 +716,22 @@ class TestO365AdapterSenderFilter:
         assert "alice@contoso.com" in filt
 
     @pytest.mark.asyncio
+    async def test_sender_filter_keeps_newest_first_order(self):
+        """Graph allows $orderby with a from-filter only when the orderby
+        property leads the $filter — without it, results come back
+        oldest-first and small -n truncates to the wrong end."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(sender="alice@contoso.com")
+
+        call_args = adapter._client.get.call_args
+        params = call_args[1]["params"]
+        assert params["$orderby"] == "receivedDateTime desc"
+        assert params["$filter"].startswith("receivedDateTime ge ")
+
+    @pytest.mark.asyncio
     async def test_domain_filter_on_list(self):
         adapter = _make_adapter()
         adapter._client.get = AsyncMock(
@@ -732,7 +748,8 @@ class TestO365AdapterSenderFilter:
 
     @pytest.mark.asyncio
     async def test_sender_filter_with_query(self):
-        """Sender filter + free-text query should both be present."""
+        """Graph rejects $search + $filter on messages (400), so sender must
+        fold into the KQL search string like the domain path does."""
         adapter = _make_adapter()
         adapter._client.get = AsyncMock(
             return_value=_mock_response(LIST_RESPONSE_EMPTY)
@@ -741,9 +758,8 @@ class TestO365AdapterSenderFilter:
 
         call_args = adapter._client.get.call_args
         params = call_args[1]["params"]
-        assert "$search" in params
-        assert "$filter" in params
-        assert "alice@contoso.com" in params["$filter"]
+        assert "$filter" not in params
+        assert params["$search"] == '"from:alice@contoso.com budget"'
 
 
 class TestStripPrefix:

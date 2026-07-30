@@ -365,33 +365,40 @@ class O365Adapter(BaseAdapter):
             if page_token:
                 params["$skip"] = page_token
 
-            # Sender filter via $filter (exact match).
-            # Filtering on from/emailAddress/address requires ConsistencyLevel
-            # header and is incompatible with $orderby.
+            # Sender-only filter via $filter (exact match). Graph permits
+            # $orderby alongside a from-filter only when the orderby property
+            # leads the $filter, so anchor it with a date floor — dropping
+            # $orderby instead returns oldest-first and small $top values
+            # truncate to the wrong end.
             sender_filter = _build_sender_filter(sender)
-            if sender_filter:
-                params["$filter"] = sender_filter
-                params.pop("$orderby", None)
+            if sender_filter and not query:
+                params["$filter"] = (
+                    f"receivedDateTime ge 1900-01-01T00:00:00Z and {sender_filter}"
+                )
 
             headers_dict: dict[str, str] | None = None
 
             # Domain filter via $search (endsWith not supported on from address)
             domain_search = _build_domain_search(domain)
 
-            # Any use of $filter on from or $search requires ConsistencyLevel
-            needs_consistency = bool(sender_filter or domain_search or query)
-            if needs_consistency:
-                headers_dict = {"ConsistencyLevel": "eventual"}
-                params.pop("$orderby", None)
-                # $skip is incompatible with $search — use @odata.nextLink instead
-                params.pop("$skip", None)
-
-            if query and domain_search:
+            # $search cannot combine with $filter or $orderby (400), and
+            # requires the ConsistencyLevel header. A sender combined with a
+            # free-text query therefore folds into the KQL string instead of
+            # using $filter.
+            if query and sender:
+                params["$search"] = f'"from:{sender} {query}"'
+            elif query and domain_search:
                 params["$search"] = f'"from:@{domain} {query}"'
             elif query:
                 params["$search"] = f'"{query}"'
             elif domain_search:
                 params["$search"] = domain_search
+
+            if "$search" in params:
+                headers_dict = {"ConsistencyLevel": "eventual"}
+                params.pop("$orderby", None)
+                # $skip is incompatible with $search — use @odata.nextLink instead
+                params.pop("$skip", None)
 
             data = await self._get(
                 f"{self._base_url()}/messages", params, headers=headers_dict
@@ -399,10 +406,9 @@ class O365Adapter(BaseAdapter):
 
         results = _list_response_to_dicts(data, self.source_prefix)
 
-        # Client-side sort when $orderby was removed
-        needs_sort = use_next_link or bool(
-            _build_sender_filter(sender) or _build_domain_search(domain) or query
-        )
+        # Client-side sort when $orderby was removed ($search paths only —
+        # the sender-only $filter path keeps server-side ordering)
+        needs_sort = use_next_link or bool(query or _build_domain_search(domain))
         if needs_sort:
             results.sort(key=lambda m: m.get("date", ""), reverse=True)
 
