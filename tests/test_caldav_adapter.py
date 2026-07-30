@@ -288,3 +288,40 @@ class TestListCalendars:
             {"id": "https://caldav.icloud.com/123/calendars/work/", "summary": "Work",
              "access_role": "owner", "timezone": "Europe/Amsterdam", "primary": False},
         ]
+
+
+class TestFetchByUidUrlFirst:
+    """iCloud rejects UID-filter REPORTs with 412 — URL-first lookup with REPORT fallback."""
+
+    def _obj_with_uid(self, uid: str) -> MagicMock:
+        obj = MagicMock()
+        comp = MagicMock()
+        comp.get.return_value = uid
+        obj.icalendar_component = comp
+        return obj
+
+    async def test_url_hit_with_matching_uid_skips_report(self, adapter: CaldavAdapter):
+        adapter._calendar.url = "https://caldav.icloud.com/123/calendars/home/"
+        adapter._calendar.event_by_url.return_value = self._obj_with_uid("det1@icloud.com")
+        obj = await adapter._fetch_by_uid("det1@icloud.com")
+        adapter._calendar.event_by_url.assert_called_once_with(
+            "https://caldav.icloud.com/123/calendars/home/det1%40icloud.com.ics"
+        )
+        adapter._calendar.event_by_uid.assert_not_called()
+        assert str(obj.icalendar_component.get("UID")) == "det1@icloud.com"
+
+    async def test_url_miss_falls_back_to_report(self, adapter: CaldavAdapter):
+        adapter._calendar.url = "https://caldav.icloud.com/123/calendars/home/"
+        adapter._calendar.event_by_url.side_effect = Exception("404 Not Found")
+        adapter._calendar.event_by_uid.return_value = self._obj_with_uid("det1@icloud.com")
+        obj = await adapter._fetch_by_uid("det1@icloud.com")
+        adapter._calendar.event_by_uid.assert_called_once_with("det1@icloud.com")
+        assert obj is adapter._calendar.event_by_uid.return_value
+
+    async def test_url_uid_mismatch_falls_back_to_report(self, adapter: CaldavAdapter):
+        adapter._calendar.url = "https://caldav.icloud.com/123/calendars/home/"
+        adapter._calendar.event_by_url.return_value = self._obj_with_uid("someone-else")
+        adapter._calendar.event_by_uid.return_value = self._obj_with_uid("det1@icloud.com")
+        obj = await adapter._fetch_by_uid("det1@icloud.com")
+        adapter._calendar.event_by_uid.assert_called_once_with("det1@icloud.com")
+        assert obj is adapter._calendar.event_by_uid.return_value

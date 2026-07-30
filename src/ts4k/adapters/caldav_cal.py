@@ -245,7 +245,24 @@ class CaldavAdapter(BaseAdapter):
             return timezone.utc
 
     async def _fetch_by_uid(self, uid: str) -> Any:
+        """Fetch an event by UID.
+
+        iCloud rejects UID-filter REPORT queries with 412 Precondition
+        Failed, but stores events at ``<calendar>/<uid>.ics`` — so try the
+        conventional object URL first (verifying the UID matches) and fall
+        back to the standard REPORT for servers where the resource name
+        differs from the UID.
+        """
+        from urllib.parse import quote
+
         cal = await self._get_calendar()
+        url = f"{str(cal.url).rstrip('/')}/{quote(uid, safe='')}.ics"
+        try:
+            obj = await asyncio.to_thread(lambda: cal.event_by_url(url))
+            if str(obj.icalendar_component.get("UID", "")) == uid:
+                return obj
+        except Exception:
+            pass
         return await asyncio.to_thread(lambda: cal.event_by_uid(uid))
 
     async def read_event(self, event_id: str) -> dict:
