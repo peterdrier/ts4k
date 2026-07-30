@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # Fields to request from Graph API via $select — keeps payloads small.
 _LIST_SELECT = (
     "id,subject,from,receivedDateTime,bodyPreview,"
-    "conversationId,hasAttachments,internetMessageId"
+    "conversationId,hasAttachments,internetMessageId,isRead"
 )
 _READ_SELECT = (
     "id,subject,from,receivedDateTime,body,toRecipients,"
@@ -129,6 +129,7 @@ def _list_response_to_dicts(data: dict | list, prefix: str) -> list[dict]:
             "date": msg.get("receivedDateTime", ""),
             "snippet": msg.get("bodyPreview", ""),
             "has_attachments": msg.get("hasAttachments", False),
+            "unread": not msg.get("isRead", True),
         })
 
     return results

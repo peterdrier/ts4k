@@ -468,24 +468,31 @@ def _listing_pipe(
     return _listing_pipe_legacy(messages)
 
 
+def _unread_marker(msg: dict) -> str:
+    """Return ``'*'`` for unread messages, space otherwise (own pipe column)."""
+    if msg.get("unread"):
+        return "*"
+    return " "
+
+
 def _listing_pipe_legacy(messages: list[dict]) -> str:
     """Legacy pipe listing with full IDs and ISO timestamps."""
     has_snippets = any(msg.get("snippet") for msg in messages)
     if has_snippets:
-        lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET"]
+        lines = [" |SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET"]
         for msg in messages:
             snippet = msg.get("snippet", "").strip()
             if len(snippet) > 80:
                 snippet = snippet[:77].rstrip() + "..."
             lines.append(
-                f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
+                f"{_unread_marker(msg)}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
                 f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}|{snippet}"
             )
     else:
-        lines = ["SOURCE|FROM|SUBJECT|DATE|ID|SIZE"]
+        lines = [" |SOURCE|FROM|SUBJECT|DATE|ID|SIZE"]
         for msg in messages:
             lines.append(
-                f"{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
+                f"{_unread_marker(msg)}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
                 f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}"
             )
     return "\n".join(lines)
@@ -503,9 +510,9 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
     lines: list[str] = []
 
     if has_snippets:
-        lines.append("N|SOURCE|FROM|SUBJECT|DATE|SIZE|SNIPPET")
+        lines.append(" |N|SOURCE|FROM|SUBJECT|DATE|SIZE|SNIPPET")
     else:
-        lines.append("N|SOURCE|FROM|SUBJECT|DATE|SIZE")
+        lines.append(" |N|SOURCE|FROM|SUBJECT|DATE|SIZE")
 
     if groups:
         for date_label, group_msgs in groups:
@@ -513,7 +520,7 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
             for msg in group_msgs:
                 ref = ref_map.get(msg.get("id", ""), 0)
                 ts = _compact_ts(msg.get("date", ""), "time")
-                row = f"{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
+                row = f"{_unread_marker(msg)}|{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
                 if has_snippets:
                     snippet = msg.get("snippet", "").strip()
                     if len(snippet) > 80:
@@ -524,7 +531,7 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
         for msg in messages:
             ref = ref_map.get(msg.get("id", ""), 0)
             ts = _compact_ts(msg.get("date", ""), precision)
-            row = f"{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
+            row = f"{_unread_marker(msg)}|{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
             if has_snippets:
                 snippet = msg.get("snippet", "").strip()
                 if len(snippet) > 80:
@@ -686,14 +693,17 @@ def _listing_json(messages: list[dict]) -> str:
     """Compact JSON array — no pretty-printing."""
     items = []
     for msg in messages:
-        items.append({
+        item: dict = {
             "source": _source(msg),
             "from": msg.get("from", ""),
             "subject": msg.get("subject", ""),
             "date": msg.get("date", ""),
             "id": msg.get("id", ""),
             "size": _size(msg),
-        })
+        }
+        if "unread" in msg:
+            item["unread"] = msg["unread"]
+        items.append(item)
     return json.dumps(items, separators=(",", ":"))
 
 
