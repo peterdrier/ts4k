@@ -341,6 +341,113 @@ class CaldavAdapter(BaseAdapter):
     def _check_send(self, operation: str) -> None:
         check_level(self._access_level, AccessLevel.SEND, operation, provider="caldav")
 
+    # -- Write methods ---------------------------------------------------------
+
+    async def create_event(
+        self,
+        title: str,
+        start: str,
+        end: str,
+        description: str | None = None,
+        location: str | None = None,
+        attendees: list[str] | None = None,
+    ) -> dict:
+        """Create a calendar event with level-gated attendee support."""
+        if attendees:
+            self._check_send("create_event")
+        else:
+            self._check_draft("create_event")
+
+        import uuid
+
+        from icalendar import Calendar as IcsCalendar
+        from icalendar import Event as IcsEvent
+        from icalendar import vCalAddress
+
+        vevent = IcsEvent()
+        vevent.add("UID", str(uuid.uuid4()))
+        vevent.add("SUMMARY", title)
+        vevent.add("DTSTAMP", datetime.now(timezone.utc))
+
+        tzinfo = self._tzinfo()
+        if "T" not in start:
+            # All-day: user provides inclusive end, iCal DTEND is exclusive
+            end_date = date.fromisoformat(end) + timedelta(days=1)
+            vevent.add("DTSTART", date.fromisoformat(start))
+            vevent.add("DTEND", end_date)
+        else:
+            start_dt = datetime.fromisoformat(start)
+            end_dt = datetime.fromisoformat(end)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=tzinfo)
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=tzinfo)
+            vevent.add("DTSTART", start_dt)
+            vevent.add("DTEND", end_dt)
+
+        if description:
+            vevent.add("DESCRIPTION", description)
+        if location:
+            vevent.add("LOCATION", location)
+        for email in attendees or []:
+            att = vCalAddress(f"mailto:{email}")
+            att.params["PARTSTAT"] = "NEEDS-ACTION"
+            att.params["ROLE"] = "REQ-PARTICIPANT"
+            vevent.add("ATTENDEE", att, encode=0)
+
+        ics = IcsCalendar()
+        ics.add("VERSION", "2.0")
+        ics.add("PRODID", "-//ts4k//caldav//EN")
+        ics.add_component(vevent)
+
+        cal = await self._get_calendar()
+        saved = await asyncio.to_thread(
+            lambda: cal.save_event(ics.to_ical().decode())
+        )
+        return self._normalize_component(saved.icalendar_component)
+
+    async def update_event(self, event_id: str, **fields: Any) -> dict:
+        """Update an existing event. Requires MODIFY level."""
+        self._check_modify("update_event")
+        raw = self._strip_prefix(event_id)
+        uid = raw.split("::")[0]
+        obj = await self._fetch_by_uid(uid)
+        comp = obj.icalendar_component
+        tzinfo = self._tzinfo()
+
+        def _set(key: str, value: Any) -> None:
+            comp.pop(key, None)
+            comp.add(key, value)
+
+        if "title" in fields:
+            _set("SUMMARY", fields["title"])
+        if "description" in fields:
+            _set("DESCRIPTION", fields["description"])
+        if "location" in fields:
+            _set("LOCATION", fields["location"])
+        if "start" in fields:
+            s = fields["start"]
+            if "T" not in s:
+                _set("DTSTART", date.fromisoformat(s))
+            else:
+                dt = datetime.fromisoformat(s)
+                _set("DTSTART", dt.replace(tzinfo=tzinfo) if dt.tzinfo is None else dt)
+        if "end" in fields:
+            e = fields["end"]
+            if "T" not in e:
+                _set("DTEND", date.fromisoformat(e))
+            else:
+                dt = datetime.fromisoformat(e)
+                _set("DTEND", dt.replace(tzinfo=tzinfo) if dt.tzinfo is None else dt)
+
+        await asyncio.to_thread(obj.save)
+        return self._normalize_component(comp)
+
+    async def rsvp(self, event_id: str, status: str) -> dict:
+        """RSVP to an event. Requires MODIFY level."""
+        self._check_modify("rsvp")
+        raise NotImplementedError("CalDAV rsvp is implemented in Task 6")
+
     # -- Helpers ---------------------------------------------------------------
 
     def _strip_prefix(self, prefixed_id: str) -> str:
