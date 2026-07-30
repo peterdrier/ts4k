@@ -324,6 +324,7 @@ class GmailAdapter(BaseAdapter):
         since: str | None = None,
         sender: str | None = None,
         domain: str | None = None,
+        count: int = 200,
     ) -> list[dict]:
         """Search for recent messages.
 
@@ -334,7 +335,9 @@ class GmailAdapter(BaseAdapter):
             query = f"after:{since}"
         else:
             query = "newer_than:1d"
-        return await self.list_messages(query=query, sender=sender, domain=domain)
+        return await self.list_messages(
+            query=query, count=count, sender=sender, domain=domain
+        )
 
     async def list_messages(
         self,

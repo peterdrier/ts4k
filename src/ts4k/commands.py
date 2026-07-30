@@ -371,16 +371,24 @@ async def _fetch_for_source(
     provider = cfg.get("provider", "").lower()
     try:
         async with adapter:
+            # Over-fetch past count so the aggregation layer can see
+            # truncation (has_more / watermark direction). Everything
+            # fetched is returned; _fetch_messages truncates to count.
             if provider == "gmail":
                 query = _utc_to_gmail_query(since)
-                listing = await adapter.list_messages(query=query, count=count, sender=sender, domain=domain)
+                listing = await adapter.list_messages(
+                    query=query, count=count + 1, sender=sender, domain=domain
+                )
             else:
-                listing = await adapter.whatsnew(since=since, sender=sender, domain=domain)
+                listing = await adapter.whatsnew(
+                    since=since, sender=sender, domain=domain,
+                    count=max(count + 1, 200),
+                )
 
             if not listing:
                 return []
             messages = []
-            for entry in listing[:count]:
+            for entry in listing:
                 msg = _normalize_message(entry)
                 msg.setdefault("source", prefix)
                 cache.store_message(msg.get("id", ""), msg)

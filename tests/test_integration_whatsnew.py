@@ -224,6 +224,66 @@ class TestWatermarkDoesNotSkip:
         assert "T21:" in wm_o
 
 
+class _StubAdapter:
+    """Minimal adapter stub for exercising the real _fetch_for_source."""
+
+    def __init__(self, msgs):
+        self._msgs = msgs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def whatsnew(self, since=None, sender=None, domain=None, count=200):
+        return self._msgs[:count]
+
+    async def list_messages(self, query=None, count=20, page_token=None,
+                            sender=None, domain=None):
+        return self._msgs[:count]
+
+
+class TestSingleSourceTruncationVisible:
+    """PR #50 review: _fetch_for_source must not pre-slice to count, or a
+    single source with more than count new messages looks fully returned —
+    has_more stays False and the watermark skips the rest permanently."""
+
+    @pytest.mark.asyncio
+    async def test_single_source_over_count_sets_has_more(self, monkeypatch):
+        msgs = _fake_messages("o", 10, base_hour=1)
+
+        def fake_make_adapter(prefix, cfg):
+            return _StubAdapter(list(reversed(msgs))) if prefix == "o" else None
+
+        monkeypatch.setattr(commands, "_make_adapter", fake_make_adapter)
+
+        result = await commands.whatsnew(key="single_trunc", source="o", count=3)
+        assert result.has_more is True
+        assert result.messages_processed == 3
+
+        # Truncated source → watermark at oldest returned, not newest.
+        # 10 messages at hours 1-10, top 3 = T10, T09, T08.
+        wm_o = kwm.get("single_trunc", "o")
+        assert wm_o is not None
+        assert "T08:" in wm_o
+
+    @pytest.mark.asyncio
+    async def test_single_gmail_source_over_count_sets_has_more(self, monkeypatch):
+        msgs = _fake_messages("g", 10, base_hour=1)
+
+        def fake_make_adapter(prefix, cfg):
+            return _StubAdapter(list(reversed(msgs))) if prefix == "g" else None
+
+        monkeypatch.setattr(commands, "_make_adapter", fake_make_adapter)
+
+        result = await commands.whatsnew(key="single_trunc_g", source="g", count=3)
+        assert result.has_more is True
+        wm_g = kwm.get("single_trunc_g", "g")
+        assert wm_g is not None
+        assert "T08:" in wm_g
+
+
 class TestFilterBeforeCount:
     """Bug #25: filters must apply before count truncation."""
 

@@ -54,6 +54,10 @@ class TestMessagingStubs:
     async def test_whatsnew_returns_empty(self, adapter: O365CalAdapter):
         assert await adapter.whatsnew() == []
 
+    async def test_whatsnew_accepts_count(self, adapter: O365CalAdapter):
+        """The command layer passes count= to every non-Gmail source."""
+        assert await adapter.whatsnew(since="2026-01-01", count=200) == []
+
     async def test_list_messages_returns_empty(self, adapter: O365CalAdapter):
         assert await adapter.list_messages() == []
 

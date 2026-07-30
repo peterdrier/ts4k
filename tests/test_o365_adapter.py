@@ -449,6 +449,56 @@ class TestO365AdapterWhatsnew:
         call_args = adapter._client.get.call_args
         assert "receivedDateTime ge" in call_args[1]["params"]["$filter"]
 
+    @pytest.mark.asyncio
+    async def test_count_below_page_size_caps_top(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.whatsnew(since="2026-02-20T00:00:00Z", count=50)
+
+        call_args = adapter._client.get.call_args
+        assert call_args[1]["params"]["$top"] == "50"
+
+    @pytest.mark.asyncio
+    async def test_follows_next_link_past_page_cap(self):
+        adapter = _make_adapter()
+        next_url = "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc"
+        page1 = {
+            "value": LIST_RESPONSE_DATA["value"],
+            "@odata.nextLink": next_url,
+        }
+        page2 = {
+            "value": [
+                {
+                    "id": "AAMkAGQ0Zjg0MDEzLWI4",
+                    "subject": "Older message",
+                    "receivedDateTime": "2026-02-19T09:00:00Z",
+                }
+            ]
+        }
+        adapter._client.get = AsyncMock(
+            side_effect=[_mock_response(page1), _mock_response(page2)]
+        )
+        results = await adapter.whatsnew(since="2026-01-01T00:00:00Z", count=300)
+
+        assert adapter._client.get.call_count == 2
+        assert adapter._client.get.call_args_list[1][0][0] == next_url
+        assert len(results) == 3
+
+    @pytest.mark.asyncio
+    async def test_stops_following_when_count_reached(self):
+        adapter = _make_adapter()
+        page1 = {
+            "value": LIST_RESPONSE_DATA["value"],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/next",
+        }
+        adapter._client.get = AsyncMock(return_value=_mock_response(page1))
+        results = await adapter.whatsnew(since="2026-01-01T00:00:00Z", count=2)
+
+        assert adapter._client.get.call_count == 1
+        assert len(results) == 2
+
 
 class TestO365AdapterListMessages:
     """Test O365Adapter.list_messages() with mocked httpx client."""
@@ -716,6 +766,22 @@ class TestO365AdapterSenderFilter:
         assert "alice@contoso.com" in filt
 
     @pytest.mark.asyncio
+    async def test_sender_filter_keeps_newest_first_order(self):
+        """Graph allows $orderby with a from-filter only when the orderby
+        property leads the $filter — without it, results come back
+        oldest-first and small -n truncates to the wrong end."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.list_messages(sender="alice@contoso.com")
+
+        call_args = adapter._client.get.call_args
+        params = call_args[1]["params"]
+        assert params["$orderby"] == "receivedDateTime desc"
+        assert params["$filter"].startswith("receivedDateTime ge ")
+
+    @pytest.mark.asyncio
     async def test_domain_filter_on_list(self):
         adapter = _make_adapter()
         adapter._client.get = AsyncMock(
@@ -732,7 +798,8 @@ class TestO365AdapterSenderFilter:
 
     @pytest.mark.asyncio
     async def test_sender_filter_with_query(self):
-        """Sender filter + free-text query should both be present."""
+        """Graph rejects $search + $filter on messages (400), so sender must
+        fold into the KQL search string like the domain path does."""
         adapter = _make_adapter()
         adapter._client.get = AsyncMock(
             return_value=_mock_response(LIST_RESPONSE_EMPTY)
@@ -741,9 +808,8 @@ class TestO365AdapterSenderFilter:
 
         call_args = adapter._client.get.call_args
         params = call_args[1]["params"]
-        assert "$search" in params
-        assert "$filter" in params
-        assert "alice@contoso.com" in params["$filter"]
+        assert "$filter" not in params
+        assert params["$search"] == '"from:alice@contoso.com budget"'
 
 
 class TestStripPrefix:

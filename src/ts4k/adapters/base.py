@@ -59,6 +59,7 @@ class BaseAdapter(ABC):
         since: str | None = None,
         sender: str | None = None,
         domain: str | None = None,
+        count: int = 200,
     ) -> list[dict]:
         """Return new activity since *since* (ISO-8601 timestamp).
 
@@ -68,6 +69,10 @@ class BaseAdapter(ABC):
         *sender* filters to an exact email address; *domain* filters to
         all addresses at that domain.  Both are optional and adapter-
         specific (some adapters may ignore them).
+
+        *count* is the fetch target — adapters that paginate should keep
+        fetching pages until they have *count* results or run out. Best
+        effort; adapters with hard platform caps may return fewer.
 
         Each item in the returned list is a normalised header dict with at
         least: ``id``, ``thread_id``, ``from``, ``subject``, ``date``.

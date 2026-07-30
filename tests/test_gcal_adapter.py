@@ -42,6 +42,11 @@ class TestMessagingStubs:
         result = await adapter.whatsnew(since="2026-01-01")
         assert result == []
 
+    async def test_whatsnew_accepts_count(self, adapter: GcalAdapter):
+        """The command layer passes count= to every non-Gmail source."""
+        result = await adapter.whatsnew(since="2026-01-01", count=200)
+        assert result == []
+
     async def test_list_messages_returns_empty(self, adapter: GcalAdapter):
         result = await adapter.list_messages()
         assert result == []
