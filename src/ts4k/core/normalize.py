@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import html2text
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
