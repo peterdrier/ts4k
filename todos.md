@@ -1,11 +1,14 @@
 # ts4k — Open Work
-Last synced: 2026-03-22T09:00 (v0.1.20)
+Last synced: 2026-07-30 (v0.1.21)
 
 ## P1 — Bugs / Reliability
 
-- [ ] **whatsnew watermark skips unread messages** [#23](https://github.com/peterdrier/ts4k/issues/23) — When `count < total new`, watermark advances past all messages but only returns `count`. Permanently skips the rest.
-- [ ] **O365 bodyPreview cached as full body** [#24](https://github.com/peterdrier/ts4k/issues/24) — O365 adapter stores `bodyPreview` as `body`; cache treats it as full content. `get` returns truncated snippet instead of real body.
-- [ ] **count applied before filters under-fills results** [#25](https://github.com/peterdrier/ts4k/issues/25) — Sort+slice to `count` happens before `apply_filters()`. Filtered messages consume result slots, returning fewer actionable messages than requested.
+- [x] ~~**whatsnew watermark skips unread messages**~~ [#23](https://github.com/peterdrier/ts4k/issues/23) — Fixed: per-source watermark direction. (v0.1.20)
+- [x] ~~**O365 bodyPreview cached as full body**~~ [#24](https://github.com/peterdrier/ts4k/issues/24) — Fixed: `_size` falls back to snippet when body absent; bodyPreview no longer cached as full body. (v0.1.20)
+- [x] ~~**count applied before filters under-fills results**~~ [#25](https://github.com/peterdrier/ts4k/issues/25) — Fixed: filter before count slice. (v0.1.20)
+- [x] ~~**mcp 2.0.0 breaks fresh installs**~~ — mcp 2.0.0 removed `mcp.server.fastmcp`; pinned `mcp>=1.0,<2` (5fe10ac). Migration to mcp 2.x API deliberately deferred — MCP server mode has no active consumers.
+- [x] ~~**Unread flag in list/whatsnew output**~~ [#27](https://github.com/peterdrier/ts4k/issues/27) — `unread` from Gmail labelIds / Graph isRead; `*` marker column in pipe output. (v0.1.21, PR #29)
+- [x] ~~**Jules/Bolt PR backlog**~~ — 16 duplicate daily perf PRs triaged: #45 merged (regex pre-compilation in normalize.py), rest closed. Bolt's daily task on jules.google.com may need retargeting/disabling.
 - [x] ~~**`status` reports false [ok] for expired tokens**~~ [#21](https://github.com/peterdrier/ts4k/issues/21) — Fixed: unified `ts4k auth [target]` command, token health validation with scope checking, `[ok]`/`[auth]`/`[error]`/`[na]` tags in status output. (v0.1.18)
 - [x] ~~**Deploy plan drift**~~ — deploy-plan.md updated: connector table reflects direct APIs for Gmail/O365, submodule scope reduced, s6 justification revised. Intentions doc created at `docs/intentions.md`. (codex-issues #3)
 - [ ] **Secrets handling unresolved** — .env/mounted secrets/wizard undecided while connector creds are central. Security gap in deployment path. (codex-issues #4)
@@ -28,6 +31,7 @@ Last synced: 2026-03-22T09:00 (v0.1.20)
 - [ ] **Skill output: agents check --help too often** [#16](https://github.com/peterdrier/ts4k/issues/16) — Agents call `--help` 4x/session. Skill output needs compact cheat sheet with `get` syntax examples. Clarify argument order.
 - [ ] **Document known-empty/noisy inboxes** [#17](https://github.com/peterdrier/ts4k/issues/17) — Agents waste calls widening date ranges on empty/low-traffic inboxes. Add inbox metadata to `skill` output or `ts4k sources` command showing activity level, noise patterns, recommended date ranges.
 - [ ] **Setup doc deep links** [#5](https://github.com/peterdrier/ts4k/issues/5) — Add direct console/portal URLs to Gmail/O365 setup docs so users don't have to navigate by menu path. Gmail needs 4 deep links; O365 sidebar hints. Partially addressed by O365 doc improvements (c948c36, ea07f3d).
+- [ ] **Surface WhatsApp voice note transcripts** [#48](https://github.com/peterdrier/ts4k/issues/48) — Pass through transcripts from the whatsapp-mcp bridge (transcription itself lives in [whatsapp-mcp#3](https://github.com/peterdrier/whatsapp-mcp/issues/3): background queue + local Whisper). Verify transcript flows through normalize→filter→format; `[voice 0:42]` marker in listings; skill text mention. Blocked on the bridge work.
 
 ## P3 — Architecture / Quality
 
