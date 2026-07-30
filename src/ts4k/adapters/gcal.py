@@ -117,7 +117,8 @@ class GcalAdapter(BaseAdapter):
 
     async def whatsnew(self, since: str | None = None,
                        sender: str | None = None,
-                       domain: str | None = None) -> list[dict]:
+                       domain: str | None = None,
+                       count: int = 200) -> list[dict]:
         return []
 
     async def list_messages(self, query: str | None = None,
