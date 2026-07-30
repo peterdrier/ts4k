@@ -2395,7 +2395,10 @@ async def cal_rsvp(ref_or_id: str, source: str | None, status: str, ref_table: R
     if adapter is None:
         return f"Error: could not create adapter for '{prefix}'"
 
-    async with adapter:
-        event = await adapter.rsvp(event_id, status=status)
+    try:
+        async with adapter:
+            event = await adapter.rsvp(event_id, status=status)
+    except (ValueError, RuntimeError) as e:
+        return f"Error: {e}"
 
     return f"RSVP {status}: {event['title']} ({event['id']})"

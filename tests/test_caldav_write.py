@@ -112,3 +112,76 @@ END:VCALENDAR
         obj.save.assert_called_once()
         assert e["title"] == "New"
         assert e["start"] == "2026-07-30T12:00:00+02:00"
+
+
+INVITE_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:inv1
+SUMMARY:Party
+DTSTART;TZID=Europe/Amsterdam:20260730T190000
+DTEND;TZID=Europe/Amsterdam:20260730T230000
+ORGANIZER:mailto:org@example.com
+ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:test@icloud.com
+ATTENDEE;PARTSTAT=ACCEPTED:mailto:other@example.com
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def _invite_obj():
+    obj = MagicMock(spec=["icalendar_component", "save"])  # no accept_invite → manual path
+    obj.icalendar_component = IcsCalendar.from_ical(INVITE_ICS).walk("VEVENT")[0]
+    return obj
+
+
+class TestRsvp:
+    async def test_manual_partstat_path(self, tmp_path: Path):
+        a = _adapter(tmp_path, "modify")
+        obj = _invite_obj()
+        a._calendar.event_by_uid.return_value = obj
+        e = await a.rsvp("cc:inv1", "accepted")
+        obj.save.assert_called_once()
+        assert e["your_status"] == "accepted"
+
+    async def test_invite_helper_preferred_when_available(self, tmp_path: Path):
+        a = _adapter(tmp_path, "modify")
+        obj = MagicMock()  # has accept_invite (MagicMock auto-attrs)
+        obj.icalendar_component = IcsCalendar.from_ical(INVITE_ICS).walk("VEVENT")[0]
+        a._calendar.event_by_uid.return_value = obj
+        await a.rsvp("cc:inv1", "accepted")
+        obj.accept_invite.assert_called_once()
+        obj.save.assert_not_called()
+
+    async def test_invite_helper_failure_falls_back_to_manual(self, tmp_path: Path):
+        a = _adapter(tmp_path, "modify")
+        obj = MagicMock()
+        obj.icalendar_component = IcsCalendar.from_ical(INVITE_ICS).walk("VEVENT")[0]
+        obj.accept_invite.side_effect = Exception("scheduling not supported")
+        a._calendar.event_by_uid.return_value = obj
+        e = await a.rsvp("cc:inv1", "accepted")
+        obj.save.assert_called_once()
+        assert e["your_status"] == "accepted"
+
+    async def test_server_rejection_raises_actionable_runtimeerror(self, tmp_path: Path):
+        a = _adapter(tmp_path, "modify")
+        obj = _invite_obj()
+        obj.save.side_effect = Exception("403 Forbidden")
+        a._calendar.event_by_uid.return_value = obj
+        with pytest.raises(RuntimeError, match="Calendar app"):
+            await a.rsvp("cc:inv1", "accepted")
+
+    async def test_not_an_attendee_raises_valueerror(self, tmp_path: Path):
+        a = _adapter(tmp_path, "modify")
+        ics = INVITE_ICS.replace("mailto:test@icloud.com", "mailto:someoneelse@x.com")
+        obj = MagicMock(spec=["icalendar_component", "save"])
+        obj.icalendar_component = IcsCalendar.from_ical(ics).walk("VEVENT")[0]
+        a._calendar.event_by_uid.return_value = obj
+        with pytest.raises(ValueError, match="not an attendee"):
+            await a.rsvp("cc:inv1", "accepted")
+
+    async def test_bad_status_raises_valueerror(self, tmp_path: Path):
+        a = _adapter(tmp_path, "modify")
+        with pytest.raises(ValueError, match="status"):
+            await a.rsvp("cc:inv1", "maybe")

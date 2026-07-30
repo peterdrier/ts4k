@@ -444,9 +444,68 @@ class CaldavAdapter(BaseAdapter):
         return self._normalize_component(comp)
 
     async def rsvp(self, event_id: str, status: str) -> dict:
-        """RSVP to an event. Requires MODIFY level."""
+        """RSVP to an event. Requires MODIFY level.
+
+        Prefers the caldav library's scheduling helpers (accept_invite etc.)
+        when present; falls back to editing PARTSTAT directly.  iCloud often
+        rejects scheduling writes on externally-organized invites — surfaced
+        as a clean RuntimeError, never a stack trace.
+        """
         self._check_modify("rsvp")
-        raise NotImplementedError("CalDAV rsvp is implemented in Task 6")
+
+        helper_names = {
+            "accepted": "accept_invite",
+            "declined": "decline_invite",
+            "tentative": "tentatively_accept_invite",
+        }
+        partstat_values = {
+            "accepted": "ACCEPTED",
+            "declined": "DECLINED",
+            "tentative": "TENTATIVE",
+        }
+        if status not in partstat_values:
+            raise ValueError(
+                f"Invalid RSVP status {status!r} — use accepted, declined, or tentative"
+            )
+
+        raw = self._strip_prefix(event_id)
+        uid = raw.split("::")[0]
+        obj = await self._fetch_by_uid(uid)
+        comp = obj.icalendar_component
+
+        my_email = self._config.email.lower()
+        raw_attendees = comp.get("ATTENDEE")
+        if raw_attendees is None:
+            raw_attendees = []
+        elif not isinstance(raw_attendees, list):
+            raw_attendees = [raw_attendees]
+        me = next(
+            (a for a in raw_attendees if _strip_mailto(a).lower() == my_email), None
+        )
+        if me is None:
+            raise ValueError(
+                f"{self._config.email} is not an attendee on this event — "
+                f"cannot RSVP"
+            )
+
+        helper = getattr(obj, helper_names[status], None)
+        if callable(helper):
+            try:
+                await asyncio.to_thread(helper)
+                return self._normalize_component(comp)
+            except Exception:
+                logger.info("caldav invite helper failed; falling back to PARTSTAT edit")
+
+        me.params["PARTSTAT"] = partstat_values[status]
+        try:
+            await asyncio.to_thread(obj.save)
+        except Exception as e:
+            raise RuntimeError(
+                f"RSVP not accepted by the server ({e}) — iCloud often blocks "
+                f"programmatic replies to external invites; respond in the "
+                f"Calendar app instead"
+            ) from e
+        return self._normalize_component(comp)
 
     # -- Helpers ---------------------------------------------------------------
 
