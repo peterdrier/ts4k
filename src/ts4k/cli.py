@@ -272,6 +272,80 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 # Bare email address — treat as email=value
                 kwargs["email"] = kv.strip()
 
+        # Apple/iCloud preset → generic caldav provider
+        from ts4k.auth.caldav import ICLOUD_CALDAV_URL
+        _CALDAV_ALIASES = {"apple": ICLOUD_CALDAV_URL, "icloud": ICLOUD_CALDAV_URL,
+                           "apple-calendar": ICLOUD_CALDAV_URL}
+        if provider in _CALDAV_ALIASES:
+            kwargs.setdefault("server_url", _CALDAV_ALIASES[provider])
+            provider = "caldav"
+
+        if provider == "caldav":
+            email = kwargs.get("email")
+            if not email:
+                print("Error: email is required for CalDAV sources.")
+                print(f"Usage: ts4k src add {prefix} apple email=you@icloud.com")
+                return
+            kwargs.setdefault("server_url", ICLOUD_CALDAV_URL)
+
+            from ts4k.auth.caldav import load_credentials, save_credentials
+            if load_credentials(email) is None:
+                import getpass
+                print("An app-specific password is required "
+                      "(https://account.apple.com → Sign-In and Security → "
+                      "App-Specific Passwords; needs 2FA).")
+                pw = getpass.getpass(f"App-specific password for {email}: ")
+                if not pw:
+                    print("No password entered — aborting.")
+                    return
+                save_credentials(email, username=email, app_password=pw,
+                                 server_url=kwargs["server_url"])
+                print(f"Saved credentials for {email}.")
+
+            if "calendar_id" not in kwargs:
+                print(f"Fetching calendars for {email}...")
+                try:
+                    cals = asyncio.run(commands.cal_list_caldav_calendars(email))
+                except Exception as e:
+                    print(f"Error: could not list calendars — {e}")
+                    return
+                if not cals:
+                    print("No calendars found.")
+                    return
+                for i, cal in enumerate(cals, 1):
+                    print(f"  {i}. {cal['summary']}")
+                choice = input("Which calendars? (comma-separated, or 'all'): ").strip()
+                if choice.lower() == "all":
+                    selected = cals
+                else:
+                    indices = [int(i.strip()) - 1
+                               for i in choice.split(",") if i.strip().isdigit()]
+                    selected = [cals[i] for i in indices if 0 <= i < len(cals)]
+                if not selected:
+                    print("No calendars selected.")
+                    return
+                all_sources = sources.list_all()
+                for n, cal in enumerate(selected):
+                    if n == 0 and prefix not in all_sources:
+                        pfx = prefix
+                    else:
+                        suggested = _suggest_cal_prefix(cal["summary"], all_sources,
+                                                        provider="caldav")
+                        pfx = input(f"Prefix for '{cal['summary']}'? [{suggested}]: ").strip() or suggested
+                    if pfx in all_sources:
+                        print(f"  Prefix '{pfx}' already in use — skipping.")
+                        continue
+                    sources.add(
+                        pfx, provider="caldav", email=email,
+                        server_url=kwargs["server_url"],
+                        calendar_id=cal["id"], calendar_name=cal["summary"],
+                        timezone=cal.get("timezone", "UTC"), level="readonly",
+                    )
+                    all_sources[pfx] = {}
+                    print(f"  Added '{cal['summary']}' as '{pfx}' (readonly)")
+                return
+            # calendar_id given explicitly → fall through to generic sources.add
+
         # For O365: inherit client_id/tenant_id from existing O365 source
         # if not explicitly provided (same app registration for all mailboxes).
         if provider == "o365":
@@ -843,7 +917,7 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
 
 def _suggest_cal_prefix(name: str, existing: dict, provider: str = "gcal") -> str:
     """Suggest a short prefix for a calendar name."""
-    base = "oc" if provider == "o365cal" else "gc"
+    base = {"o365cal": "oc", "caldav": "cc"}.get(provider, "gc")
     # Use first letter of each word after base
     words = name.lower().replace("@", " ").replace(".", " ").split()
     if words and words[0] not in ("primary", "my"):
@@ -1209,10 +1283,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "  gmail:    email (required), mcp_url, transport\n"
             "  whatsapp: mcp_cwd (required), server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
+            "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
             "\n"
             "examples:\n"
             '  ts4k src add g gmail email=you@gmail.com\n'
             '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
+            '  ts4k src add cc apple email=you@icloud.com\n'
             "\n"
             "List fields (server_command) are auto-split on spaces.\n"
             "A bare email (user@example.com) is treated as email=user@example.com."
@@ -1220,7 +1296,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp")
+    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp, apple/icloud/caldav")
     sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
     sr_rm = sr_sub.add_parser("rm", help="Remove a source",
