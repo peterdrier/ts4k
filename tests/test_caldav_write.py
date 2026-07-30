@@ -88,7 +88,40 @@ class TestCreateEvent:
         a._calendar.save_event.side_effect = _echo_save_event
         e = await a.create_event("X", "2026-07-30T10:00:00", "2026-07-30T11:00:00",
                                  attendees=["a@example.com"])
-        assert e["attendees_summary"] == "1 people"
+        # Organizer is now added as a self-attendee alongside the invitee.
+        assert e["attendees_summary"] == "2 people"
+
+    async def test_organizer_added_when_attendees_present(self, tmp_path: Path):
+        # RFC 6638 scheduling requires ORGANIZER on invite-bearing events, or
+        # iCloud stores attendees inertly and never sends invites.
+        a = _adapter(tmp_path, "send")
+        a._calendar.save_event.side_effect = _echo_save_event
+        await a.create_event("X", "2026-07-30T10:00:00", "2026-07-30T11:00:00",
+                             attendees=["a@example.com"])
+        sent_ics = a._calendar.save_event.call_args.args[0]
+        assert "ORGANIZER" in sent_ics
+        assert "mailto:test@icloud.com" in sent_ics
+        parsed = IcsCalendar.from_ical(sent_ics).walk("VEVENT")[0]
+        organizer = parsed.get("ORGANIZER")
+        assert organizer is not None
+        assert str(organizer).lower().endswith("test@icloud.com")
+        attendees = parsed.get("ATTENDEE")
+        if not isinstance(attendees, list):
+            attendees = [attendees]
+        organizer_attendee = next(
+            (att for att in attendees if str(att).lower().endswith("test@icloud.com")),
+            None,
+        )
+        assert organizer_attendee is not None
+        assert str(organizer_attendee.params.get("ROLE")) == "CHAIR"
+        assert str(organizer_attendee.params.get("PARTSTAT")) == "ACCEPTED"
+
+    async def test_no_organizer_when_no_attendees(self, tmp_path: Path):
+        a = _adapter(tmp_path, "draft")
+        a._calendar.save_event.side_effect = _echo_save_event
+        await a.create_event("X", "2026-07-30T10:00:00", "2026-07-30T11:00:00")
+        sent_ics = a._calendar.save_event.call_args.args[0]
+        assert "ORGANIZER" not in sent_ics
 
 
 class TestUpdateEvent:

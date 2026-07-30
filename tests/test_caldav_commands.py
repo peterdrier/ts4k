@@ -65,6 +65,39 @@ class TestCalGates:
         assert out == "Created: X (cc:1)"
 
 
+class TestCalFetchEventsIsolation:
+    async def test_one_source_failing_does_not_abort_others(self, monkeypatch):
+        # A revoked app-specific password (or any adapter connect failure)
+        # should not take down `cal today/week` for the other sources.
+        broken_cfg = dict(CALDAV_CFG)
+        ok_cfg = dict(CALDAV_CFG)
+
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all",
+            lambda: {"broken": broken_cfg, "ok": ok_cfg},
+        )
+
+        broken_adapter = MagicMock()
+        broken_adapter.__aenter__ = AsyncMock(side_effect=RuntimeError("bad app password"))
+        broken_adapter.__aexit__ = AsyncMock(return_value=None)
+
+        ok_event = {"id": "ok:1", "title": "Standup", "start": "2026-07-30T09:00:00"}
+        ok_adapter = MagicMock()
+        ok_adapter.__aenter__ = AsyncMock(return_value=ok_adapter)
+        ok_adapter.__aexit__ = AsyncMock(return_value=None)
+        ok_adapter.list_events = AsyncMock(return_value=[ok_event])
+
+        def fake_make_adapter(prefix, cfg):
+            return broken_adapter if prefix == "broken" else ok_adapter
+
+        monkeypatch.setattr(commands, "_make_adapter", fake_make_adapter)
+
+        events = await commands._cal_fetch_events(
+            None, "2026-07-30T00:00:00", "2026-07-31T00:00:00"
+        )
+        assert events == [ok_event]
+
+
 class TestTokenHealth:
     def test_caldav_with_credentials_is_ok(self, tmp_path: Path, monkeypatch):
         from ts4k.auth.caldav import ICLOUD_CALDAV_URL, save_credentials

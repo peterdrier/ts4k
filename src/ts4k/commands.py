@@ -1979,7 +1979,7 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         email = cfg.get("email", "")
         if not email:
             return TokenHealth(status="na", expiry=None, scopes=[], detail="no email configured")
-        if load_credentials(email) is None:
+        if load_credentials(email, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
             return TokenHealth(status="na", expiry=None, scopes=[],
                                detail="no credentials — run: ts4k src add <prefix> apple email=" + email)
         return TokenHealth(status="ok", expiry=None, scopes=[], detail="app-specific password")
@@ -2192,9 +2192,12 @@ async def _cal_fetch_events(
         adapter = _make_adapter(pfx, cfg)
         if adapter is None:
             continue
-        async with adapter:
-            events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
-            all_events.extend(events)
+        try:
+            async with adapter:
+                events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
+                all_events.extend(events)
+        except Exception as exc:
+            logger.warning("[%s] calendar adapter failed: %s", pfx, exc)
 
     # Sort by start time
     all_events.sort(key=lambda e: e.get("start", ""))

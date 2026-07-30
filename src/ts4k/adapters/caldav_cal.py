@@ -389,6 +389,18 @@ class CaldavAdapter(BaseAdapter):
             vevent.add("DESCRIPTION", description)
         if location:
             vevent.add("LOCATION", location)
+        if attendees:
+            # RFC 6638 scheduling requires ORGANIZER on invite-bearing events;
+            # without it iCloud stores attendees inertly and never sends invites.
+            org = vCalAddress(f"mailto:{self._config.email}")
+            org.params["CN"] = self._config.email
+            vevent.add("ORGANIZER", org, encode=0)
+
+            self_att = vCalAddress(f"mailto:{self._config.email}")
+            self_att.params["PARTSTAT"] = "ACCEPTED"
+            self_att.params["ROLE"] = "CHAIR"
+            vevent.add("ATTENDEE", self_att, encode=0)
+
         for email in attendees or []:
             att = vCalAddress(f"mailto:{email}")
             att.params["PARTSTAT"] = "NEEDS-ACTION"
@@ -493,8 +505,8 @@ class CaldavAdapter(BaseAdapter):
             try:
                 await asyncio.to_thread(helper)
                 return self._normalize_component(comp)
-            except Exception:
-                logger.info("caldav invite helper failed; falling back to PARTSTAT edit")
+            except Exception as e:
+                logger.info("caldav invite helper failed (%s); falling back to PARTSTAT edit", e)
 
         me.params["PARTSTAT"] = partstat_values[status]
         try:
