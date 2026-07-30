@@ -909,6 +909,7 @@ git commit -m "feat: CalDAV read_event and list_calendars"
 
 **Files:**
 - Modify: `src/ts4k/adapters/caldav_cal.py`
+- Modify: `src/ts4k/core/levels.py:46` — the SEND-level calendar-provider allowlist `("gcal", "o365cal")` becomes `("gcal", "o365cal", "caldav")`. Without this, `check_level` raises `NotImplementedError` for any caldav SEND-level operation before the level comparison runs, and `create_event(attendees=...)` can never be permitted.
 - Test: `tests/test_caldav_write.py` (new file, mirrors `tests/test_gcal_write.py` structure)
 
 **Interfaces:**
@@ -1000,6 +1001,15 @@ class TestCreateEvent:
         with pytest.raises(PermissionError):
             await a.create_event("X", "2026-07-30T10:00:00", "2026-07-30T11:00:00",
                                  attendees=["a@example.com"])
+
+    async def test_attendees_allowed_at_send_level(self, tmp_path: Path):
+        # Requires "caldav" in the SEND calendar-provider allowlist (levels.py:46);
+        # without it check_level raises NotImplementedError regardless of level.
+        a = _adapter(tmp_path, "send")
+        a._calendar.save_event.side_effect = _echo_save_event
+        e = await a.create_event("X", "2026-07-30T10:00:00", "2026-07-30T11:00:00",
+                                 attendees=["a@example.com"])
+        assert e["attendees_summary"] == "1 people"
 
 
 class TestUpdateEvent:
@@ -1820,6 +1830,6 @@ Record any API-shape surprises (e.g. `event_by_uid` missing on the installed cal
 
 ## Self-Review Notes
 
-- **Spec coverage:** provider shape/aliases (T7, T8), full surface incl. RSVP (T3–T6), credentials 0600 + interactive prompt (T1, T8), caldav library + to_thread (T2+), normalization parity incl. instance expansion (T3), levels as local gates (T2, T5; `scopes_for` already returns `[]` for unknown providers — no levels.py change needed, verified against `src/ts4k/core/levels.py:120`), actionable auth errors (T2), RSVP degradation (T6), client-side text search (no code change needed — text filtering doesn't pass through adapters' `list_events`; documented in README, T9), platform isolation (existing per-adapter error handling in command layer, unchanged), README docs + smoke test (T9).
+- **Spec coverage:** provider shape/aliases (T7, T8), full surface incl. RSVP (T3–T6), credentials 0600 + interactive prompt (T1, T8), caldav library + to_thread (T2+), normalization parity incl. instance expansion (T3), levels as local gates (T2, T5; `scopes_for` already returns `[]` for unknown providers, but the SEND calendar allowlist at `src/ts4k/core/levels.py:46` must gain `"caldav"` — done in T5), actionable auth errors (T2), RSVP degradation (T6), client-side text search (no code change needed — text filtering doesn't pass through adapters' `list_events`; documented in README, T9), platform isolation (existing per-adapter error handling in command layer, unchanged), README docs + smoke test (T9).
 - **Known API-risk points** (all caught by the smoke test, all localized to the adapter): `Calendar.event_by_uid` alias availability, `search(expand=True)` client-side fallback behavior, `DAVClient.close()` availability. Where a check is cheap, the task text says to verify at implementation time.
 - Exception type for level violations must be confirmed in Task 5 Step 1 (mirror `tests/test_o365cal_levels.py`).
