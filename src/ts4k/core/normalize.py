@@ -70,6 +70,13 @@ def normalize(html: str) -> str:
     return text.strip()
 
 
+# Pre-compiled regexes for performance: Header normalization
+_MULTIPLE_SPACES_PATTERN = re.compile(r"\s+")
+_DISPLAY_NAME_EMAIL_PATTERN = re.compile(r".*<([^>]+)>")
+_REDUNDANT_RE_FWD_PATTERN = re.compile(r"^((?:Re|Fwd?)\s*:\s*)+", flags=re.IGNORECASE)
+_HAS_RE_PATTERN = re.compile(r"(?:Re\s*:\s*)+", re.IGNORECASE)
+_HAS_FWD_PATTERN = re.compile(r"(?:Fwd?\s*:\s*)+", re.IGNORECASE)
+
 def normalize_headers(raw_headers: dict) -> dict:
     """Normalize message header fields.
 
@@ -89,7 +96,7 @@ def normalize_headers(raw_headers: dict) -> dict:
         if isinstance(value, str):
             value = value.strip()
             # Collapse internal whitespace in header values (folded headers)
-            value = re.sub(r"\s+", " ", value)
+            value = _MULTIPLE_SPACES_PATTERN.sub(" ", value)
 
         if norm_key == "date" and isinstance(value, str):
             result[norm_key] = _normalize_date(value)
@@ -107,6 +114,14 @@ def normalize_headers(raw_headers: dict) -> dict:
 # HTML detection
 # ---------------------------------------------------------------------------
 
+# Pre-compiled regex for performance: Detects common HTML structural tags
+_HTML_TAG_PATTERN = re.compile(
+    r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
+    r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
+    r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
+    re.IGNORECASE,
+)
+
 def _looks_like_html(text: str) -> bool:
     """Determine if text is HTML rather than plain text.
 
@@ -114,18 +129,23 @@ def _looks_like_html(text: str) -> bool:
     like <alice@example.com> which appear in plain-text reply headers.
     """
     # Look for common HTML structural tags (not just any angle-bracket pattern)
-    html_tag_pattern = re.compile(
-        r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
-        r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
-        r"blockquote|center|font|!DOCTYPE|!--)[^>]*>",
-        re.IGNORECASE,
-    )
-    return bool(html_tag_pattern.search(text))
+    return bool(_HTML_TAG_PATTERN.search(text))
 
 
 # ---------------------------------------------------------------------------
 # HTML preprocessing (BeautifulSoup phase)
 # ---------------------------------------------------------------------------
+
+# Pre-compiled regex for performance: Tracking pixel URL patterns combined with OR
+_TRACKING_PIXEL_PATTERN = re.compile(
+    r"track|pixel|beacon|open\.|(?:\.gif\?)|mailtrack|t\.co/|click\.|/o\.gif|spacer|transparent|/t\?|wf\.gif",
+    re.IGNORECASE
+)
+
+# Pre-compiled regexes for performance: Hidden elements styles
+_DISPLAY_NONE_PATTERN = re.compile(r"display\s*:\s*none", re.IGNORECASE)
+_VISIBILITY_HIDDEN_PATTERN = re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)
+_ZERO_SIZE_PATTERN = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
 
 def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
     """Remove 1x1 images, pixel trackers, and invisible images."""
@@ -154,12 +174,7 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
 
         # Check for common tracking pixel URL patterns
         src = img.get("src", "")
-        tracking_patterns = [
-            r"track", r"pixel", r"beacon", r"open\.", r"\.gif\?",
-            r"mailtrack", r"t\.co/", r"click\.", r"/o\.gif",
-            r"spacer", r"transparent", r"/t\?", r"wf\.gif",
-        ]
-        if src and any(re.search(p, src, re.IGNORECASE) for p in tracking_patterns):
+        if src and _TRACKING_PIXEL_PATTERN.search(src):
             is_tiny = True
 
         # Check for images with no alt text and very small size
@@ -171,31 +186,33 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
 
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=re.compile(r"display\s*:\s*none", re.IGNORECASE)):
+    for el in soup.find_all(style=_DISPLAY_NONE_PATTERN):
         el.decompose()
-    for el in soup.find_all(style=re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)):
+    for el in soup.find_all(style=_VISIBILITY_HIDDEN_PATTERN):
         el.decompose()
     for el in soup.find_all(attrs={"hidden": True}):
         el.decompose()
     # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)):
+    for el in soup.find_all(style=_ZERO_SIZE_PATTERN):
         # Only remove if element has no visible text content
         if not el.get_text(strip=True):
             el.decompose()
 
+
+# Pre-compiled regex for performance: Unsubscribe patterns
+_UNSUB_PATTERNS_HTML = re.compile(
+    r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
+    r"|update\s+(?:your\s+)?preferences|notification\s+settings"
+    r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
+    r"|stop\s+receiving\s+these\s+emails",
+    re.IGNORECASE,
+)
 
 def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     """Remove unsubscribe / email preference sections from HTML before text conversion.
 
     These are typically in footer divs, tables, or paragraphs at the end.
     """
-    unsub_patterns = re.compile(
-        r"unsubscribe|opt[\s-]?out|email\s+preferences|manage\s+(?:your\s+)?subscriptions?"
-        r"|update\s+(?:your\s+)?preferences|notification\s+settings"
-        r"|mailing\s+list|no\s+longer\s+wish\s+to\s+receive"
-        r"|stop\s+receiving\s+these\s+emails",
-        re.IGNORECASE,
-    )
 
     # Remove links that are unsubscribe links.
     # Collect first, then decompose, to avoid mutating the tree during iteration.
@@ -225,7 +242,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if unsub_patterns.search(el_text) and len(el_text) < 1000:
+        if _UNSUB_PATTERNS_HTML.search(el_text) and len(el_text) < 1000:
             unsub_elements.append(el)
 
     for el in unsub_elements:
@@ -287,6 +304,11 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 # HTML → Text conversion
 # ---------------------------------------------------------------------------
 
+# Pre-compiled regexes for performance: Link and artifact cleanup
+_MD_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MAILTO_VISIBLE_PATTERN = re.compile(r"\s*\(<mailto:[^)]+>\)")
+_MAILTO_BARE_PATTERN = re.compile(r"<mailto:[^>]+>")
+
 def _html_to_text(html: str) -> str:
     """Convert HTML to plain text using html2text with LLM-friendly settings."""
     h = html2text.HTML2Text()
@@ -328,13 +350,13 @@ def _html_to_text(html: str) -> str:
 
         return f"{link_text} ({url})"
 
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _simplify_link, text)
+    text = _MD_LINK_PATTERN.sub(_simplify_link, text)
 
     # Clean up residual html2text artifacts
     # Remove (<mailto:addr>) when the address is already visible in text
-    text = re.sub(r"\s*\(<mailto:[^)]+>\)", "", text)
+    text = _MAILTO_VISIBLE_PATTERN.sub("", text)
     # Remove bare <mailto:addr> links
-    text = re.sub(r"<mailto:[^>]+>", "", text)
+    text = _MAILTO_BARE_PATTERN.sub("", text)
 
     return text
 
@@ -500,13 +522,17 @@ def _strip_unsubscribe_text(text: str) -> str:
     return text
 
 
+# Pre-compiled regexes for performance: Whitespace cleanup
+_TRAILING_WS_PATTERN = re.compile(r"[ \t]+$", flags=re.MULTILINE)
+_MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
+
 def _collapse_whitespace(text: str) -> str:
     """Collapse multiple blank lines, trailing spaces, normalize whitespace."""
     # Strip trailing whitespace from each line
-    text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
+    text = _TRAILING_WS_PATTERN.sub("", text)
 
     # Collapse 3+ consecutive newlines down to 2 (one blank line)
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)
 
     # Remove leading blank lines
     text = text.lstrip("\n")
@@ -548,7 +574,7 @@ def _normalize_date(date_str: str) -> str:
 def _normalize_address(addr: str) -> str:
     """Normalize email address fields — strip display names, lowercase domain."""
     # Handle "Display Name <email@domain.com>" format
-    m = re.match(r".*<([^>]+)>", addr)
+    m = _DISPLAY_NAME_EMAIL_PATTERN.match(addr)
     if m:
         email = m.group(1).strip()
     else:
@@ -565,11 +591,11 @@ def _normalize_address(addr: str) -> str:
 def _normalize_subject(subject: str) -> str:
     """Clean up subject lines — strip redundant Re:/Fwd: prefixes."""
     # Remove repeated Re: / Fwd: prefixes, keeping at most one
-    cleaned = re.sub(r"^((?:Re|Fwd?)\s*:\s*)+", "", subject, flags=re.IGNORECASE).strip()
+    cleaned = _REDUNDANT_RE_FWD_PATTERN.sub("", subject).strip()
 
     # Check if original had Re: or Fwd: — add back a single one
-    had_re = re.match(r"(?:Re\s*:\s*)+", subject, re.IGNORECASE)
-    had_fwd = re.match(r"(?:Fwd?\s*:\s*)+", subject, re.IGNORECASE)
+    had_re = _HAS_RE_PATTERN.match(subject)
+    had_fwd = _HAS_FWD_PATTERN.match(subject)
 
     if had_fwd:
         cleaned = f"Fwd: {cleaned}"
