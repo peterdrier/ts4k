@@ -375,7 +375,12 @@ async def _fetch_for_source(
                 query = _utc_to_gmail_query(since)
                 listing = await adapter.list_messages(query=query, count=count, sender=sender, domain=domain)
             else:
-                listing = await adapter.whatsnew(since=since, sender=sender, domain=domain)
+                # Over-fetch (count+1, floor 200) so truncation detection
+                # still sees "more available" past the requested count.
+                listing = await adapter.whatsnew(
+                    since=since, sender=sender, domain=domain,
+                    count=max(count + 1, 200),
+                )
 
             if not listing:
                 return []

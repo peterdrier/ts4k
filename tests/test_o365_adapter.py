@@ -449,6 +449,56 @@ class TestO365AdapterWhatsnew:
         call_args = adapter._client.get.call_args
         assert "receivedDateTime ge" in call_args[1]["params"]["$filter"]
 
+    @pytest.mark.asyncio
+    async def test_count_below_page_size_caps_top(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            return_value=_mock_response(LIST_RESPONSE_EMPTY)
+        )
+        await adapter.whatsnew(since="2026-02-20T00:00:00Z", count=50)
+
+        call_args = adapter._client.get.call_args
+        assert call_args[1]["params"]["$top"] == "50"
+
+    @pytest.mark.asyncio
+    async def test_follows_next_link_past_page_cap(self):
+        adapter = _make_adapter()
+        next_url = "https://graph.microsoft.com/v1.0/me/messages?$skiptoken=abc"
+        page1 = {
+            "value": LIST_RESPONSE_DATA["value"],
+            "@odata.nextLink": next_url,
+        }
+        page2 = {
+            "value": [
+                {
+                    "id": "AAMkAGQ0Zjg0MDEzLWI4",
+                    "subject": "Older message",
+                    "receivedDateTime": "2026-02-19T09:00:00Z",
+                }
+            ]
+        }
+        adapter._client.get = AsyncMock(
+            side_effect=[_mock_response(page1), _mock_response(page2)]
+        )
+        results = await adapter.whatsnew(since="2026-01-01T00:00:00Z", count=300)
+
+        assert adapter._client.get.call_count == 2
+        assert adapter._client.get.call_args_list[1][0][0] == next_url
+        assert len(results) == 3
+
+    @pytest.mark.asyncio
+    async def test_stops_following_when_count_reached(self):
+        adapter = _make_adapter()
+        page1 = {
+            "value": LIST_RESPONSE_DATA["value"],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/next",
+        }
+        adapter._client.get = AsyncMock(return_value=_mock_response(page1))
+        results = await adapter.whatsnew(since="2026-01-01T00:00:00Z", count=2)
+
+        assert adapter._client.get.call_count == 1
+        assert len(results) == 2
+
 
 class TestO365AdapterListMessages:
     """Test O365Adapter.list_messages() with mocked httpx client."""

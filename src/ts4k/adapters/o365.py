@@ -295,11 +295,14 @@ class O365Adapter(BaseAdapter):
         since: str | None = None,
         sender: str | None = None,
         domain: str | None = None,
+        count: int = 200,
     ) -> list[dict]:
         since_specified = since is not None
         if not since:
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             since = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        page_size = str(min(count, 200))
 
         # Domain filtering requires $search which can't combine with $filter.
         # When domain is used, do time filtering client-side.
@@ -308,13 +311,16 @@ class O365Adapter(BaseAdapter):
             params: dict[str, str] = {
                 "$search": domain_search,
                 "$select": _LIST_SELECT,
-                "$top": "200",
+                "$top": page_size,
             }
             headers = {"ConsistencyLevel": "eventual"}
             data = await self._get(
                 f"{self._base_url()}/messages", params, headers=headers
             )
             results = _list_response_to_dicts(data, self.source_prefix)
+            results.extend(
+                await self._follow_next_links(data, count - len(results), headers)
+            )
             # Client-side time filter only when caller specified a since value
             if since_specified:
                 results = [m for m in results if m.get("date", "") >= since]
@@ -331,11 +337,40 @@ class O365Adapter(BaseAdapter):
             "$filter": " and ".join(filter_parts),
             "$select": _LIST_SELECT,
             "$orderby": "receivedDateTime desc",
-            "$top": "200",
+            "$top": page_size,
         }
 
         data = await self._get(f"{self._base_url()}/messages", params)
-        return _list_response_to_dicts(data, self.source_prefix)
+        results = _list_response_to_dicts(data, self.source_prefix)
+        results.extend(await self._follow_next_links(data, count - len(results)))
+        return results
+
+    async def _follow_next_links(
+        self,
+        data: dict | list,
+        needed: int,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict]:
+        """Follow ``@odata.nextLink`` pages until *needed* more results
+        are collected or the server runs out of pages."""
+        extra: list[dict] = []
+        client = self._require_client()
+        while needed > 0 and isinstance(data, dict):
+            next_link = data.get("@odata.nextLink")
+            if not next_link:
+                break
+            if headers:
+                resp = await client.get(next_link, headers=headers)
+            else:
+                resp = await client.get(next_link)
+            resp.raise_for_status()
+            data = resp.json()
+            page = _list_response_to_dicts(data, self.source_prefix)
+            if not page:
+                break
+            extra.extend(page)
+            needed -= len(page)
+        return extra
 
     async def list_messages(
         self,

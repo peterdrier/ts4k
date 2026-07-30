@@ -260,7 +260,9 @@ class WhatsAppAdapter(BaseAdapter):
         since: str | None = None,
         sender: str | None = None,
         domain: str | None = None,
+        count: int = 200,
     ) -> list[dict]:
+        # count is accepted for interface parity; the bridge caps at 50.
         args: dict[str, Any] = {"limit": 50, "include_context": False}
         if since:
             args["after"] = since
