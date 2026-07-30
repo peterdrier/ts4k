@@ -104,3 +104,32 @@ class TestStatusTokenHealth:
         result = commands.get_status()
         assert "[auth]" in result
         assert "ts4k auth g" in result
+
+    @patch("ts4k.commands.check_token_health")
+    @patch("ts4k.commands._ensure_sources")
+    @patch("ts4k.commands.contacts")
+    @patch("ts4k.commands.filters")
+    @patch("ts4k.commands.stats")
+    def test_status_shows_missing_scope_detail(self, mock_stats, mock_filters,
+                                               mock_contacts, mock_sources, mock_health):
+        """status surfaces WHY a source needs auth (e.g. under-scoped token)."""
+        from ts4k.auth.health import TokenHealth
+        from ts4k import commands
+
+        mock_sources.return_value = {
+            "gn": {"provider": "gmail", "email": "alice@test.com"},
+        }
+        mock_health.return_value = TokenHealth(
+            status="auth",
+            expiry=None,
+            scopes=[],
+            detail="missing scopes: gmail.modify",
+        )
+        mock_contacts.list_all.return_value = {}
+        mock_filters.get_config.return_value = {}
+        mock_stats.get_all.return_value = {}
+        mock_stats.savings_pct.return_value = 0
+
+        result = commands.get_status()
+        assert "missing scopes: gmail.modify" in result
+        assert "ts4k auth gn" in result

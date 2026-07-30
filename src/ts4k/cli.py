@@ -930,7 +930,8 @@ def _auth_check(targets: list[tuple[str, dict]]) -> None:
         detail = cfg.get("email") or cfg.get("mailbox") or ""
         suffix = ""
         if health.status == "auth":
-            suffix = f" — ts4k auth {prefix}"
+            reason = f" — {health.detail}" if health.detail else ""
+            suffix = f"{reason} — ts4k auth {prefix}"
             any_bad = True
         elif health.status == "error":
             suffix = f" — {health.detail}"
@@ -972,9 +973,8 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
 
 def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
     """Authenticate a Google source (gmail or gcal)."""
-    from ts4k.auth.google import get_credentials
-    from ts4k.core.levels import scopes_for, parse_level, AccessLevel
-    from ts4k.state import sources as src_mod
+    from ts4k.auth.google import get_credentials, union_scopes_for_email
+    from ts4k.core.levels import scopes_for, parse_level
 
     email = cfg.get("email", "")
     if not email:
@@ -987,18 +987,10 @@ def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
     source_level = cfg.get("level")
     provider = cfg.get("provider", "gmail")
     scopes = scopes_for(provider, parse_level(source_level)) or []
-
-    all_sources = src_mod.list_all()
-    for pfx, src_cfg in all_sources.items():
-        src_provider = src_cfg.get("provider", "")
-        if src_provider in ("gmail", "gcal") and src_cfg.get("email") == email:
-            src_scopes = scopes_for(src_provider, parse_level(src_cfg.get("level")))
-            scopes.extend(s for s in src_scopes if s not in scopes)
-
-    # Include calendar readonly by default (enables cal setup without re-auth)
-    if not no_calendar:
-        cal_readonly = scopes_for("gcal", AccessLevel.READONLY)
-        scopes.extend(s for s in cal_readonly if s not in scopes)
+    scopes.extend(
+        s for s in union_scopes_for_email(email, include_calendar_readonly=not no_calendar)
+        if s not in scopes
+    )
 
     try:
         creds = get_credentials(email, scopes=scopes or None)
@@ -1008,6 +1000,14 @@ def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
         granted = set(creds.scopes or [])
         scope_labels = sorted(s.rsplit("/", 1)[-1] for s in granted)
         print(f"Scopes: {', '.join(scope_labels)}")
+
+        # Verify Google granted everything we asked for
+        missing = set(scopes) - granted
+        if missing:
+            missing_labels = ", ".join(sorted(s.rsplit("/", 1)[-1] for s in missing))
+            print(f"Warning: Google granted fewer scopes than requested — missing: {missing_labels}")
+            print("  The OAuth app registration (Google Cloud console → OAuth consent screen)")
+            print("  or the Workspace admin policy for this domain likely blocks these scopes.")
 
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
