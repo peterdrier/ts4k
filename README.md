@@ -106,7 +106,6 @@ Notes:
 - Levels gate writes like the other calendar providers: `level=modify` allows editing and RSVP, `level=draft` also allows creating events, `level=send` also allows creating events with attendee invites (`ts4k src add cc apple email=... calendar_id=... level=draft`, or edit the source after adding).
 - RSVP is best-effort: iCloud often blocks programmatic replies to external
   invites — ts4k reports this cleanly and you respond in the Calendar app.
-- Free-text event search is filtered client-side (CalDAV limitation).
 
 ### Managing messages
 
