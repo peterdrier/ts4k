@@ -227,3 +227,64 @@ class TestListEvents:
             "2026-07-30T00:00:00", "2026-07-31T00:00:00", count=2
         )
         assert len(events) == 2
+
+
+DETAIL_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:det1@icloud.com
+SUMMARY:Planning
+DTSTART;TZID=Europe/Amsterdam:20260730T100000
+DTEND;TZID=Europe/Amsterdam:20260730T110000
+DESCRIPTION:Quarterly planning session
+URL:https://meet.example.com/xyz
+ATTENDEE;CN=Alice;PARTSTAT=ACCEPTED:mailto:alice@example.com
+ATTENDEE;PARTSTAT=DECLINED:mailto:test@icloud.com
+RRULE:FREQ=WEEKLY;BYDAY=TH
+CREATED:20260101T000000Z
+LAST-MODIFIED:20260615T120000Z
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+class TestReadEvent:
+    async def test_full_detail(self, adapter: CaldavAdapter):
+        adapter._calendar.event_by_uid.return_value = _mk_caldav_event(DETAIL_ICS)
+        e = await adapter.read_event("cc:det1@icloud.com")
+        assert e["title"] == "Planning"
+        assert e["description"] == "Quarterly planning session"
+        assert e["meeting_link"] == "https://meet.example.com/xyz"
+        assert e["recurrence"] == "FREQ=WEEKLY;BYDAY=TH"
+        assert e["recurrence_summary"] == "weekly on Thu"
+        assert e["attendees"] == [
+            {"name": "Alice", "email": "alice@example.com", "status": "accepted"},
+            {"name": "test@icloud.com", "email": "test@icloud.com", "status": "declined"},
+        ]
+        assert e["created"] == "2026-01-01T00:00:00+00:00"
+        assert e["updated"] == "2026-06-15T12:00:00+00:00"
+        adapter._calendar.event_by_uid.assert_called_once_with("det1@icloud.com")
+
+    async def test_instance_id_fetches_master(self, adapter: CaldavAdapter):
+        adapter._calendar.event_by_uid.return_value = _mk_caldav_event(DETAIL_ICS)
+        await adapter.read_event("cc:det1@icloud.com::2026-08-06T10:00:00+02:00")
+        adapter._calendar.event_by_uid.assert_called_once_with("det1@icloud.com")
+
+
+class TestListCalendars:
+    async def test_lists_principal_calendars(self, adapter: CaldavAdapter):
+        c1 = MagicMock()
+        c1.url = "https://caldav.icloud.com/123/calendars/home/"
+        c1.name = "Home"
+        c2 = MagicMock()
+        c2.url = "https://caldav.icloud.com/123/calendars/work/"
+        c2.name = "Work"
+        adapter._principal.calendars.return_value = [c1, c2]
+        cals = await adapter.list_calendars()
+        assert cals == [
+            {"id": "https://caldav.icloud.com/123/calendars/home/", "summary": "Home",
+             "access_role": "owner", "timezone": "Europe/Amsterdam", "primary": False},
+            {"id": "https://caldav.icloud.com/123/calendars/work/", "summary": "Work",
+             "access_role": "owner", "timezone": "Europe/Amsterdam", "primary": False},
+        ]

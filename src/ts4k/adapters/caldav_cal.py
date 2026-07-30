@@ -244,6 +244,72 @@ class CaldavAdapter(BaseAdapter):
         except Exception:
             return timezone.utc
 
+    async def _fetch_by_uid(self, uid: str) -> Any:
+        cal = await self._get_calendar()
+        return await asyncio.to_thread(lambda: cal.event_by_uid(uid))
+
+    async def read_event(self, event_id: str) -> dict:
+        """Fetch full detail for a single event by UID.
+
+        Instance IDs (``uid::<recurrence-id>``) resolve to the series master.
+        """
+        raw = self._strip_prefix(event_id)
+        uid = raw.split("::")[0]
+        obj = await self._fetch_by_uid(uid)
+        comp = obj.icalendar_component
+        base = self._normalize_component(comp)
+
+        attendees_full = []
+        raw_attendees = comp.get("ATTENDEE")
+        if raw_attendees is None:
+            raw_attendees = []
+        elif not isinstance(raw_attendees, list):
+            raw_attendees = [raw_attendees]
+        for a in raw_attendees:
+            email = _strip_mailto(a)
+            partstat = str(a.params.get("PARTSTAT", "NEEDS-ACTION")).upper()
+            attendees_full.append({
+                "name": str(a.params.get("CN", email)),
+                "email": email,
+                "status": _PARTSTAT_MAP.get(partstat, partstat.lower()),
+            })
+        base["attendees"] = attendees_full
+
+        desc = comp.get("DESCRIPTION")
+        base["description"] = str(desc) if desc else ""
+        url = comp.get("URL")
+        base["meeting_link"] = str(url) if url else ""
+
+        from ts4k.adapters.gcal import rrule_to_human
+
+        rrule_prop = comp.get("RRULE")
+        rrule = rrule_prop.to_ical().decode() if rrule_prop is not None else ""
+        base["recurrence"] = rrule
+        base["recurrence_summary"] = rrule_to_human(rrule) if rrule else ""
+
+        created = comp.get("CREATED")
+        base["created"] = created.dt.isoformat() if created is not None else ""
+        updated = comp.get("LAST-MODIFIED")
+        base["updated"] = updated.dt.isoformat() if updated is not None else ""
+        return base
+
+    async def list_calendars(self) -> list[dict]:
+        """List calendars on the principal (used by setup; adapter may have empty calendar_id)."""
+
+        def _list() -> list[dict]:
+            out = []
+            for c in self._principal.calendars():
+                out.append({
+                    "id": str(c.url),
+                    "summary": c.name or str(c.url),
+                    "access_role": "owner",
+                    "timezone": self._config.timezone,
+                    "primary": False,
+                })
+            return out
+
+        return await asyncio.to_thread(_list)
+
     # -- Messaging stubs (calendar sources have no messages) -------------------
 
     async def whatsnew(self, since: str | None = None,
