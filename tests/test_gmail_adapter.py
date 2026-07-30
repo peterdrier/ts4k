@@ -787,6 +787,22 @@ class TestGmailAdapterConnectScopes:
         assert "https://www.googleapis.com/auth/calendar" in scopes
 
     @pytest.mark.asyncio
+    async def test_connect_adds_no_calendar_scope_for_gmail_only_account(self):
+        """A gmail-only account (e.g. authed with --no-calendar) must not have
+        calendar scopes forced in — that would flag the token as under-scoped
+        and break headless connects."""
+        config = GmailAdapterConfig(user_email="a@b.com")
+        adapter = GmailAdapter(config)
+
+        srcs = {"g": {"provider": "gmail", "email": "a@b.com"}}
+        with patch("ts4k.state.sources.list_all", return_value=srcs), \
+             patch("ts4k.auth.google.build_gmail_service") as mock_build:
+            await adapter.connect()
+
+        scopes = mock_build.call_args.kwargs["scopes"]
+        assert not any("calendar" in s for s in scopes)
+
+    @pytest.mark.asyncio
     async def test_connect_keeps_own_scopes_when_source_unregistered(self):
         config = GmailAdapterConfig(user_email="a@b.com", level="modify")
         adapter = GmailAdapter(config)

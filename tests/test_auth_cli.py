@@ -73,7 +73,13 @@ class TestAuthTargetResolution:
 
         cfg = {"provider": "gmail", "email": "a@b.com", "level": "modify"}
         mock_creds = MagicMock()
-        mock_creds.scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+        # Real google-auth behavior: .scopes echoes the REQUESTED set even
+        # when Google under-grants; the actual grant is in granted_scopes.
+        mock_creds.scopes = [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+        mock_creds.granted_scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
 
         with patch("ts4k.auth.google.get_credentials", return_value=mock_creds):
             with patch("ts4k.state.sources.list_all", return_value={"gn": cfg}):
@@ -93,6 +99,7 @@ class TestAuthTargetResolution:
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/calendar.readonly",
         ]
+        mock_creds.granted_scopes = list(mock_creds.scopes)
 
         with patch("ts4k.auth.google.get_credentials", return_value=mock_creds):
             with patch("ts4k.state.sources.list_all", return_value={"g": cfg}):

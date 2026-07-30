@@ -85,9 +85,13 @@ class GcalAdapter(BaseAdapter):
 
         # Request the per-email scope union: gmail and gcal share one token
         # per email, so a narrow request would clobber sibling access on re-auth.
+        # No calendar.readonly extra here — that's an auth-time convenience;
+        # forcing it would flag --no-calendar tokens as under-scoped.
         scopes = scopes_for("gcal", self._access_level)
         scopes.extend(
-            s for s in union_scopes_for_email(self._config.email)
+            s for s in union_scopes_for_email(
+                self._config.email, include_calendar_readonly=False,
+            )
             if s not in scopes
         )
         self._service = await asyncio.to_thread(

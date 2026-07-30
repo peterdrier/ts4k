@@ -996,8 +996,12 @@ def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
         creds = get_credentials(email, scopes=scopes or None)
         print(f"Authenticated {prefix} ({email}) successfully.")
 
-        # Show granted scopes
-        granted = set(creds.scopes or [])
+        # Show granted scopes — creds.scopes echoes the REQUESTED set even
+        # when Google under-grants; the actual grant is in granted_scopes.
+        if creds.granted_scopes is not None:
+            granted = set(creds.granted_scopes)
+        else:
+            granted = set(creds.scopes or [])
         scope_labels = sorted(s.rsplit("/", 1)[-1] for s in granted)
         print(f"Scopes: {', '.join(scope_labels)}")
 

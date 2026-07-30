@@ -215,7 +215,12 @@ def get_credentials(
                 # destroy working credentials.
                 # Fall through to full OAuth flow below.
             else:
-                creds = Credentials.from_authorized_user_file(str(token_file), scopes)
+                # Load with the STORED scope set, not the (possibly narrower)
+                # requested one — to_json() serializes creds.scopes, so a
+                # refresh rewrite must not drop granted scopes from the record.
+                creds = Credentials.from_authorized_user_file(
+                    str(token_file), sorted(granted)
+                )
                 logger.debug("Loaded existing token from %s", token_file)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Could not read token file %s: %s", token_file, exc)
@@ -281,7 +286,10 @@ def get_credentials(
 
     # Detect under-granting: Google may grant fewer scopes than requested
     # (e.g. the OAuth app registration or Workspace policy blocks some).
-    missing_scopes = set(scopes) - set(creds.scopes or [])
+    # creds.scopes holds the REQUESTED set; the actual grant is in
+    # granted_scopes (None when the server omitted scope info).
+    granted_now = creds.granted_scopes if creds.granted_scopes is not None else (creds.scopes or [])
+    missing_scopes = set(scopes) - set(granted_now)
     if missing_scopes:
         logger.warning(
             "Google granted fewer scopes than requested for %s — missing: %s",
@@ -289,9 +297,13 @@ def get_credentials(
             ", ".join(sorted(s.rsplit("/", 1)[-1] for s in missing_scopes)),
         )
 
-    # Persist token.
+    # Persist token, recording the GRANTED scopes — to_json() serializes the
+    # requested set, which would make later health checks miss the under-grant.
+    import json
+    token_data = json.loads(creds.to_json())
+    token_data["scopes"] = list(granted_now)
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(creds.to_json())
+    token_file.write_text(json.dumps(token_data))
     logger.info("Saved new token for %s at %s", email, token_file)
     return creds
 
