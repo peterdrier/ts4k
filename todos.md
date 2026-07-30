@@ -21,7 +21,7 @@ Last synced: 2026-07-30 (v0.1.21)
 - [ ] **WhatsApp 1-on-1 chat: wrong `from` field** — Private chats show an unrelated label (e.g. "Anker technology") in `from` instead of the contact name. Sender ends up in `subject`. Likely a WhatsApp adapter normalization bug — group vs 1-on-1 detection issue.
 - [ ] **WhatsApp group system notifications swap sender/chat** [#11](https://github.com/peterdrier/ts4k/issues/11) — "Group members have changed" notifications show group name in FROM and member in SUBJECT (reversed). Either filter out membership-change notifications or fix the mapping.
 - [x] ~~**Gmail 429 on listings**~~ [#12](https://github.com/peterdrier/ts4k/issues/12) — Fixed: chunked batch fetch (groups of 25), cache check before API calls, 429 retry.
-- [ ] **O365 search returns 400 + no sender filtering** [#15](https://github.com/peterdrier/ts4k/issues/15) — `list -q` and `preload --query` fail with 400 on O365. `updates` caps at 200 with no pagination. No `--from`/`--domain` filter. `overview` can't drill down to message listings. Skill output doesn't guide agents around these gaps.
+- [x] ~~**O365 search returns 400 + no sender filtering**~~ [#15](https://github.com/peterdrier/ts4k/issues/15) — Search/flags had landed in v0.1.16–0.1.19; PR #50 fixed the live-verified gaps: sender-filter oldest-first ordering, query+sender 400 (KQL fold), whatsnew nextLink pagination past 200, single-source watermark-skip hole from #23, cal-adapter count TypeError. Overview drill-down superseded by `list --from/--domain`.
 
 ## P2 — Token Optimization / UX (GitHub Issues)
 
@@ -32,6 +32,7 @@ Last synced: 2026-07-30 (v0.1.21)
 - [ ] **Document known-empty/noisy inboxes** [#17](https://github.com/peterdrier/ts4k/issues/17) — Agents waste calls widening date ranges on empty/low-traffic inboxes. Add inbox metadata to `skill` output or `ts4k sources` command showing activity level, noise patterns, recommended date ranges.
 - [ ] **Setup doc deep links** [#5](https://github.com/peterdrier/ts4k/issues/5) — Add direct console/portal URLs to Gmail/O365 setup docs so users don't have to navigate by menu path. Gmail needs 4 deep links; O365 sidebar hints. Partially addressed by O365 doc improvements (c948c36, ea07f3d).
 - [ ] **Surface WhatsApp voice note transcripts** [#48](https://github.com/peterdrier/ts4k/issues/48) — Pass through transcripts from the whatsapp-mcp bridge (transcription itself lives in [whatsapp-mcp#3](https://github.com/peterdrier/whatsapp-mcp/issues/3): background queue + local Whisper). Verify transcript flows through normalize→filter→format; `[voice 0:42]` marker in listings; skill text mention. Blocked on the bridge work.
+- [ ] **Surface image OCR/captions + `--media` fetch** [#49](https://github.com/peterdrier/ts4k/issues/49) — Pass through `[image: caption | text: ocr]` from the bridge ([whatsapp-mcp#4](https://github.com/peterdrier/whatsapp-mcp/issues/4): OCR must-have, local VLM caption config-gated, same media queue as #3). New `get <ref> --media` returns local file path so multimodal agents can read the actual image. Blocked on the bridge work.
 
 ## P3 — Architecture / Quality
 
