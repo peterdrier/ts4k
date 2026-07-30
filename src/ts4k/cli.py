@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -273,6 +274,40 @@ def _local_timezone() -> str:
     return "UTC"
 
 
+def _prompt_password(prompt: str) -> str:
+    """Prompt for a secret, echoing '*' per character; getpass fallback off-TTY."""
+    if not sys.stdin.isatty():
+        import getpass
+        return getpass.getpass(prompt)
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    print(prompt, end="", flush=True)
+    chars: list[str] = []
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\r", "\n"):
+                break
+            if ch == "\x03":
+                raise KeyboardInterrupt
+            if ch in ("\x7f", "\b"):
+                if chars:
+                    chars.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            chars.append(ch)
+            sys.stdout.write("*")
+            sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        print()
+    return "".join(chars)
+
+
 def _cmd_sources(args: argparse.Namespace) -> None:
     """Handle the src command — manage source config."""
     action = getattr(args, "action", None)
@@ -312,18 +347,33 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             kwargs.setdefault("server_url", ICLOUD_CALDAV_URL)
 
             from ts4k.auth.caldav import load_credentials, save_credentials
+            fresh = False
             if load_credentials(email) is None:
-                import getpass
+                is_icloud = kwargs["server_url"] == ICLOUD_CALDAV_URL
                 print("An app-specific password is required "
                       "(https://account.apple.com → Sign-In and Security → "
                       "App-Specific Passwords; needs 2FA).")
-                pw = getpass.getpass(f"App-specific password for {email}: ")
-                if not pw:
-                    print("No password entered — aborting.")
+                pw = None
+                for _attempt in range(3):
+                    raw = _prompt_password(f"App-specific password for {email}: ")
+                    candidate = "".join(raw.split())
+                    if not candidate:
+                        print("No password entered — aborting.")
+                        return
+                    if is_icloud and not re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", candidate):
+                        print("That doesn't look like an Apple app-specific password "
+                              f"(expected xxxx-xxxx-xxxx-xxxx, got {len(candidate)} characters) "
+                              "— try again.")
+                        continue
+                    pw = candidate
+                    break
+                if pw is None:
+                    print("Too many failed attempts — aborting.")
                     return
                 save_credentials(email, username=kwargs.get("username") or email,
                                  app_password=pw, server_url=kwargs["server_url"])
                 print(f"Saved credentials for {email}.")
+                fresh = True
 
             tz_default = kwargs.get("timezone") or _local_timezone()
 
@@ -333,6 +383,11 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                     cals = asyncio.run(commands.cal_list_caldav_calendars(email))
                 except Exception as e:
                     print(f"Error: could not list calendars — {e}")
+                    if fresh:
+                        from ts4k.auth.caldav import credentials_path
+                        credentials_path(email).unlink(missing_ok=True)
+                        print("Could not connect with that password — discarded the "
+                              "saved credentials; run the command again to retry.")
                     return
                 if not cals:
                     print("No calendars found.")

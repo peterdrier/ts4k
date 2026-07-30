@@ -25,7 +25,7 @@ CALS = [
 
 class TestSrcAddApple:
     def test_apple_alias_prompts_saves_and_adds_selected(self, ts4k_config, monkeypatch):
-        monkeypatch.setattr("getpass.getpass", lambda prompt="": "abcd-efgh")
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd-efgh-ijkl-mnop")
         monkeypatch.setattr("builtins.input", lambda prompt="": "1")
         with patch.object(cli.commands, "cal_list_caldav_calendars",
                           new=AsyncMock(return_value=CALS)):
@@ -33,7 +33,7 @@ class TestSrcAddApple:
 
         from ts4k.auth.caldav import load_credentials
         creds = load_credentials("a@icloud.com")
-        assert creds is not None and creds["app_password"] == "abcd-efgh"
+        assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
         assert creds["server_url"] == "https://caldav.icloud.com"
 
         cfg = sources.list_all()["cc"]
@@ -80,7 +80,7 @@ class TestLocalTimezone:
 class TestSrcAddTimezone:
     def test_picker_uses_local_timezone(self, ts4k_config, monkeypatch):
         monkeypatch.setenv("TZ", "Europe/Amsterdam")
-        monkeypatch.setattr("getpass.getpass", lambda prompt="": "abcd-efgh")
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd-efgh-ijkl-mnop")
         monkeypatch.setattr("builtins.input", lambda prompt="": "1")
         with patch.object(cli.commands, "cal_list_caldav_calendars",
                           new=AsyncMock(return_value=CALS)):
@@ -106,7 +106,7 @@ class TestSrcAddTimezone:
 
 class TestSrcAddUsername:
     def test_explicit_username_is_saved(self, ts4k_config, monkeypatch):
-        monkeypatch.setattr("getpass.getpass", lambda prompt="": "abcd-efgh")
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd-efgh-ijkl-mnop")
         monkeypatch.setattr("builtins.input", lambda prompt="": "1")
         with patch.object(cli.commands, "cal_list_caldav_calendars",
                           new=AsyncMock(return_value=CALS)):
@@ -115,3 +115,83 @@ class TestSrcAddUsername:
         from ts4k.auth.caldav import load_credentials
         creds = load_credentials("a@icloud.com")
         assert creds is not None and creds["username"] == "bob"
+
+
+class TestPromptPassword:
+    def test_off_tty_falls_back_to_getpass(self, monkeypatch):
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "sentinel-value")
+        assert cli._prompt_password("Password: ") == "sentinel-value"
+
+
+class TestSrcAddPasswordFormat:
+    def test_reprompts_on_bad_format_then_accepts_valid(self, ts4k_config, monkeypatch, capsys):
+        responses = iter(["wrong-format", "abcd-efgh-ijkl-mnop"])
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": next(responses))
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import load_credentials
+        creds = load_credentials("a@icloud.com")
+        assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
+        assert "app-specific password" in capsys.readouterr().out.lower()
+
+    def test_double_paste_regression_reprompts_then_accepts_valid(self, ts4k_config, monkeypatch):
+        double_pasted = "abcd-efgh-ijkl-mnopabcd-efgh-ijkl-mnop"[:39]
+        responses = iter([double_pasted, "abcd-efgh-ijkl-mnop"])
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": next(responses))
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import load_credentials
+        creds = load_credentials("a@icloud.com")
+        assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
+
+    def test_whitespace_is_stripped(self, ts4k_config, monkeypatch):
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": " abcd-efgh-ijkl-mnop\n")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import load_credentials
+        creds = load_credentials("a@icloud.com")
+        assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
+
+    def test_three_bad_attempts_aborts(self, ts4k_config, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "nope")
+        cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import load_credentials
+        assert load_credentials("a@icloud.com") is None
+        assert "aborting" in capsys.readouterr().out.lower()
+
+
+class TestSrcAddCredentialDiscard:
+    def test_fresh_credentials_discarded_on_failed_validation(self, ts4k_config, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd-efgh-ijkl-mnop")
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(side_effect=Exception("boom"))):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import credentials_path
+        assert not credentials_path("a@icloud.com").exists()
+        assert "cc" not in sources.list_all()
+        assert "discarded" in capsys.readouterr().out.lower()
+
+    def test_preexisting_credentials_retained_on_failed_validation(self, ts4k_config, monkeypatch, capsys):
+        from ts4k.auth.caldav import ICLOUD_CALDAV_URL, credentials_path, save_credentials
+
+        save_credentials("a@icloud.com", username="a@icloud.com",
+                         app_password="abcd-efgh-ijkl-mnop", server_url=ICLOUD_CALDAV_URL)
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(side_effect=Exception("boom"))):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        assert credentials_path("a@icloud.com").exists()
+        out = capsys.readouterr().out.lower()
+        assert "discarded" not in out
