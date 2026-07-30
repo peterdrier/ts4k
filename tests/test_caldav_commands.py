@@ -97,6 +97,28 @@ class TestCalFetchEventsIsolation:
         )
         assert events == [ok_event]
 
+    async def test_explicit_source_failure_raises(self, monkeypatch):
+        # When the caller explicitly asked for one source (-s cc) and it
+        # fails, silently returning no events is misleading — surface the
+        # failure instead of swallowing it.
+        broken_cfg = dict(CALDAV_CFG)
+
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all",
+            lambda: {"cc": broken_cfg},
+        )
+
+        broken_adapter = MagicMock()
+        broken_adapter.__aenter__ = AsyncMock(side_effect=RuntimeError("bad app password"))
+        broken_adapter.__aexit__ = AsyncMock(return_value=None)
+
+        monkeypatch.setattr(commands, "_make_adapter", lambda p, c: broken_adapter)
+
+        with pytest.raises(RuntimeError, match="cc"):
+            await commands._cal_fetch_events(
+                "cc", "2026-07-30T00:00:00", "2026-07-31T00:00:00"
+            )
+
 
 class TestTokenHealth:
     def test_caldav_with_credentials_is_ok(self, tmp_path: Path, monkeypatch):

@@ -2188,16 +2188,23 @@ async def _cal_fetch_events(
         return []
 
     all_events: list[dict] = []
+    errors: list[str] = []
+    attempted = 0
     for pfx, cfg in prefixes:
         adapter = _make_adapter(pfx, cfg)
         if adapter is None:
             continue
+        attempted += 1
         try:
             async with adapter:
                 events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
                 all_events.extend(events)
         except Exception as exc:
             logger.warning("[%s] calendar adapter failed: %s", pfx, exc)
+            errors.append(f"[{pfx}] {exc}")
+
+    if source and attempted and len(errors) == attempted:
+        raise RuntimeError("; ".join(errors))
 
     # Sort by start time
     all_events.sort(key=lambda e: e.get("start", ""))

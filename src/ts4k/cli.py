@@ -29,6 +29,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from ts4k import commands, state
@@ -250,6 +251,28 @@ def _cmd_status(args: argparse.Namespace) -> None:
         print(commands.get_status())
 
 
+def _local_timezone() -> str:
+    """Best-effort IANA name for the system's local timezone; falls back to UTC."""
+    import zoneinfo
+    tz = os.environ.get("TZ")
+    if tz:
+        try:
+            zoneinfo.ZoneInfo(tz)
+            return tz
+        except Exception:
+            pass
+    try:
+        resolved = Path("/etc/localtime").resolve()
+        parts = resolved.parts
+        if "zoneinfo" in parts:
+            name = "/".join(parts[parts.index("zoneinfo") + 1:])
+            zoneinfo.ZoneInfo(name)
+            return name
+    except Exception:
+        pass
+    return "UTC"
+
+
 def _cmd_sources(args: argparse.Namespace) -> None:
     """Handle the src command — manage source config."""
     action = getattr(args, "action", None)
@@ -298,9 +321,11 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 if not pw:
                     print("No password entered — aborting.")
                     return
-                save_credentials(email, username=email, app_password=pw,
-                                 server_url=kwargs["server_url"])
+                save_credentials(email, username=kwargs.get("username") or email,
+                                 app_password=pw, server_url=kwargs["server_url"])
                 print(f"Saved credentials for {email}.")
+
+            tz_default = kwargs.get("timezone") or _local_timezone()
 
             if "calendar_id" not in kwargs:
                 print(f"Fetching calendars for {email}...")
@@ -339,12 +364,13 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                         pfx, provider="caldav", email=email,
                         server_url=kwargs["server_url"],
                         calendar_id=cal["id"], calendar_name=cal["summary"],
-                        timezone=cal.get("timezone", "UTC"), level="readonly",
+                        timezone=tz_default, level="readonly",
                     )
                     all_sources[pfx] = {}
                     print(f"  Added '{cal['summary']}' as '{pfx}' (readonly)")
                 return
             # calendar_id given explicitly → fall through to generic sources.add
+            kwargs.setdefault("timezone", tz_default)
 
         # For O365: inherit client_id/tenant_id from existing O365 source
         # if not explicitly provided (same app registration for all mailboxes).
