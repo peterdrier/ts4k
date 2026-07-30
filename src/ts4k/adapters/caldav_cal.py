@@ -172,6 +172,10 @@ class CaldavAdapter(BaseAdapter):
             start_dt = start_dt.replace(tzinfo=tzinfo)
         if isinstance(end_dt, datetime) and end_dt.tzinfo is None:
             end_dt = end_dt.replace(tzinfo=tzinfo)
+        if isinstance(start_dt, datetime):
+            start_dt = start_dt.astimezone(tzinfo)
+        if isinstance(end_dt, datetime):
+            end_dt = end_dt.astimezone(tzinfo)
 
         start = start_dt.isoformat() if start_dt is not None else ""
         end = end_dt.isoformat() if end_dt is not None else start
@@ -206,6 +210,8 @@ class CaldavAdapter(BaseAdapter):
             rid = recurrence_id.dt
             if isinstance(rid, datetime) and rid.tzinfo is None:
                 rid = rid.replace(tzinfo=tzinfo)
+            if isinstance(rid, datetime):
+                rid = rid.astimezone(tzinfo)
             event_id = f"{uid}::{rid.isoformat()}"
             recurring_event_id = f"{self._prefix}:{uid}"
         else:

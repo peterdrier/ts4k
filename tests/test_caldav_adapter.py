@@ -151,6 +151,18 @@ END:VEVENT
 END:VCALENDAR
 """
 
+FOREIGN_TZ_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:foreign1
+SUMMARY:NY Sync
+DTSTART;TZID=America/New_York:20260730T090000
+DTEND;TZID=America/New_York:20260730T100000
+END:VEVENT
+END:VCALENDAR
+"""
+
 
 class TestNormalization:
     def test_timed_event(self, adapter: CaldavAdapter):
@@ -185,6 +197,12 @@ class TestNormalization:
         e = adapter._normalize_component(_mk_caldav_event(INSTANCE_ICS).icalendar_component)
         assert e["recurring_event_id"] == "cc:rec1@icloud.com"
         assert e["id"].startswith("cc:rec1@icloud.com::2026-08-06T14:00:00")
+
+    def test_foreign_timezone_normalized_to_config_tz(self, adapter: CaldavAdapter):
+        # 09:00 EDT (America/New_York) on 2026-07-30 == 15:00 CEST (Europe/Amsterdam)
+        e = adapter._normalize_component(_mk_caldav_event(FOREIGN_TZ_ICS).icalendar_component)
+        assert e["start"] == "2026-07-30T15:00:00+02:00"
+        assert e["duration_minutes"] == 60
 
 
 class TestListEvents:
