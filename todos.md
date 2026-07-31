@@ -1,5 +1,5 @@
 # ts4k — Open Work
-Last synced: 2026-07-31 (v0.2.0)
+Last synced: 2026-07-31 (v0.2.1)
 
 ## P1 — Bugs / Reliability
 
@@ -81,6 +81,7 @@ Last synced: 2026-07-31 (v0.2.0)
 
 ## Recently Completed
 
+- [x] **CalDAV follow-up bundle** (PR #55) — 0600-from-creation credential writes, all-day update end-date conversion (gcal/caldav/o365cal, + o365cal `isAllDay`), VTODO-only collections filtered from `list_calendars`, cal `--source` aliases (`apple`/`icloud`) via `_resolve_prefixes` with exact-case prefixes preserved, `ts4k auth <caldav>` explains the app-specific-password flow. (v0.2.1)
 - [x] **CalDAV calendar adapter** (PR #51) — generic CalDAV adapter with Apple/iCloud preset: list/read/create/update/RSVP, `ts4k src add apple` wizard, app-specific password storage (0600). (v0.2.0)
 - [x] **Normalize regex consolidation** (PR #53, Bolt) — reply-header and signature-trigger pattern lists combined into single pre-compiled regexes; ~2-4x faster on those paths. (v0.2.0)
 - [x] **uv.lock untracked** — rode into the repo in #51's skeleton commit; removed and gitignored (ts4k is a published library, lockfile stays local). (PR #52)
