@@ -43,7 +43,7 @@ def check_level(current: AccessLevel, required: AccessLevel, operation: str,
     but permitted for calendar providers (invites are a normal workflow).
     """
     if required >= AccessLevel.SEND:
-        if provider not in ("gcal", "o365cal"):
+        if provider not in ("gcal", "o365cal", "caldav"):
             raise NotImplementedError(
                 f"Operation '{operation}' requires level 'send', which is "
                 "intentionally not implemented for messaging. "

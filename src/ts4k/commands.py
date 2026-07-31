@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ts4k.adapters.caldav_cal import CaldavAdapter, CaldavAdapterConfig
 from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
 from ts4k.adapters.o365cal import O365CalAdapter, O365CalAdapterConfig
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
@@ -71,9 +72,12 @@ def _ensure_sources() -> dict[str, dict[str, Any]]:
     return sources.list_all()
 
 
+_CAL_PROVIDERS = ("gcal", "o365cal", "caldav")
+
+
 def _make_adapter(
     prefix: str, cfg: dict[str, Any]
-) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GcalAdapter | O365CalAdapter | None:
+) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GcalAdapter | O365CalAdapter | CaldavAdapter | None:
     """Create an adapter instance from a source config entry."""
     provider = cfg.get("provider", "").lower()
 
@@ -151,6 +155,23 @@ def _make_adapter(
         )
         return O365CalAdapter(config, prefix=prefix)
 
+    if provider == "caldav":
+        email = cfg.get("email")
+        calendar_id = cfg.get("calendar_id")
+        if not email or not calendar_id:
+            return None
+        from ts4k.auth.caldav import ICLOUD_CALDAV_URL
+        config = CaldavAdapterConfig(
+            email=email,
+            server_url=cfg.get("server_url", ICLOUD_CALDAV_URL),
+            calendar_id=calendar_id,
+            calendar_name=cfg.get("calendar_name", ""),
+            timezone=cfg.get("timezone", "UTC"),
+            config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
+            level=cfg.get("level", "readonly"),
+        )
+        return CaldavAdapter(config, prefix=prefix)
+
     logger.warning("Unknown provider %r for source %r", provider, prefix)
     return None
 
@@ -173,6 +194,7 @@ def _resolve_prefixes(source: str | None) -> list[str]:
         "wa": "whatsapp", "outlook": "o365", "office": "o365", "365": "o365",
         "google-calendar": "gcal", "calendar": "gcal", "cal": "gcal",
         "o365-calendar": "o365cal", "outlook-calendar": "o365cal",
+        "apple": "caldav", "icloud": "caldav", "apple-calendar": "caldav",
     }
     provider = provider_map.get(source, source)
     matches = [
@@ -906,7 +928,7 @@ def get_status(
     total_msgs = st.get("total_messages", 0)
     pct = stats.savings_pct()
 
-    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "o365cal": "O365 Cal", "gcal": "GCal"}
+    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV"}
 
     lines.append("")
     lines.append("Stats:")
@@ -922,7 +944,7 @@ def get_status(
         lines.append("  By source:")
         for src in sorted(all_cfg.keys()):
             provider = all_cfg[src].get("provider", "")
-            if provider in ("gcal", "o365cal"):
+            if provider in _CAL_PROVIDERS:
                 continue  # Calendar events tracked separately
             base_label = _provider_labels.get(provider, provider)
             label = base_label if src == provider[0:1] else f"{base_label}({src})"
@@ -1960,6 +1982,16 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         required = scopes_for(provider, parse_level(cfg.get("level")))
         return validate_token(client_id, tenant_id=tenant_id, scopes=required or None, username=username)
 
+    if provider == "caldav":
+        from ts4k.auth.caldav import load_credentials
+        email = cfg.get("email", "")
+        if not email:
+            return TokenHealth(status="na", expiry=None, scopes=[], detail="no email configured")
+        if load_credentials(email, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
+            return TokenHealth(status="na", expiry=None, scopes=[],
+                               detail="no credentials — run: ts4k src add <prefix> apple email=" + email)
+        return TokenHealth(status="ok", expiry=None, scopes=[], detail="app-specific password")
+
     return TokenHealth(status="na", expiry=None, scopes=[], detail=f"unknown provider: {provider}")
 
 
@@ -2154,7 +2186,7 @@ async def _cal_fetch_events(
     all_sources = src_mod.list_all()
     prefixes = []
     for pfx, cfg in all_sources.items():
-        if cfg.get("provider") not in ("gcal", "o365cal"):
+        if cfg.get("provider") not in _CAL_PROVIDERS:
             continue
         if source and pfx != source and cfg.get("provider") != source:
             continue
@@ -2164,13 +2196,23 @@ async def _cal_fetch_events(
         return []
 
     all_events: list[dict] = []
+    errors: list[str] = []
+    attempted = 0
     for pfx, cfg in prefixes:
         adapter = _make_adapter(pfx, cfg)
         if adapter is None:
             continue
-        async with adapter:
-            events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
-            all_events.extend(events)
+        attempted += 1
+        try:
+            async with adapter:
+                events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
+                all_events.extend(events)
+        except Exception as exc:
+            logger.warning("[%s] calendar adapter failed: %s", pfx, exc)
+            errors.append(f"[{pfx}] {exc}")
+
+    if source and attempted and len(errors) == attempted:
+        raise RuntimeError("; ".join(errors))
 
     # Sort by start time
     all_events.sort(key=lambda e: e.get("start", ""))
@@ -2199,7 +2241,7 @@ def _get_cal_timezone(source: str | None) -> str:
 
     all_sources = src_mod.list_all()
     for pfx, cfg in all_sources.items():
-        if cfg.get("provider") not in ("gcal", "o365cal"):
+        if cfg.get("provider") not in _CAL_PROVIDERS:
             continue
         if source and pfx != source:
             continue
@@ -2294,7 +2336,7 @@ async def cal_event(
     prefix = event_id.split(":")[0] if ":" in event_id else source
     all_sources = src_mod.list_all()
     cfg = all_sources.get(prefix)
-    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+    if not cfg or cfg.get("provider") not in _CAL_PROVIDERS:
         return f"Error: no calendar source with prefix '{prefix}'"
 
     adapter = _make_adapter(prefix, cfg)
@@ -2333,6 +2375,22 @@ async def cal_list_o365_calendars(
         return await adapter.list_calendars()
 
 
+async def cal_list_caldav_calendars(
+    email: str, config_dir: Path | None = None,
+) -> list[dict]:
+    """List available calendars for a CalDAV account (non-interactive, for setup)."""
+    from ts4k.auth.caldav import ICLOUD_CALDAV_URL
+
+    config = CaldavAdapterConfig(
+        email=email, server_url=ICLOUD_CALDAV_URL, calendar_id="",
+        calendar_name="", timezone="UTC", config_dir=config_dir,
+        level="readonly",
+    )
+    adapter = CaldavAdapter(config, prefix="_setup")
+    async with adapter:
+        return await adapter.list_calendars()
+
+
 async def cal_create(
     source: str, title: str, start: str, end: str,
     description: str | None, location: str | None,
@@ -2343,7 +2401,7 @@ async def cal_create(
     from ts4k.state import sources as src_mod
 
     cfg = src_mod.list_all().get(source)
-    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+    if not cfg or cfg.get("provider") not in _CAL_PROVIDERS:
         return f"Error: '{source}' is not a calendar source"
 
     adapter = _make_adapter(source, cfg)
@@ -2371,7 +2429,7 @@ async def cal_update(ref_or_id: str, source: str | None, ref_table: RefTable | N
 
     prefix = event_id.split(":")[0] if ":" in event_id else source
     cfg = src_mod.list_all().get(prefix)
-    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+    if not cfg or cfg.get("provider") not in _CAL_PROVIDERS:
         return f"Error: no calendar source with prefix '{prefix}'"
 
     adapter = _make_adapter(prefix, cfg)
@@ -2396,14 +2454,17 @@ async def cal_rsvp(ref_or_id: str, source: str | None, status: str, ref_table: R
 
     prefix = event_id.split(":")[0] if ":" in event_id else source
     cfg = src_mod.list_all().get(prefix)
-    if not cfg or cfg.get("provider") not in ("gcal", "o365cal"):
+    if not cfg or cfg.get("provider") not in _CAL_PROVIDERS:
         return f"Error: no calendar source with prefix '{prefix}'"
 
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
         return f"Error: could not create adapter for '{prefix}'"
 
-    async with adapter:
-        event = await adapter.rsvp(event_id, status=status)
+    try:
+        async with adapter:
+            event = await adapter.rsvp(event_id, status=status)
+    except (ValueError, RuntimeError) as e:
+        return f"Error: {e}"
 
     return f"RSVP {status}: {event['title']} ({event['id']})"

@@ -89,6 +89,24 @@ ts4k cal range --from 2026-04-01 --to 2026-04-07
 ts4k cal event 3                 # Full detail for ref #3
 ```
 
+### Apple / iCloud Calendar (CalDAV)
+
+iCloud calendars connect over CalDAV with an app-specific password — no OAuth setup.
+
+1. Generate an app-specific password at https://account.apple.com
+   (Sign-In and Security → App-Specific Passwords; requires 2FA).
+2. Add the source and pick calendars interactively:
+
+    ts4k src add cc apple email=you@icloud.com
+
+The same provider works for any CalDAV server (Fastmail, Nextcloud, ...):
+pass `server_url=https://your-server/` instead of the `apple` preset.
+
+Notes:
+- Levels gate writes like the other calendar providers: `level=modify` allows editing and RSVP, `level=draft` also allows creating events, `level=send` also allows creating events with attendee invites (`ts4k src add cc apple email=... calendar_id=... level=draft`, or edit the source after adding).
+- RSVP is best-effort: iCloud often blocks programmatic replies to external
+  invites — ts4k reports this cleanly and you respond in the Calendar app.
+
 ### Managing messages
 
 Requires `modify` [access level](#access-levels) or higher. All actions are non-destructive and reversible.
