@@ -373,7 +373,12 @@ class GcalAdapter(BaseAdapter):
             body["start"] = {"date": s} if "T" not in s else {"dateTime": s}
         if "end" in fields:
             e = fields["end"]
-            body["end"] = {"date": e} if "T" not in e else {"dateTime": e}
+            if "T" not in e:
+                # All-day: user provides inclusive end, API end is exclusive
+                end_date = datetime.strptime(e, "%Y-%m-%d") + timedelta(days=1)
+                body["end"] = {"date": end_date.strftime("%Y-%m-%d")}
+            else:
+                body["end"] = {"dateTime": e}
 
         event = await asyncio.to_thread(
             lambda: self._service.events().patch(

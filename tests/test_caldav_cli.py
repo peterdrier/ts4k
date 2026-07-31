@@ -62,6 +62,28 @@ class TestSrcAddApple:
         assert "cc" not in sources.list_all()
 
 
+class TestAuthCaldav:
+    """`ts4k auth cc` should explain the app-specific password, not call caldav unknown."""
+
+    def _auth_args(self) -> argparse.Namespace:
+        return argparse.Namespace(target="cc", check=False, no_calendar=False)
+
+    def test_explains_app_specific_password(self, ts4k_config, capsys):
+        sources.add("cc", provider="caldav", email="a@icloud.com",
+                    calendar_id="https://caldav.icloud.com/1/calendars/home/")
+        cli._cmd_auth(self._auth_args())
+        out = capsys.readouterr().out.lower()
+        assert "unknown provider" not in out
+        assert "app-specific password" in out
+        assert "src add" in out
+
+    def test_provider_name_resolves(self, ts4k_config, capsys):
+        sources.add("cc", provider="caldav", email="a@icloud.com",
+                    calendar_id="https://caldav.icloud.com/1/calendars/home/")
+        cli._cmd_auth(argparse.Namespace(target="caldav", check=False, no_calendar=False))
+        assert "app-specific password" in capsys.readouterr().out.lower()
+
+
 class TestSuggestPrefix:
     def test_caldav_base_is_cc(self):
         assert cli._suggest_cal_prefix("Home", {}, provider="caldav").startswith("cc")

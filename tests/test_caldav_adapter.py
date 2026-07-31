@@ -164,6 +164,20 @@ END:VCALENDAR
 """
 
 
+SINGLE_ATTENDEE_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:solo1
+SUMMARY:One on one
+DTSTART;TZID=Europe/Amsterdam:20260730T100000
+DTEND;TZID=Europe/Amsterdam:20260730T103000
+ATTENDEE;CN=Me;PARTSTAT=TENTATIVE:mailto:test@icloud.com
+END:VEVENT
+END:VCALENDAR
+"""
+
+
 class TestNormalization:
     def test_timed_event(self, adapter: CaldavAdapter):
         e = adapter._normalize_component(_mk_caldav_event(TIMED_ICS).icalendar_component)
@@ -197,6 +211,14 @@ class TestNormalization:
         e = adapter._normalize_component(_mk_caldav_event(INSTANCE_ICS).icalendar_component)
         assert e["recurring_event_id"] == "cc:rec1@icloud.com"
         assert e["id"].startswith("cc:rec1@icloud.com::2026-08-06T14:00:00")
+
+    def test_single_attendee_is_not_treated_as_a_sequence(self, adapter: CaldavAdapter):
+        # icalendar returns a bare vCalAddress (not a list) for one ATTENDEE
+        e = adapter._normalize_component(
+            _mk_caldav_event(SINGLE_ATTENDEE_ICS).icalendar_component
+        )
+        assert e["attendees_summary"] == "1 people"
+        assert e["your_status"] == "tentative"
 
     def test_foreign_timezone_normalized_to_config_tz(self, adapter: CaldavAdapter):
         # 09:00 EDT (America/New_York) on 2026-07-30 == 15:00 CEST (Europe/Amsterdam)
@@ -266,20 +288,37 @@ class TestReadEvent:
         assert e["updated"] == "2026-06-15T12:00:00+00:00"
         adapter._calendar.event_by_uid.assert_called_once_with("det1@icloud.com")
 
+    async def test_single_attendee_expands_to_one_entry(self, adapter: CaldavAdapter):
+        adapter._calendar.event_by_uid.return_value = _mk_caldav_event(SINGLE_ATTENDEE_ICS)
+        adapter._calendar.event_by_url.side_effect = Exception("404")
+        e = await adapter.read_event("cc:solo1")
+        assert e["attendees"] == [
+            {"name": "Me", "email": "test@icloud.com", "status": "tentative"},
+        ]
+
     async def test_instance_id_fetches_master(self, adapter: CaldavAdapter):
         adapter._calendar.event_by_uid.return_value = _mk_caldav_event(DETAIL_ICS)
         await adapter.read_event("cc:det1@icloud.com::2026-08-06T10:00:00+02:00")
         adapter._calendar.event_by_uid.assert_called_once_with("det1@icloud.com")
 
 
+def _mk_collection(url: str, name: str, components: list[str] | Exception) -> MagicMock:
+    c = MagicMock()
+    c.url = url
+    c.name = name
+    if isinstance(components, Exception):
+        c.get_supported_components.side_effect = components
+    else:
+        c.get_supported_components.return_value = components
+    return c
+
+
 class TestListCalendars:
     async def test_lists_principal_calendars(self, adapter: CaldavAdapter):
-        c1 = MagicMock()
-        c1.url = "https://caldav.icloud.com/123/calendars/home/"
-        c1.name = "Home"
-        c2 = MagicMock()
-        c2.url = "https://caldav.icloud.com/123/calendars/work/"
-        c2.name = "Work"
+        c1 = _mk_collection("https://caldav.icloud.com/123/calendars/home/", "Home", ["VEVENT"])
+        c2 = _mk_collection(
+            "https://caldav.icloud.com/123/calendars/work/", "Work", ["VEVENT", "VTODO"]
+        )
         adapter._principal.calendars.return_value = [c1, c2]
         cals = await adapter.list_calendars()
         assert cals == [
@@ -288,6 +327,27 @@ class TestListCalendars:
             {"id": "https://caldav.icloud.com/123/calendars/work/", "summary": "Work",
              "access_role": "owner", "timezone": "Europe/Amsterdam", "primary": False},
         ]
+
+    async def test_vtodo_only_collections_excluded(self, adapter: CaldavAdapter):
+        """Apple exposes legacy Reminders collections that hold no events."""
+        home = _mk_collection(
+            "https://caldav.icloud.com/123/calendars/home/", "Home", ["VEVENT"]
+        )
+        reminders = _mk_collection(
+            "https://caldav.icloud.com/123/calendars/reminders/", "Reminders", ["VTODO"]
+        )
+        adapter._principal.calendars.return_value = [home, reminders]
+        cals = await adapter.list_calendars()
+        assert [c["summary"] for c in cals] == ["Home"]
+
+    async def test_unqueryable_collection_is_kept(self, adapter: CaldavAdapter):
+        """Fail open: a server that won't answer the propfind shouldn't lose calendars."""
+        c = _mk_collection(
+            "https://caldav.icloud.com/123/calendars/home/", "Home", Exception("boom")
+        )
+        adapter._principal.calendars.return_value = [c]
+        cals = await adapter.list_calendars()
+        assert [c["summary"] for c in cals] == ["Home"]
 
 
 class TestFetchByUidUrlFirst:

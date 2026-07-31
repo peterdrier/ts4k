@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -145,6 +146,28 @@ END:VCALENDAR
         obj.save.assert_called_once()
         assert e["title"] == "New"
         assert e["start"] == "2026-07-30T12:00:00+02:00"
+
+    async def test_all_day_inclusive_end_date_converted(self, tmp_path: Path):
+        """All-day end is inclusive from the user, exclusive in iCal — same as create."""
+        a = _adapter(tmp_path, "modify")
+        ics = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:up2
+SUMMARY:Vacation
+DTSTART;VALUE=DATE:20260317
+DTEND;VALUE=DATE:20260320
+END:VEVENT
+END:VCALENDAR
+"""
+        obj = MagicMock()
+        obj.icalendar_component = IcsCalendar.from_ical(ics).walk("VEVENT")[0]
+        a._calendar.event_by_uid.return_value = obj
+        e = await a.update_event("cc:up2", start="2026-03-17", end="2026-03-21")
+        assert obj.icalendar_component["DTEND"].dt == date(2026, 3, 22)  # +1 day
+        assert e["all_day"] is True
+        assert e["end"] == "2026-03-22"
 
 
 INVITE_ICS = """BEGIN:VCALENDAR

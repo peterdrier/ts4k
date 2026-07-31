@@ -1113,6 +1113,12 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
                 _auth_o365(prefix, cfg, no_calendar)
             elif provider == "whatsapp":
                 print(f"  {prefix}: whatsapp — session-based, no auth needed")
+            elif provider == "caldav":
+                email = cfg.get("email", "<your-apple-id>")
+                print(f"  {prefix}: caldav — no OAuth; uses an app-specific password")
+                print(f"        Generate one at https://account.apple.com "
+                      f"(Sign-In and Security → App-Specific Passwords),")
+                print(f"        then store it with: ts4k src add {prefix} apple email={email}")
             else:
                 print(f"  {prefix}: unknown provider '{provider}' — skipping")
         except SystemExit:
