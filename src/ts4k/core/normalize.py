@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import html2text
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
@@ -353,33 +353,16 @@ def _html_to_text(html: str) -> str:
 # Text-level cleanup
 # ---------------------------------------------------------------------------
 
-_REPLY_HEADER_PATTERNS = [
-    # "On Mon, Feb 19, 2026 at 10:00 AM Alice <alice@...> wrote:"
-    re.compile(
-        r"^On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun).*\bwrote:\s*$",
-        re.MULTILINE | re.IGNORECASE,
-    ),
-    # "On 2026-02-19, Alice wrote:" / "On February 19, 2026, Alice wrote:"
-    re.compile(
-        r"^On\s+\d.*\bwrote:\s*$",
-        re.MULTILINE | re.IGNORECASE,
-    ),
-    # "On Feb 19, 2026 at 10:00 AM, Alice wrote:"
-    re.compile(
-        r"^On\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*\bwrote:\s*$",
-        re.MULTILINE | re.IGNORECASE,
-    ),
-    # "--- Original Message ---" / "---------- Forwarded message ----------"
-    re.compile(
-        r"^-{2,}\s*(?:Original|Forwarded)\s+[Mm]essage\s*-{2,}\s*$",
-        re.MULTILINE,
-    ),
-    # "From: ... Sent: ... To: ... Subject: ..." (Outlook-style)
-    re.compile(
-        r"^From:\s+.+\nSent:\s+.+\nTo:\s+.+\nSubject:\s+.+",
-        re.MULTILINE | re.IGNORECASE,
-    ),
-]
+# ⚡ Bolt Optimization: Combined reply header patterns into a single pre-compiled regex
+# using the OR (|) operator to significantly improve matching performance (avoiding loops).
+_REPLY_HEADER_PATTERN = re.compile(
+    r"^(?:On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun).*\bwrote:\s*|"
+    r"On\s+\d.*\bwrote:\s*|"
+    r"On\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*\bwrote:\s*|"
+    r"-{2,}\s*(?:Original|Forwarded)\s+[Mm]essage\s*-{2,}\s*|"
+    r"From:\s+.+\nSent:\s+.+\nTo:\s+.+\nSubject:\s+.+)$",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 
 def _strip_reply_chains(text: str) -> str:
@@ -392,11 +375,10 @@ def _strip_reply_chains(text: str) -> str:
     - Outlook-style "From: ... Sent: ... To: ... Subject: ..." blocks
     """
     # First, remove "On ... wrote:" headers and everything after them that's quoted
-    for pattern in _REPLY_HEADER_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            # Truncate at the reply header
-            text = text[:match.start()].rstrip()
+    match = _REPLY_HEADER_PATTERN.search(text)
+    if match:
+        # Truncate at the reply header
+        text = text[:match.start()].rstrip()
 
     # Remove any remaining "> " quoted lines
     lines = text.split("\n")
@@ -419,24 +401,16 @@ def _strip_reply_chains(text: str) -> str:
     return "\n".join(cleaned)
 
 
-# Signature patterns — compiled once at module level
-_SIGNATURE_TRIGGERS = [
-    # Explicit delimiters
-    re.compile(r"^--\s*$"),  # "-- " standard sig delimiter
-    re.compile(r"^---+\s*$"),  # "---" or longer
-    re.compile(r"^_{3,}\s*$"),  # "___" or longer
-
-    # Mobile signatures
-    re.compile(r"^Sent from (?:my )?\w", re.IGNORECASE),
-    re.compile(r"^Sent via\b", re.IGNORECASE),
-    re.compile(r"^Get Outlook for\b", re.IGNORECASE),
-    re.compile(r"^Sent from Mail for\b", re.IGNORECASE),
-
-    # Closing phrases that typically start signatures
-    re.compile(r"^(?:Best|Kind|Warm)\s+regards?\s*[,.]?\s*$", re.IGNORECASE),
-    re.compile(r"^(?:Thanks|Thank you|Cheers|Regards|Sincerely|Yours truly)\s*[,.]?\s*$", re.IGNORECASE),
-    re.compile(r"^(?:With appreciation|All the best|Talk soon)\s*[,.]?\s*$", re.IGNORECASE),
-]
+# ⚡ Bolt Optimization: Combined signature trigger patterns into a single pre-compiled regex
+# using the OR (|) operator to significantly improve matching performance (avoiding loops).
+_SIGNATURE_TRIGGER_PATTERN = re.compile(
+    r"^(?:--\s*|---+\s*|_{3,}\s*|"  # Explicit delimiters
+    r"Sent from (?:my )?\w.*|Sent via\b.*|Get Outlook for\b.*|Sent from Mail for\b.*|"  # Mobile signatures
+    r"(?:Best|Kind|Warm)\s+regards?\s*[,.]?\s*|"  # Closing phrases
+    r"(?:Thanks|Thank you|Cheers|Regards|Sincerely|Yours truly)\s*[,.]?\s*|"
+    r"(?:With appreciation|All the best|Talk soon)\s*[,.]?\s*)$",
+    re.IGNORECASE,
+)
 
 _CONFIDENTIALITY_PATTERN = re.compile(
     r"(?:this\s+(?:email|message|communication)\s+is\s+(?:intended|confidential)"
@@ -468,12 +442,8 @@ def _strip_signatures(text: str) -> str:
         stripped = line.strip()
 
         # Check explicit signature triggers
-        for pattern in _SIGNATURE_TRIGGERS:
-            if pattern.match(stripped):
-                sig_start = i
-                break
-
-        if sig_start is not None:
+        if _SIGNATURE_TRIGGER_PATTERN.match(stripped):
+            sig_start = i
             break
 
         # Check for confidentiality notice
