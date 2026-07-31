@@ -181,12 +181,17 @@ def _resolve_prefixes(source: str | None) -> list[str]:
 
     Accepts a specific prefix, a provider name, or ``"all"`` (default).
     """
-    source = (source or "all").lower().strip()
+    raw = (source or "all").strip()
     all_cfg = _ensure_sources()
 
-    if source == "all":
+    if raw.lower() == "all":
         return list(all_cfg.keys())
 
+    # Prefixes keep the case they were added with — exact key wins
+    if raw in all_cfg:
+        return [raw]
+
+    source = raw.lower()
     if source in all_cfg:
         return [source]
 

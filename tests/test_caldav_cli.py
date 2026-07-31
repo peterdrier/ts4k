@@ -77,6 +77,18 @@ class TestAuthCaldav:
         assert "app-specific password" in out
         assert "src add" in out
 
+    def test_points_at_the_credential_file_to_replace(self, ts4k_config, capsys):
+        """`src add` only prompts when no credential exists — a revoked password
+        must be deleted first or the instruction is a dead end."""
+        from ts4k.auth.caldav import credentials_path
+
+        sources.add("cc", provider="caldav", email="a@icloud.com",
+                    calendar_id="https://caldav.icloud.com/1/calendars/home/")
+        cli._cmd_auth(self._auth_args())
+        out = capsys.readouterr().out
+        assert str(credentials_path("a@icloud.com")) in out
+        assert "delete" in out.lower()
+
     def test_provider_name_resolves(self, ts4k_config, capsys):
         sources.add("cc", provider="caldav", email="a@icloud.com",
                     calendar_id="https://caldav.icloud.com/1/calendars/home/")

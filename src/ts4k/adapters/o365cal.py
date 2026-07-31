@@ -398,9 +398,19 @@ class O365CalAdapter(BaseAdapter):
         if "start" in fields:
             s = fields["start"]
             body["start"] = {"dateTime": s, "timeZone": self._config.timezone}
+            if "T" not in s:
+                body["isAllDay"] = True
         if "end" in fields:
             e = fields["end"]
-            body["end"] = {"dateTime": e, "timeZone": self._config.timezone}
+            if "T" not in e:
+                # All-day: user provides inclusive end, Graph end is exclusive
+                from datetime import timedelta
+                end_date = datetime.strptime(e, "%Y-%m-%d") + timedelta(days=1)
+                body["end"] = {"dateTime": end_date.strftime("%Y-%m-%d"),
+                               "timeZone": self._config.timezone}
+                body["isAllDay"] = True
+            else:
+                body["end"] = {"dateTime": e, "timeZone": self._config.timezone}
 
         event = await self._patch(f"/me/events/{raw_id}", json=body)
         return self._normalize_event(event)

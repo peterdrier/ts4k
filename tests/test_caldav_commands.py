@@ -81,6 +81,25 @@ class TestCalSourceAliases:
         assert commands._get_cal_timezone("apple") == "Europe/Amsterdam"
         assert commands._get_cal_timezone("icloud") == "Europe/Amsterdam"
 
+    async def test_exact_case_prefix_still_matches(self, monkeypatch):
+        """`src add` preserves prefix case — an exact key must win over lowercasing."""
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"Work": self._amsterdam_cfg()}
+        )
+        event = {"id": "Work:1", "title": "Standup", "start": "2026-07-30T09:00:00"}
+        adapter = MagicMock()
+        adapter.__aenter__ = AsyncMock(return_value=adapter)
+        adapter.__aexit__ = AsyncMock(return_value=None)
+        adapter.list_events = AsyncMock(return_value=[event])
+        monkeypatch.setattr(commands, "_make_adapter", lambda p, c: adapter)
+
+        assert commands._resolve_prefixes("Work") == ["Work"]
+        assert commands._get_cal_timezone("Work") == "Europe/Amsterdam"
+        events = await commands._cal_fetch_events(
+            "Work", "2026-07-30T00:00:00", "2026-07-31T00:00:00"
+        )
+        assert events == [event]
+
     def test_unknown_source_still_matches_nothing(self, monkeypatch):
         monkeypatch.setattr(
             "ts4k.state.sources.list_all", lambda: {"cc": dict(CALDAV_CFG)}
