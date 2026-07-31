@@ -1,8 +1,9 @@
 # ts4k — Open Work
-Last synced: 2026-07-30 (v0.1.21)
+Last synced: 2026-07-31 (v0.2.0)
 
 ## P1 — Bugs / Reliability
 
+- [x] ~~**Google tokens destroyed by headless re-auth / adapter scope clobber**~~ — Fixed (PR #52): re-auth no longer deletes the old token before the flow succeeds; gmail/gcal adapters request the per-email scope union (`union_scopes_for_email`); refresh keeps the stored scope set instead of narrowing the token record; under-granted scopes (Workspace policy / app registration) reported explicitly in `ts4k auth`, `--check`, and `status`. (v0.2.0)
 - [x] ~~**whatsnew watermark skips unread messages**~~ [#23](https://github.com/peterdrier/ts4k/issues/23) — Fixed: per-source watermark direction. (v0.1.20)
 - [x] ~~**O365 bodyPreview cached as full body**~~ [#24](https://github.com/peterdrier/ts4k/issues/24) — Fixed: `_size` falls back to snippet when body absent; bodyPreview no longer cached as full body. (v0.1.20)
 - [x] ~~**count applied before filters under-fills results**~~ [#25](https://github.com/peterdrier/ts4k/issues/25) — Fixed: filter before count slice. (v0.1.20)
@@ -57,6 +58,10 @@ Last synced: 2026-07-30 (v0.1.21)
 
 ## Phase 6 — Calendar
 
+- [x] ~~**CalDAV adapter (Apple/iCloud preset)**~~ [#51](https://github.com/peterdrier/ts4k/pull/51) — Generic CalDAV provider (`caldav`, aliases apple/icloud), app-specific-password auth (0600 JSON, star-masked prompt), full event surface incl. invites (ORGANIZER/RFC 6638) and best-effort RSVP, iCloud 412 UID-lookup workaround (URL-first fetch). Smoke-tested against real iCloud incl. invite delivery. (merged 2026-07-31)
+- [ ] **Store calendar datetimes in UTC internally, display local** [#54](https://github.com/peterdrier/ts4k/issues/54) — Convention retrofit across gcal/o365cal/caldav + merge sort + format layer. Needs short spec first (display-timezone resolution, `_cal_time_bounds` semantics).
+- [ ] **CalDAV follow-up bundle** [#55](https://github.com/peterdrier/ts4k/pull/55) (open — all six done, awaiting merge) (from PR #51 reviews, ~1 session): atomic `os.open(0o600)` credential write; extract attendee list-coercion helper (3× duplicated in caldav_cal.py); fix all-day `update_event` exclusive-end gap in both gcal and caldav; filter Apple's legacy "⚠️"/VTODO-only collections from the calendar picker; `--source apple`/`icloud` aliases on `cal` commands; friendlier `ts4k auth <caldav-prefix>` message. Live check pending: RSVP on a real externally-organized invite.
+
 - [x] ~~**Google Calendar adapter**~~ — Direct Google Calendar API via `src/ts4k/adapters/gcal.py`. List/create/update events, RSVP, recurring event support, adaptive time formatting. (Phase 6a, v0.1.17)
 - [x] ~~**`ts4k cal` command**~~ — `today`, `week`, `next`, `range`, `event`, `create`, `update`, `rsvp` subcommands with setup wizard. MCP tools: `cal`, `cal_create`, `cal_manage`. (Phase 6a, v0.1.17)
 - [x] ~~**O365 Calendar extension**~~ — O365CalAdapter with list/create/update events, setup wizard, `list_o365_calendars`. (Phase 6b, 873f527)
@@ -76,6 +81,9 @@ Last synced: 2026-07-30 (v0.1.21)
 
 ## Recently Completed
 
+- [x] **CalDAV calendar adapter** (PR #51) — generic CalDAV adapter with Apple/iCloud preset: list/read/create/update/RSVP, `ts4k src add apple` wizard, app-specific password storage (0600). (v0.2.0)
+- [x] **Normalize regex consolidation** (PR #53, Bolt) — reply-header and signature-trigger pattern lists combined into single pre-compiled regexes; ~2-4x faster on those paths. (v0.2.0)
+- [x] **uv.lock untracked** — rode into the repo in #51's skeleton commit; removed and gitignored (ts4k is a published library, lockfile stays local). (PR #52)
 - [x] **CLI `--version` flag** — `ts4k --version` now shows version from package metadata; removed stale hardcoded `__version__` in `__init__.py`.
 - [x] **Trim MCP surface** [#2](https://github.com/peterdrier/ts4k/issues/2) — 11→7 tools, 29% token savings. (closed)
 - [x] **LLM-oriented help mode** [#8](https://github.com/peterdrier/ts4k/issues/8) — `ts4k help --llm` + `ts4k skill setup`. (closed)
