@@ -181,12 +181,17 @@ def _resolve_prefixes(source: str | None) -> list[str]:
 
     Accepts a specific prefix, a provider name, or ``"all"`` (default).
     """
-    source = (source or "all").lower().strip()
+    raw = (source or "all").strip()
     all_cfg = _ensure_sources()
 
-    if source == "all":
+    if raw.lower() == "all":
         return list(all_cfg.keys())
 
+    # Prefixes keep the case they were added with — exact key wins
+    if raw in all_cfg:
+        return [raw]
+
+    source = raw.lower()
     if source in all_cfg:
         return [source]
 
@@ -2185,11 +2190,14 @@ async def _cal_fetch_events(
     from ts4k.state import sources as src_mod
 
     all_sources = src_mod.list_all()
+    # Route through _resolve_prefixes so provider aliases (apple, icloud, ...)
+    # work on cal commands the same way they do on message commands.
+    wanted = set(_resolve_prefixes(source)) if source else None
     prefixes = []
     for pfx, cfg in all_sources.items():
         if cfg.get("provider") not in _CAL_PROVIDERS:
             continue
-        if source and pfx != source and cfg.get("provider") != source:
+        if wanted is not None and pfx not in wanted:
             continue
         prefixes.append((pfx, cfg))
 
@@ -2241,10 +2249,11 @@ def _get_cal_timezone(source: str | None) -> str:
     from ts4k.state import sources as src_mod
 
     all_sources = src_mod.list_all()
+    wanted = set(_resolve_prefixes(source)) if source else None
     for pfx, cfg in all_sources.items():
         if cfg.get("provider") not in _CAL_PROVIDERS:
             continue
-        if source and pfx != source:
+        if wanted is not None and pfx not in wanted:
             continue
         return cfg.get("timezone", "UTC")
     return "UTC"

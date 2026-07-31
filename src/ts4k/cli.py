@@ -1114,6 +1114,17 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
                 _auth_o365(prefix, cfg, no_calendar)
             elif provider == "whatsapp":
                 print(f"  {prefix}: whatsapp — session-based, no auth needed")
+            elif provider == "caldav":
+                from ts4k.auth.caldav import credentials_path
+                email = cfg.get("email", "<your-apple-id>")
+                print(f"  {prefix}: caldav — no OAuth; uses an app-specific password")
+                print(f"        Generate one at https://account.apple.com "
+                      f"(Sign-In and Security → App-Specific Passwords),")
+                print(f"        then store it with: ts4k src add {prefix} apple email={email}")
+                # src add only prompts when no credential is stored, so a revoked
+                # password has to be removed first or the re-run is a no-op.
+                print(f"        Replacing a revoked password? delete "
+                      f"{credentials_path(email)} first.")
             else:
                 print(f"  {prefix}: unknown provider '{provider}' — skipping")
         except SystemExit:

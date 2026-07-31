@@ -124,6 +124,26 @@ class TestUpdateEvent:
         result = await adapter.update_event("oc:evt1", title="New Title")
         assert result["title"] == "New Title"
 
+    async def test_all_day_inclusive_end_date_converted(self):
+        """All-day end is inclusive from the user, exclusive in Graph — same as create."""
+        adapter = _make_adapter(level="modify")
+        updated = {
+            "id": "evt1", "subject": "Vacation",
+            "start": {"dateTime": "2026-03-17", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-03-22", "timeZone": "UTC"},
+            "isAllDay": True, "isCancelled": False,
+            "location": {"displayName": ""},
+            "responseStatus": {"response": "organizer"},
+        }
+        adapter._client.patch = AsyncMock(return_value=_mock_response(updated))
+        await adapter.update_event("oc:evt1", start="2026-03-17", end="2026-03-21")
+
+        call_args = adapter._client.patch.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json", {})
+        assert body["start"]["dateTime"] == "2026-03-17"
+        assert body["end"]["dateTime"] == "2026-03-22"  # +1 day
+        assert body["isAllDay"] is True
+
 
 class TestRsvp:
     async def test_modify_level_required(self):

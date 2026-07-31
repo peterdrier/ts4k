@@ -99,6 +99,21 @@ class TestUpdateEvent:
         result = await adapter.update_event("gc:evt1", title="New Title")
         assert result["title"] == "New Title"
 
+    async def test_all_day_inclusive_end_date_converted(self):
+        """All-day end is inclusive from the user, exclusive in the API — same as create."""
+        adapter = _make_adapter(level="modify")
+        adapter._service.events.return_value.patch.return_value.execute.return_value = {
+            "id": "evt1", "summary": "Vacation",
+            "start": {"date": "2026-03-17"},
+            "end": {"date": "2026-03-22"},
+            "status": "confirmed",
+        }
+        await adapter.update_event("gc:evt1", start="2026-03-17", end="2026-03-21")
+
+        body = adapter._service.events.return_value.patch.call_args[1]["body"]
+        assert body["start"] == {"date": "2026-03-17"}
+        assert body["end"] == {"date": "2026-03-22"}  # +1 day
+
 
 class TestRsvp:
     async def test_modify_level_required(self):

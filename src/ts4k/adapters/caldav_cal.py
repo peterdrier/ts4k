@@ -36,6 +36,14 @@ def _strip_mailto(value: Any) -> str:
     return s[7:] if s.lower().startswith("mailto:") else s
 
 
+def _attendees_of(comp: Any) -> list:
+    """ATTENDEE is absent, a single vCalAddress, or a list — always yield a list."""
+    raw = comp.get("ATTENDEE")
+    if raw is None:
+        return []
+    return list(raw) if isinstance(raw, list) else [raw]
+
+
 @dataclass
 class CaldavAdapterConfig:
     """Configuration for a CalDAV calendar source."""
@@ -186,13 +194,7 @@ class CaldavAdapter(BaseAdapter):
         else:
             duration_minutes = None
 
-        raw_attendees = comp.get("ATTENDEE")
-        if raw_attendees is None:
-            attendees = []
-        elif isinstance(raw_attendees, list):
-            attendees = raw_attendees
-        else:
-            attendees = [raw_attendees]
+        attendees = _attendees_of(comp)
 
         your_status = None
         my_email = self._config.email.lower()
@@ -277,12 +279,7 @@ class CaldavAdapter(BaseAdapter):
         base = self._normalize_component(comp)
 
         attendees_full = []
-        raw_attendees = comp.get("ATTENDEE")
-        if raw_attendees is None:
-            raw_attendees = []
-        elif not isinstance(raw_attendees, list):
-            raw_attendees = [raw_attendees]
-        for a in raw_attendees:
+        for a in _attendees_of(comp):
             email = _strip_mailto(a)
             partstat = str(a.params.get("PARTSTAT", "NEEDS-ACTION")).upper()
             attendees_full.append({
@@ -311,11 +308,24 @@ class CaldavAdapter(BaseAdapter):
         return base
 
     async def list_calendars(self) -> list[dict]:
-        """List calendars on the principal (used by setup; adapter may have empty calendar_id)."""
+        """List event-capable calendars on the principal.
+
+        Apple exposes legacy VTODO-only collections (Reminders) alongside real
+        calendars; they can't hold events, so they're filtered out of the
+        picker.  Servers that won't answer the propfind fail open.
+        """
+
+        def _holds_events(c: Any) -> bool:
+            try:
+                return "VEVENT" in c.get_supported_components()
+            except Exception:
+                return True
 
         def _list() -> list[dict]:
             out = []
             for c in self._principal.calendars():
+                if not _holds_events(c):
+                    continue
                 out.append({
                     "id": str(c.url),
                     "summary": c.name or str(c.url),
@@ -464,7 +474,8 @@ class CaldavAdapter(BaseAdapter):
         if "end" in fields:
             e = fields["end"]
             if "T" not in e:
-                _set("DTEND", date.fromisoformat(e))
+                # All-day: user provides inclusive end, iCal DTEND is exclusive
+                _set("DTEND", date.fromisoformat(e) + timedelta(days=1))
             else:
                 dt = datetime.fromisoformat(e)
                 _set("DTEND", dt.replace(tzinfo=tzinfo) if dt.tzinfo is None else dt)
@@ -503,13 +514,8 @@ class CaldavAdapter(BaseAdapter):
         comp = obj.icalendar_component
 
         my_email = self._config.email.lower()
-        raw_attendees = comp.get("ATTENDEE")
-        if raw_attendees is None:
-            raw_attendees = []
-        elif not isinstance(raw_attendees, list):
-            raw_attendees = [raw_attendees]
         me = next(
-            (a for a in raw_attendees if _strip_mailto(a).lower() == my_email), None
+            (a for a in _attendees_of(comp) if _strip_mailto(a).lower() == my_email), None
         )
         if me is None:
             raise ValueError(
