@@ -35,6 +35,23 @@ class TestConstruction:
         assert adapter.access_level == AccessLevel.READONLY
 
 
+class TestConnectScopes:
+    """connect() must request the per-email scope union, not just its own scopes."""
+
+    async def test_connect_requests_union_scopes(self, adapter: GcalAdapter):
+        srcs = {
+            "g": {"provider": "gmail", "email": "test@gmail.com", "level": "modify"},
+            "gc": {"provider": "gcal", "email": "test@gmail.com"},
+        }
+        with patch("ts4k.state.sources.list_all", return_value=srcs), \
+             patch("ts4k.auth.google.build_calendar_service") as mock_build:
+            await adapter.connect()
+
+        scopes = mock_build.call_args.kwargs["scopes"]
+        assert "https://www.googleapis.com/auth/calendar.readonly" in scopes
+        assert "https://www.googleapis.com/auth/gmail.modify" in scopes
+
+
 class TestMessagingStubs:
     """Messaging methods return empty results (not raise) for --source all safety."""
 

@@ -146,6 +146,37 @@ def validate_token(
     )
 
 
+def union_scopes_for_email(
+    email: str,
+    *,
+    include_calendar_readonly: bool = True,
+) -> list[str]:
+    """Union of OAuth scopes across all Google sources configured for *email*.
+
+    Gmail and gcal share one token per email, so any (re-)auth must request
+    the union of scopes for every source on that email — a narrower request
+    would clobber the sibling product's access when the token is rewritten.
+
+    Includes calendar.readonly by default so calendar setup never forces a
+    re-auth (mirrors ``ts4k auth`` behavior).
+    """
+    from ts4k.core.levels import AccessLevel, parse_level, scopes_for
+    from ts4k.state import sources as src_mod
+
+    scopes: list[str] = []
+    for cfg in src_mod.list_all().values():
+        provider = cfg.get("provider", "").lower()
+        if provider in ("gmail", "gcal") and cfg.get("email") == email:
+            for scope in scopes_for(provider, parse_level(cfg.get("level"))):
+                if scope not in scopes:
+                    scopes.append(scope)
+    if include_calendar_readonly:
+        for scope in scopes_for("gcal", AccessLevel.READONLY):
+            if scope not in scopes:
+                scopes.append(scope)
+    return scopes
+
+
 def get_credentials(
     email: str,
     scopes: list[str] | None = None,
@@ -179,10 +210,17 @@ def get_credentials(
                     "Token for %s has scopes %s but needs %s — re-authenticating",
                     email, granted, missing,
                 )
-                token_file.unlink()
+                # Keep the old token on disk — it's only overwritten after a
+                # successful re-auth, so a failed flow (e.g. headless) doesn't
+                # destroy working credentials.
                 # Fall through to full OAuth flow below.
             else:
-                creds = Credentials.from_authorized_user_file(str(token_file), scopes)
+                # Load with the STORED scope set, not the (possibly narrower)
+                # requested one — to_json() serializes creds.scopes, so a
+                # refresh rewrite must not drop granted scopes from the record.
+                creds = Credentials.from_authorized_user_file(
+                    str(token_file), sorted(granted)
+                )
                 logger.debug("Loaded existing token from %s", token_file)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Could not read token file %s: %s", token_file, exc)
@@ -213,6 +251,11 @@ def get_credentials(
         )
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), scopes)
+    # Without this, oauthlib aborts the flow with "Scope has changed" when
+    # Google grants fewer scopes than requested (e.g. Workspace policy blocks
+    # one). We want the flow to complete so we can report the gap explicitly.
+    import os
+    os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
     try:
         # Desktop with browser — just works
         creds = flow.run_local_server(port=8085, open_browser=True)
@@ -241,9 +284,26 @@ def get_credentials(
     if creds is None:
         raise RuntimeError(f"OAuth flow returned no credentials for {email}")
 
-    # Persist token.
+    # Detect under-granting: Google may grant fewer scopes than requested
+    # (e.g. the OAuth app registration or Workspace policy blocks some).
+    # creds.scopes holds the REQUESTED set; the actual grant is in
+    # granted_scopes (None when the server omitted scope info).
+    granted_now = creds.granted_scopes if creds.granted_scopes is not None else (creds.scopes or [])
+    missing_scopes = set(scopes) - set(granted_now)
+    if missing_scopes:
+        logger.warning(
+            "Google granted fewer scopes than requested for %s — missing: %s",
+            email,
+            ", ".join(sorted(s.rsplit("/", 1)[-1] for s in missing_scopes)),
+        )
+
+    # Persist token, recording the GRANTED scopes — to_json() serializes the
+    # requested set, which would make later health checks miss the under-grant.
+    import json
+    token_data = json.loads(creds.to_json())
+    token_data["scopes"] = list(granted_now)
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(creds.to_json())
+    token_file.write_text(json.dumps(token_data))
     logger.info("Saved new token for %s at %s", email, token_file)
     return creds
 

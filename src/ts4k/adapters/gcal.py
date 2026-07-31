@@ -81,9 +81,19 @@ class GcalAdapter(BaseAdapter):
     # -- Lifecycle -------------------------------------------------------------
 
     async def connect(self) -> None:
-        from ts4k.auth.google import build_calendar_service
+        from ts4k.auth.google import build_calendar_service, union_scopes_for_email
 
+        # Request the per-email scope union: gmail and gcal share one token
+        # per email, so a narrow request would clobber sibling access on re-auth.
+        # No calendar.readonly extra here — that's an auth-time convenience;
+        # forcing it would flag --no-calendar tokens as under-scoped.
         scopes = scopes_for("gcal", self._access_level)
+        scopes.extend(
+            s for s in union_scopes_for_email(
+                self._config.email, include_calendar_readonly=False,
+            )
+            if s not in scopes
+        )
         self._service = await asyncio.to_thread(
             build_calendar_service,
             email=self._config.email,

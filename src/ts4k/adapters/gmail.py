@@ -271,10 +271,20 @@ class GmailAdapter(BaseAdapter):
         if self._service is not None:
             return  # already connected
 
-        from ts4k.auth.google import build_gmail_service
+        from ts4k.auth.google import build_gmail_service, union_scopes_for_email
         from ts4k.core.levels import scopes_for
 
+        # Request the per-email scope union: gmail and gcal share one token
+        # per email, so a narrow request would clobber sibling access on re-auth.
+        # No calendar.readonly extra here — that's an auth-time convenience;
+        # forcing it would flag --no-calendar tokens as under-scoped.
         scopes = scopes_for("gmail", self._access_level)
+        scopes.extend(
+            s for s in union_scopes_for_email(
+                self._config.user_email, include_calendar_readonly=False,
+            )
+            if s not in scopes
+        )
         self._service = await asyncio.to_thread(
             build_gmail_service,
             self._config.user_email,

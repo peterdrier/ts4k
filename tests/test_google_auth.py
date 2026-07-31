@@ -95,8 +95,8 @@ class TestGetCredentials:
             result = get_credentials("user@test.com", config_dir=tmp_path)
             assert result is mock_creds
 
-    def test_deletes_token_when_scopes_insufficient(self, tmp_path):
-        """Token with insufficient scopes is deleted and re-auth triggered."""
+    def test_reauth_when_scopes_insufficient(self, tmp_path):
+        """Token with insufficient scopes triggers re-auth; new token replaces it."""
         import json
         token_file = tmp_path / "google" / "user@test.com" / "token.json"
         token_file.parent.mkdir(parents=True)
@@ -112,6 +112,7 @@ class TestGetCredentials:
         # Set up mock for the re-auth flow
         mock_creds = MagicMock()
         mock_creds.valid = True
+        mock_creds.granted_scopes = modify_scopes
         mock_creds.to_json.return_value = json.dumps({"token": "new", "scopes": modify_scopes})
 
         mock_flow = MagicMock()
@@ -129,8 +130,40 @@ class TestGetCredentials:
                 "user@test.com", scopes=modify_scopes, config_dir=tmp_path,
             )
             assert result is mock_creds
-            # Old token file should have been deleted and replaced
-            assert token_file.is_file()  # new token saved
+            # New token overwrites the old one after successful re-auth
+            assert json.loads(token_file.read_text())["scopes"] == modify_scopes
+
+    def test_underscoped_token_preserved_when_flow_fails(self, tmp_path):
+        """If re-auth fails (e.g. headless), the old under-scoped token survives."""
+        import json
+        token_file = tmp_path / "google" / "user@test.com" / "token.json"
+        token_file.parent.mkdir(parents=True)
+        original = json.dumps({
+            "token": "mock",
+            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+        })
+        token_file.write_text(original)
+
+        secret_file = tmp_path / "google" / "user@test.com" / "client_secret.json"
+        secret_file.write_text('{"installed": {"client_id": "test"}}')
+
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.side_effect = Exception("no browser")
+
+        with patch(
+            "ts4k.auth.google.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ), patch("ts4k.auth.google.sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            with pytest.raises(RuntimeError):
+                get_credentials(
+                    "user@test.com",
+                    scopes=["https://www.googleapis.com/auth/gmail.modify"],
+                    config_dir=tmp_path,
+                )
+
+        assert token_file.is_file()
+        assert token_file.read_text() == original
 
     def test_refreshes_expired_token(self, tmp_path):
         """Expired token with refresh_token is refreshed."""
@@ -161,6 +194,45 @@ class TestGetCredentials:
             result = get_credentials("user@test.com", config_dir=tmp_path)
             assert result is mock_creds
 
+    def test_refresh_preserves_stored_scopes(self, tmp_path):
+        """A refresh triggered by a narrow-scope caller must not drop the
+        other granted scopes from the token record on disk."""
+        import json
+        stored = [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+        token_file = tmp_path / "google" / "user@test.com" / "token.json"
+        token_file.parent.mkdir(parents=True)
+        token_file.write_text(json.dumps({"token": "mock", "scopes": stored}))
+
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "refresh_tok"
+        mock_creds.to_json.return_value = json.dumps(
+            {"token": "refreshed", "scopes": stored}
+        )
+
+        def do_refresh(request):
+            mock_creds.valid = True
+
+        mock_creds.refresh = do_refresh
+
+        with patch(
+            "ts4k.auth.google.Credentials.from_authorized_user_file",
+            return_value=mock_creds,
+        ) as mock_load, patch("ts4k.auth.google.Request"):
+            get_credentials(
+                "user@test.com",
+                scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+                config_dir=tmp_path,
+            )
+
+        # Credentials must be loaded with the STORED scope set, so the
+        # to_json() rewrite after refresh keeps all granted scopes.
+        assert set(mock_load.call_args.args[1]) == set(stored)
+
     def test_missing_client_secret_raises(self, tmp_path):
         """FileNotFoundError raised when no client_secret.json exists."""
         with patch(
@@ -179,6 +251,7 @@ class TestGetCredentials:
 
         mock_creds = MagicMock()
         mock_creds.valid = True
+        mock_creds.granted_scopes = None
 
         mock_flow = MagicMock()
         mock_flow.run_local_server.return_value = mock_creds
@@ -194,6 +267,183 @@ class TestGetCredentials:
                 str(shared),
                 ["https://www.googleapis.com/auth/gmail.readonly"],
             )
+
+
+# ---------------------------------------------------------------------------
+# Under-granting detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestScopeVerification:
+    """After a new auth, granted scopes are compared against requested ones."""
+
+    def _run_flow(self, tmp_path, requested, granted_scopes):
+        """Run get_credentials with a mocked flow that grants *granted_scopes*.
+
+        Mirrors google_auth_oauthlib behavior: ``creds.scopes`` holds the
+        REQUESTED scopes; the actual grant lives in ``creds.granted_scopes``,
+        and ``to_json()`` serializes the requested set.
+        """
+        import json
+        secret_file = tmp_path / "google" / "user@test.com" / "client_secret.json"
+        secret_file.parent.mkdir(parents=True)
+        secret_file.write_text('{"installed": {"client_id": "test"}}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.scopes = list(requested)
+        mock_creds.granted_scopes = granted_scopes
+        mock_creds.to_json.return_value = json.dumps(
+            {"token": "new", "scopes": list(requested)}
+        )
+
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = mock_creds
+
+        with patch(
+            "ts4k.auth.google.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ):
+            return get_credentials(
+                "user@test.com", scopes=requested, config_dir=tmp_path,
+            )
+
+    def test_warns_when_google_grants_fewer_scopes(self, tmp_path, caplog):
+        """Under-granting is logged explicitly, naming the missing scopes."""
+        import logging
+        requested = [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+        granted = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+        with caplog.at_level(logging.WARNING, logger="ts4k.auth.google"):
+            self._run_flow(tmp_path, requested, granted)
+
+        assert "gmail.modify" in caplog.text
+        assert "fewer scopes" in caplog.text
+
+    def test_undergranted_token_still_written(self, tmp_path):
+        """The token is persisted even when under-granted, recording the
+        GRANTED scopes — not the requested set that to_json() serializes."""
+        import json
+        requested = ["https://www.googleapis.com/auth/gmail.modify"]
+        granted = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+        self._run_flow(tmp_path, requested, granted)
+
+        token_file = tmp_path / "google" / "user@test.com" / "token.json"
+        assert json.loads(token_file.read_text())["scopes"] == granted
+
+    def test_no_warning_when_all_scopes_granted(self, tmp_path, caplog):
+        import logging
+        requested = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+        with caplog.at_level(logging.WARNING, logger="ts4k.auth.google"):
+            self._run_flow(tmp_path, requested, list(requested))
+
+        assert "fewer scopes" not in caplog.text
+
+    def test_falls_back_to_scopes_when_granted_scopes_missing(self, tmp_path, caplog):
+        """If the server omitted scope info (granted_scopes is None), trust
+        creds.scopes and don't warn."""
+        import logging
+        requested = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+        with caplog.at_level(logging.WARNING, logger="ts4k.auth.google"):
+            self._run_flow(tmp_path, requested, None)
+
+        assert "fewer scopes" not in caplog.text
+
+    def test_relax_token_scope_env_set_during_flow(self, tmp_path, monkeypatch):
+        """oauthlib must not abort the flow when Google grants fewer scopes —
+        we detect and report the discrepancy ourselves after the flow."""
+        import json
+        import os
+
+        monkeypatch.delenv("OAUTHLIB_RELAX_TOKEN_SCOPE", raising=False)
+
+        secret_file = tmp_path / "google" / "user@test.com" / "client_secret.json"
+        secret_file.parent.mkdir(parents=True)
+        secret_file.write_text('{"installed": {"client_id": "test"}}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+        mock_creds.granted_scopes = None
+        mock_creds.to_json.return_value = json.dumps({"token": "new"})
+
+        seen = {}
+
+        def run_local_server(**kwargs):
+            seen["relax"] = os.environ.get("OAUTHLIB_RELAX_TOKEN_SCOPE")
+            return mock_creds
+
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.side_effect = run_local_server
+
+        with patch(
+            "ts4k.auth.google.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ):
+            get_credentials("user@test.com", config_dir=tmp_path)
+
+        assert seen["relax"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Per-email scope union tests
+# ---------------------------------------------------------------------------
+
+
+class TestUnionScopesForEmail:
+    """Tests for union_scopes_for_email() — gmail/gcal share one token per email."""
+
+    def test_unions_across_gmail_and_gcal_sources(self):
+        from ts4k.auth.google import union_scopes_for_email
+
+        srcs = {
+            "g": {"provider": "gmail", "email": "a@b.com"},
+            "gcp": {"provider": "gcal", "email": "a@b.com", "level": "draft"},
+            "x": {"provider": "gmail", "email": "other@b.com", "level": "modify"},
+        }
+        with patch("ts4k.state.sources.list_all", return_value=srcs):
+            scopes = union_scopes_for_email("a@b.com")
+
+        assert "https://www.googleapis.com/auth/gmail.readonly" in scopes
+        assert "https://www.googleapis.com/auth/calendar" in scopes
+        # Scopes from a different email must not leak in.
+        assert "https://www.googleapis.com/auth/gmail.modify" not in scopes
+
+    def test_includes_calendar_readonly_by_default(self):
+        from ts4k.auth.google import union_scopes_for_email
+
+        srcs = {"g": {"provider": "gmail", "email": "a@b.com"}}
+        with patch("ts4k.state.sources.list_all", return_value=srcs):
+            scopes = union_scopes_for_email("a@b.com")
+
+        assert "https://www.googleapis.com/auth/calendar.readonly" in scopes
+
+    def test_no_calendar_readonly_when_disabled(self):
+        from ts4k.auth.google import union_scopes_for_email
+
+        srcs = {"g": {"provider": "gmail", "email": "a@b.com"}}
+        with patch("ts4k.state.sources.list_all", return_value=srcs):
+            scopes = union_scopes_for_email("a@b.com", include_calendar_readonly=False)
+
+        assert scopes == ["https://www.googleapis.com/auth/gmail.readonly"]
+
+    def test_no_duplicate_scopes(self):
+        from ts4k.auth.google import union_scopes_for_email
+
+        srcs = {
+            "g1": {"provider": "gmail", "email": "a@b.com", "level": "modify"},
+            "g2": {"provider": "gmail", "email": "a@b.com", "level": "draft"},
+        }
+        with patch("ts4k.state.sources.list_all", return_value=srcs):
+            scopes = union_scopes_for_email("a@b.com")
+
+        assert scopes.count("https://www.googleapis.com/auth/gmail.modify") == 1
 
 
 # ---------------------------------------------------------------------------

@@ -880,7 +880,8 @@ def get_status(
             tag = health.status  # ok, auth, error, na
             suffix = ""
             if health.status == "auth":
-                suffix = f" — ts4k auth {prefix}"
+                reason = f" — {health.detail}" if health.detail else ""
+                suffix = f"{reason} — ts4k auth {prefix}"
             elif health.status == "error":
                 suffix = f" — {health.detail}"
 

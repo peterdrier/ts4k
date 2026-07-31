@@ -66,6 +66,69 @@ class TestAuthTargetResolution:
                         targets = mock_check.call_args[0][0]
                         assert len(targets) == 2
 
+    def test_auth_google_reports_undergranted_scopes(self, capsys):
+        """When Google grants fewer scopes than requested, say which are
+        missing and point at the app registration / Workspace policy."""
+        from ts4k.cli import _auth_google
+
+        cfg = {"provider": "gmail", "email": "a@b.com", "level": "modify"}
+        mock_creds = MagicMock()
+        # Real google-auth behavior: .scopes echoes the REQUESTED set even
+        # when Google under-grants; the actual grant is in granted_scopes.
+        mock_creds.scopes = [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+        mock_creds.granted_scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+
+        with patch("ts4k.auth.google.get_credentials", return_value=mock_creds):
+            with patch("ts4k.state.sources.list_all", return_value={"gn": cfg}):
+                _auth_google("gn", cfg, no_calendar=False)
+
+        out = capsys.readouterr().out
+        assert "gmail.modify" in out
+        assert "fewer scopes" in out.lower()
+        assert "app registration" in out.lower() or "workspace" in out.lower()
+
+    def test_auth_google_no_warning_when_fully_granted(self, capsys):
+        from ts4k.cli import _auth_google
+
+        cfg = {"provider": "gmail", "email": "a@b.com"}
+        mock_creds = MagicMock()
+        mock_creds.scopes = [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
+        mock_creds.granted_scopes = list(mock_creds.scopes)
+
+        with patch("ts4k.auth.google.get_credentials", return_value=mock_creds):
+            with patch("ts4k.state.sources.list_all", return_value={"g": cfg}):
+                _auth_google("g", cfg, no_calendar=False)
+
+        out = capsys.readouterr().out
+        assert "fewer scopes" not in out.lower()
+
+    def test_auth_check_shows_missing_scope_detail(self, capsys):
+        """auth --check surfaces the under-scope detail, not just [auth]."""
+        from ts4k.cli import _auth_check
+        from ts4k.auth.health import TokenHealth
+
+        health = TokenHealth(
+            status="auth",
+            expiry=None,
+            scopes=[],
+            detail="missing scopes: gmail.modify",
+        )
+        targets = [("gn", {"provider": "gmail", "email": "a@b.com"})]
+
+        with patch("ts4k.commands.check_token_health", return_value=health):
+            with pytest.raises(SystemExit):
+                _auth_check(targets)
+
+        out = capsys.readouterr().out
+        assert "missing scopes: gmail.modify" in out
+        assert "ts4k auth gn" in out
+
     def test_check_all_with_no_target(self):
         """ts4k auth --check resolves to all sources."""
         from ts4k.cli import _cmd_auth
