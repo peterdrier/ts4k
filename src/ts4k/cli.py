@@ -118,9 +118,13 @@ async def _cmd_get(args: argparse.Namespace) -> None:
             print(f"Ref {msg_id} not found in {label}.{hint}")
             sys.exit(1)
         msg_id = resolved
+    body_mode = getattr(args, "body_mode", None) or (
+        "readable" if getattr(args, "readable", False) else "compact"
+    )
     result = await commands.get_message(
         id=msg_id,
         fmt=getattr(args, "format", "pipe") or "pipe",
+        body_mode=body_mode,
     )
     if result.error:
         print(result.error)
@@ -1301,12 +1305,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k get 3                        # ref #3 from last list\n"
             "  ts4k g 7 -k life                  # ref #7 from 'life' whatsnew\n"
             "  ts4k get g:18f3a2b1c4d5e6f7       # by native Gmail ID\n"
-            "  ts4k g 3 -k work -f json          # ref #3, JSON output"
+            "  ts4k g 3 -k work -f json          # ref #3, JSON output\n"
+            "  ts4k get 3 --readable             # human-readable body"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     get.add_argument("id", help="Message ID (e.g. g:abc123) or ref number (e.g. 7)")
     get.add_argument("--key", "-k", help="Whatsnew key for ref lookup (e.g. life)")
+    get.add_argument(
+        "--readable", action="store_true", default=False,
+        help="Preserve paragraph breaks, bold/italic markdown, and real "
+             "markdown tables (for human display, not token-optimized)",
+    )
+    get.add_argument(
+        "--body-mode", choices=["compact", "readable"], default=None,
+        help="Explicit body mode (overrides --readable): compact (default) or readable",
+    )
     _add_common_args(get)
     get.set_defaults(func=_cmd_get)
 

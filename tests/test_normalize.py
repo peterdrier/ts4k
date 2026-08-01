@@ -591,6 +591,101 @@ class TestPlainTextPassthrough:
 # 11. Header normalization
 # ---------------------------------------------------------------------------
 
+class TestReadableMode:
+    """``mode='readable'`` preserves structure for human display."""
+
+    def test_default_mode_is_compact(self):
+        """Omitting mode= must produce identical output to mode='compact'."""
+        html = "<p>Hello world.</p><p><strong>Bold</strong> text.</p>"
+        assert normalize(html) == normalize(html, mode="compact")
+
+    def test_compact_strips_emphasis(self):
+        """Regression check: compact mode's existing emphasis-stripping is unchanged."""
+        html = "<p><strong>Bold</strong> and <em>italic</em> text.</p>"
+        result = normalize(html)
+        assert "**" not in result
+        assert "_italic_" not in result
+        assert "Bold" in result
+        assert "italic" in result
+
+    def test_compact_no_paragraph_blank_line(self):
+        """Regression check: compact mode's existing tight paragraph spacing is unchanged."""
+        html = "<p>First paragraph.</p><p>Second paragraph.</p>"
+        result = normalize(html)
+        assert "\n\n" not in result
+
+    def test_readable_preserves_paragraph_breaks(self):
+        html = "<p>First paragraph.</p><p>Second paragraph.</p>"
+        result = normalize(html, mode="readable")
+        assert "First paragraph." in result
+        assert "Second paragraph." in result
+        assert "\n\n" in result
+
+    def test_readable_preserves_emphasis(self):
+        html = "<p><strong>Bold</strong> and <em>italic</em> text.</p>"
+        result = normalize(html, mode="readable")
+        assert "**Bold**" in result
+        assert "_italic_" in result
+
+    def test_readable_table_is_markdown(self):
+        html = """
+        <table>
+            <tr><th>Name</th><th>Amount</th></tr>
+            <tr><td>Alice</td><td>$500</td></tr>
+            <tr><td>Bob</td><td>$750</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Alice" in result
+        assert "$500" in result
+        assert "Bob" in result
+        assert "$750" in result
+        # A markdown header-separator row (e.g. "---|---") must be present.
+        assert "---" in result
+        # Rows must be on separate lines, not pipe-collapsed onto one line.
+        lines = [line for line in result.split("\n") if line.strip()]
+        alice_line = next(line for line in lines if "Alice" in line)
+        bob_line = next(line for line in lines if "Bob" in line)
+        assert alice_line != bob_line
+        assert "Bob" not in alice_line
+
+    def test_readable_still_strips_tracking_pixel(self):
+        html = """
+        <p>Content here.</p>
+        <img src="https://tracker.example.com/pixel.gif" width="1" height="1" />
+        """
+        result = normalize(html, mode="readable")
+        assert "Content here." in result
+        assert "tracker.example.com" not in result
+
+    def test_readable_still_strips_signature(self):
+        text = "Please review the attached.\n\n--\nAlice Smith\nVP Engineering"
+        result = normalize(text, mode="readable")
+        assert "Please review the attached." in result
+        assert "VP Engineering" not in result
+
+    def test_readable_still_strips_reply_chain(self):
+        text = (
+            "Yes, I agree with that approach.\n\n"
+            "On Mon, Feb 19, 2026 at 10:00 AM Alice <alice@example.com> wrote:\n"
+            "> I think we should go with option A.\n"
+        )
+        result = normalize(text, mode="readable")
+        assert "Yes, I agree with that approach." in result
+        assert "option A" not in result
+
+    def test_readable_still_strips_unsubscribe(self):
+        html = """
+        <div><p>Here is your weekly digest.</p></div>
+        <div style="font-size:11px;color:#999">
+            <p><a href="https://example.com/unsubscribe?id=abc123">Unsubscribe</a></p>
+        </div>
+        """
+        result = normalize(html, mode="readable")
+        assert "weekly digest" in result
+        assert "unsubscribe" not in result.lower()
+
+
 class TestHeaderNormalization:
     def test_basic_normalization(self):
         headers = {

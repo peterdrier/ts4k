@@ -20,11 +20,19 @@ from bs4 import BeautifulSoup
 # Public API
 # ---------------------------------------------------------------------------
 
-def normalize(html: str) -> str:
+def normalize(html: str, mode: str = "compact") -> str:
     """Full normalization pipeline.
 
-    Takes raw HTML (or plain text), returns clean text optimized for LLM
-    consumption. Applies the full ts4k preprocessing pipeline in order.
+    Takes raw HTML (or plain text), returns clean text. ``mode`` selects the
+    output style:
+
+    - ``"compact"`` (default): token-efficient text for LLM consumption —
+      no emphasis markup, tight whitespace, pipe-delimited tables.
+    - ``"readable"``: preserves paragraph breaks and **bold**/_italic_
+      markdown, and renders tables as real markdown tables — for
+      human-facing display.
+
+    Applies the full ts4k preprocessing pipeline in order.
     """
     if not html or not html.strip():
         return ""
@@ -52,11 +60,14 @@ def normalize(html: str) -> str:
         # Remove unsubscribe blocks and footer boilerplate (before html2text)
         _remove_unsubscribe_blocks_html(soup)
 
-        # Convert tables to pipe-delimited format before html2text gets them
-        _convert_tables(soup)
+        if mode != "readable":
+            # Convert tables to pipe-delimited format before html2text gets them.
+            # Readable mode leaves <table> structure intact so html2text can
+            # render real markdown tables instead.
+            _convert_tables(soup)
 
         # Convert the cleaned HTML to text using html2text
-        text = _html_to_text(str(soup))
+        text = _html_to_text(str(soup), mode=mode)
     else:
         # Plain text input — still run text-level cleanups
         pass
@@ -297,15 +308,21 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 # HTML → Text conversion
 # ---------------------------------------------------------------------------
 
-def _html_to_text(html: str) -> str:
-    """Convert HTML to plain text using html2text with LLM-friendly settings."""
+def _html_to_text(html: str, mode: str = "compact") -> str:
+    """Convert HTML to plain text using html2text.
+
+    ``mode="compact"`` (default) uses LLM-friendly settings: no emphasis
+    markup, single newline between paragraphs. ``mode="readable"`` keeps
+    emphasis markup and paragraph spacing for human-facing display.
+    """
+    readable = mode == "readable"
     h = html2text.HTML2Text()
     h.body_width = 0  # No line wrapping (LLMs don't need it)
     h.ignore_images = True  # Already handled tracking pixels, skip remainder
-    h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
+    h.ignore_emphasis = not readable  # *bold*, _italic_ waste tokens in compact mode
     h.ignore_links = False  # We want to keep meaningful links
     h.protect_links = True  # Don't wrap links
-    h.single_line_break = True  # More compact output
+    h.single_line_break = not readable  # Compact: no blank line between paragraphs
     h.unicode_snob = True  # Use unicode instead of ASCII approximations
     h.skip_internal_links = True  # Skip anchor links
     h.inline_links = True  # [text](url) format
