@@ -68,9 +68,8 @@ def _compile_patterns(patterns: list[str]) -> list[re.Pattern]:
 
     try:
         return [re.compile("|".join(valid_patterns), re.IGNORECASE)]
-    except (re.error, RecursionError):
-        # Deeply nested patterns can compile individually but exceed the
-        # parser's nesting limit once wrapped in (?:...) groups
+    except re.error:
+        # Fallback if combined regex is too complex or throws error
         return _fallback_compile(patterns)
 
 
