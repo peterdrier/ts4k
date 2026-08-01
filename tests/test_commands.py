@@ -7,10 +7,12 @@ filters, and status without needing real adapters.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from ts4k import commands
+from ts4k.state import cache
 
 
 # ---------------------------------------------------------------------------
@@ -206,3 +208,61 @@ class TestResolveRef:
         assert commands._resolve_ref("#1", None) == "#1"
         assert commands._resolve_ref("1", None) == "1"
         assert commands._resolve_ref("g:abc", None) == "g:abc"
+
+
+# ---------------------------------------------------------------------------
+# source_activity
+# ---------------------------------------------------------------------------
+
+
+class TestSourceActivity:
+    def test_no_cached_messages_is_empty(self, ts4k_config):
+        result = commands.source_activity("g")
+        assert result == {"count": 0, "newest": None, "tag": "empty"}
+
+    def test_untracked_provider_is_na(self, ts4k_config):
+        result = commands.source_activity("w", provider="whatsapp")
+        assert result == {"count": 0, "newest": None, "tag": "n/a"}
+
+    def test_untracked_calendar_provider_is_na(self, ts4k_config):
+        result = commands.source_activity("gc", provider="gcal")
+        assert result["tag"] == "n/a"
+
+    def test_recent_messages_are_active(self, ts4k_config):
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+        )
+        result = commands.source_activity("g", provider="gmail")
+        assert result["tag"] == "active"
+        assert result["count"] == 1
+        assert result["newest"] == recent
+
+    def test_stale_messages_are_low(self, ts4k_config):
+        old = (datetime.now(timezone.utc) - timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "o:1", {"source": "o", "date": old, "from": "a@b.com", "subject": "hi"}
+        )
+        result = commands.source_activity("o", provider="o365")
+        assert result["tag"] == "low"
+        assert result["count"] == 1
+        assert result["newest"] == old
+
+    def test_only_counts_matching_source(self, ts4k_config):
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+        )
+        cache.store_header(
+            "o:1", {"source": "o", "date": recent, "from": "c@d.com", "subject": "hi"}
+        )
+        result = commands.source_activity("g", provider="gmail")
+        assert result["count"] == 1
+
+    def test_activity_boundary_is_exactly_30_days(self, ts4k_config):
+        just_inside = (datetime.now(timezone.utc) - timedelta(days=29)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "g:1", {"source": "g", "date": just_inside, "from": "a@b.com", "subject": "hi"}
+        )
+        result = commands.source_activity("g", provider="gmail")
+        assert result["tag"] == "active"

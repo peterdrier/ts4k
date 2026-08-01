@@ -30,6 +30,11 @@ Provider-specific fields:
 * **gmail**: ``email`` (required), ``mcp_url``, ``transport``
 * **whatsapp**: ``mcp_cwd`` (required), ``server_command``
 
+Common optional field:
+
+* **note**: free-text annotation (e.g. a known noise pattern), set via
+  :func:`set_note` — surfaced by ``ts4k sources``.
+
 Usage::
 
     from ts4k.state import sources
@@ -39,6 +44,7 @@ Usage::
     sources.list_all()        # → {"g": {...}}
     sources.get("g")          # → {"provider": "gmail", ...}
     sources.by_provider("gmail")  # → {"g": {...}, "gn": {...}}
+    sources.set_note("oh", "mostly DMARC reports")  # updates only "note"
 """
 
 from __future__ import annotations
@@ -115,6 +121,25 @@ def add(prefix: str, *, provider: str, **kwargs: Any) -> dict[str, Any]:
     data[prefix] = entry
     _save(data)
     return entry
+
+
+def set_note(prefix: str, note: str) -> dict[str, Any] | None:
+    """Set or clear the free-text ``note`` field on an existing source.
+
+    Unlike :func:`add`, this only touches the ``note`` key — every other
+    field on the source is left alone.  Pass an empty string to clear the
+    note.  Returns the updated config, or ``None`` if *prefix* isn't
+    configured.
+    """
+    data = _load()
+    if prefix not in data:
+        return None
+    if note:
+        data[prefix]["note"] = note
+    else:
+        data[prefix].pop("note", None)
+    _save(data)
+    return data[prefix]
 
 
 def remove(prefix: str) -> bool:
