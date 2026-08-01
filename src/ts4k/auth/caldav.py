@@ -3,6 +3,10 @@
 Credentials live at ``~/.config/ts4k/caldav/<email>/credentials.json``
 (0600).  Generate an app-specific password at https://account.apple.com
 (Sign-In and Security → App-Specific Passwords; requires 2FA).
+
+Apple issues one app-specific password per Apple ID, not per service, so
+the CardDAV adapter reads the same credential file — only the base URL
+differs.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import os
 from pathlib import Path
 
 ICLOUD_CALDAV_URL = "https://caldav.icloud.com"
+ICLOUD_CARDDAV_URL = "https://contacts.icloud.com"
 
 
 def _default_config_dir() -> Path:
