@@ -161,6 +161,19 @@ class BaseAdapter(ABC):
         """Move a message to trash (recoverable)."""
         raise NotImplementedError(f"{type(self).__name__} does not support trash")
 
+    async def modify_thread(
+        self, thread_id: str, action: str, label: str | None = None
+    ) -> dict:
+        """Apply a management *action* to every message in a thread.
+
+        *action* is one of the manage actions: archive, unarchive, label,
+        unlabel, read, unread, trash.  Implementations must do this in a
+        single platform call, not a per-message loop.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support thread operations"
+        )
+
     async def list_labels(self) -> list[dict]:
         """List available labels/categories/folders."""
         raise NotImplementedError(f"{type(self).__name__} does not support list_labels")

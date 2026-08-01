@@ -89,6 +89,7 @@ def _suggest_ref_table(ref: str, current_key: str | None, cmd: str = "get") -> s
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
     refs = RefTable()
     refs.load(_refs_path(args.key))  # load existing, accumulate
+    threads = getattr(args, "threads", False)
     result = await commands.whatsnew(
         key=args.key,
         source=getattr(args, "source", None),
@@ -96,13 +97,17 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
         fmt=getattr(args, "format", "pipe") or "pipe",
         filter=getattr(args, "filter", False),
         ref_table=refs,
+        threads=threads,
     )
     if result.error:
         print(result.error)
         return
     refs.save(_refs_path(args.key))  # save accumulated
     print(result.output)
-    print(f"→ ts4k get -k {args.key} N to read message N")
+    if threads:
+        print(f"→ ts4k thread -k {args.key} N to read thread N")
+    else:
+        print(f"→ ts4k get -k {args.key} N to read message N")
 
 
 async def _cmd_get(args: argparse.Namespace) -> None:
@@ -155,6 +160,7 @@ async def _cmd_list(args: argparse.Namespace) -> None:
     key = getattr(args, "key", None)
     refs = RefTable()
     refs.load(_refs_path(key))
+    threads = getattr(args, "threads", False)
     result = await commands.list_messages(
         source=getattr(args, "source", None),
         query=getattr(args, "query", None),
@@ -165,16 +171,18 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         sender=getattr(args, "sender", None),
         domain=getattr(args, "domain", None),
         since=getattr(args, "since", None),
+        threads=threads,
     )
     if result.error:
         print(result.error)
         return
     refs.save(_refs_path(key))
     print(result.output)
+    cmd, noun = ("thread", "thread") if threads else ("get", "message")
     if key:
-        print(f"→ ts4k get -k {key} N to read message N")
+        print(f"→ ts4k {cmd} -k {key} N to read {noun} N")
     else:
-        print("→ ts4k get N to read message N")
+        print(f"→ ts4k {cmd} N to read {noun} N")
     if result._continuation_hint:
         print(f"→ {result._continuation_hint}  (older messages)")
 
@@ -191,7 +199,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print()
     print("Commands:")
     print("  whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)  [wn]")
-    print("  list [--since T] [-q Q] [--source S] [-n N] [--from/--domain]  Search [l]")
+    print("  list [--since T] [-q Q] [--source S] [-n N] [--from/--domain] [--threads]  Search [l]")
     print("  get [-k KEY] ID                             Read a message               [g]")
     print("  thread [-k KEY] TID                         Read a thread/chat           [t]")
     print("  overview [--source S] [--contact C]         Cache summary (drill-down)   [o]")
@@ -218,6 +226,9 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("Refs:  listings assign numbers (1, 2, 3...) — use with get/thread/event/manage")
     print("       whatsnew refs accumulate per key; use get -k KEY N to resolve")
     print("       ts4k sources  shows configured source prefixes")
+    print()
+    print("Threads: list/whatsnew --threads  one row per thread; refs resolve to threads")
+    print("         manage ACTION REF --thread  act on every message in the thread (Gmail)")
 
     if not all_cfg:
         print()
@@ -647,6 +658,7 @@ async def _cmd_manage_async(args: argparse.Namespace) -> None:
         folder=getattr(args, "folder", None),
         dry_run=getattr(args, "dry_run", False),
         ref_table=rt,
+        thread=getattr(args, "thread", False),
     )
     print(result)
 
@@ -1288,6 +1300,7 @@ def _build_parser() -> argparse.ArgumentParser:
     wn.add_argument("key", help="Watermark key (e.g. life, peter)")
     wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all")
+    wn.add_argument("--threads", action="store_true", help="One row per thread (refs resolve to threads)")
     _add_common_args(wn)
     wn.set_defaults(func=_cmd_whatsnew)
 
@@ -1340,6 +1353,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k l --domain co.com -n 50             # by domain, up to 50\n"
             "  ts4k l -q invoice -s g -n 10             # Gmail search, 10 results\n"
             "  ts4k l --since 6h -s g -k work           # last 6h Gmail, refs under 'work'\n"
+            "  ts4k l --since 2d --threads              # one row per thread\n"
             "  ts4k l -q 'subject:urgent' -f json       # query, JSON output"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1351,6 +1365,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--from", dest="sender", help="Filter by sender email address")
     ls.add_argument("--domain", help="Filter by sender domain (e.g. example.com)")
     ls.add_argument("--key", "-k", help="Accumulate refs under a key (use with get -k KEY N)")
+    ls.add_argument("--threads", action="store_true", help="One row per thread (refs resolve to threads)")
     _add_common_args(ls)
     ls.set_defaults(func=_cmd_list)
 
@@ -1571,6 +1586,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k m archive 1,2,3                 # batch archive by ref\n"
             "  ts4k m label 5 --label llm-garbage    # add label by ref\n"
             "  ts4k m read 1,2,3 -k work             # use refs from key 'work'\n"
+            "  ts4k m archive 1 --thread             # archive the whole thread\n"
             "  ts4k m archive g:abc123               # by native ID\n"
             "  ts4k m list-labels g:any               # list labels for source g\n"
             "  ts4k m archive 1 --dry-run             # preview without acting"
@@ -1585,6 +1601,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mg.add_argument("--label", "-l", help="Label/category name (for label/unlabel)")
     mg.add_argument("--folder", help="Folder name (for move, O365)")
     mg.add_argument("--key", "-k", help="Ref key for resolving short refs (e.g. life)")
+    mg.add_argument("--thread", action="store_true", help="Apply to every message in the thread (Gmail only)")
     mg.add_argument("--dry-run", action="store_true", help="Preview actions without executing")
     mg.set_defaults(func=_cmd_manage_async)
 
