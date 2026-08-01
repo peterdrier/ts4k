@@ -627,6 +627,40 @@ class TestReadableMode:
         assert "**Bold**" in result
         assert "_italic_" in result
 
+    def test_readable_layout_table_is_unwrapped(self):
+        """Single-column layout wrappers must not render as markdown tables."""
+        html = """
+        <table>
+            <tr><td><p>Welcome to our <b>newsletter</b>.</p></td></tr>
+            <tr><td><p>Second paragraph of content.</p></td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Welcome to our" in result
+        assert "Second paragraph" in result
+        # No markdown table artifacts for a layout wrapper
+        assert "|" not in result
+        assert "---" not in result
+        # Inline markup survives the unwrap
+        assert "**newsletter**" in result
+
+    def test_readable_data_table_inside_layout_wrapper_survives(self):
+        """A data table nested in a layout wrapper still renders as markdown."""
+        html = """
+        <table>
+            <tr><td>
+                <table>
+                    <tr><th>Item</th><th>Price</th></tr>
+                    <tr><td>Widget</td><td>$9</td></tr>
+                </table>
+            </td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Widget" in result
+        assert "$9" in result
+        assert "---" in result
+
     def test_readable_table_is_markdown(self):
         html = """
         <table>

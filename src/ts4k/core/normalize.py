@@ -60,11 +60,10 @@ def normalize(html: str, mode: str = "compact") -> str:
         # Remove unsubscribe blocks and footer boilerplate (before html2text)
         _remove_unsubscribe_blocks_html(soup)
 
-        if mode != "readable":
-            # Convert tables to pipe-delimited format before html2text gets them.
-            # Readable mode leaves <table> structure intact so html2text can
-            # render real markdown tables instead.
-            _convert_tables(soup)
+        # Compact: data tables become pipe-delimited text. Readable: data
+        # tables stay HTML so html2text renders real markdown tables.
+        # Layout tables are unwrapped in both modes.
+        _convert_tables(soup, mode=mode)
 
         # Convert the cleaned HTML to text using html2text
         text = _html_to_text(str(soup), mode=mode)
@@ -255,11 +254,14 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
             el.decompose()
 
 
-def _convert_tables(soup: BeautifulSoup) -> None:
+def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     """Convert HTML tables to pipe-delimited text.
 
     Only converts tables that look like data tables (not layout tables).
     Layout tables (single column, single row, or deeply nested) are unwrapped.
+    In readable mode data tables are left intact for html2text's markdown
+    table renderer, and layout-table unwrapping preserves inline markup and
+    nested tables instead of collapsing to bare text.
     """
     for table in soup.find_all("table"):
         rows = table.find_all("tr")
@@ -286,10 +288,26 @@ def _convert_tables(soup: BeautifulSoup) -> None:
         # Heuristic: if it's a single-column table or a single-row table,
         # it's probably a layout table — just unwrap the text
         if max_cols <= 1:
+            if mode == "readable":
+                # Unwrap only this table's own structure so nested tables
+                # and inline markup survive for html2text
+                own = [
+                    t
+                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
+                    if t.find_parent("table") is table
+                ]
+                for t in own:
+                    t.unwrap()
+                table.unwrap()
+                continue
             text_content = "\n".join(
                 " ".join(row) for row in table_data if any(row)
             )
             table.replace_with(text_content)
+            continue
+
+        if mode == "readable":
+            # Genuine data table — leave for html2text's markdown renderer
             continue
 
         # Build pipe-delimited output
