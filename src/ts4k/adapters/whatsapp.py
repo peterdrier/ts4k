@@ -91,10 +91,25 @@ def _wa_msg_to_dict(msg: dict, prefix: str) -> dict:
     return result
 
 
+def _is_system_notification(msg: dict) -> bool:
+    """True for system/protocol events (e.g. "group members have changed").
+
+    These carry no text content and no media attachment, unlike every real
+    message. The upstream bridge also mixes up the sender/chat-name fields
+    for these events, so FROM/SUBJECT can't be trusted for them — filtering
+    them out avoids surfacing the swapped mapping entirely.
+    """
+    return not msg.get("content") and not msg.get("media_type")
+
+
 def parse_list_messages_response(text: str, prefix: str) -> list[dict]:
     """Parse structured JSON dicts from whatsapp-mcp list_messages."""
     items = _parse_ndjson(text)
-    return [_wa_msg_to_dict(msg, prefix) for msg in items]
+    return [
+        _wa_msg_to_dict(msg, prefix)
+        for msg in items
+        if not _is_system_notification(msg)
+    ]
 
 
 def _parse_ndjson(text: str) -> list[dict]:
