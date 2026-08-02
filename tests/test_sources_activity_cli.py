@@ -18,7 +18,9 @@ def _args(action: str, prefix: str | None = None, provider: str | None = None,
 
 class TestSourcesListActivity:
     def test_empty_source_shows_empty_tag(self, ts4k_config, capsys):
-        sources.add("oh", provider="o365", email="help@burn.camp")
+        # Canonical prefix: cacheable, so "empty" is truthful. Custom
+        # prefixes (oh, gw, ...) report n/a until #64 lands.
+        sources.add("o", provider="o365", email="help@burn.camp")
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
         assert "activity: empty" in out
