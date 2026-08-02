@@ -308,6 +308,29 @@ class TestManageThread:
         assert result.count("archived") == 2
 
     @pytest.mark.asyncio
+    async def test_two_refs_in_same_thread_dedupe_to_one_call(self, gmail_source):
+        """Two message refs that resolve to the same thread must issue only
+        one modify_thread call — and the second item is reported as covered,
+        not as an error."""
+        mock_adapter = AsyncMock()
+        mock_adapter.modify_thread.return_value = {"id": "g:t1", "status": "trashed"}
+
+        with patch("ts4k.commands._make_adapter", return_value=mock_adapter), \
+                patch("ts4k.commands.cache.get_message",
+                      return_value={"thread_id": "g:t1"}):
+            result = await manage_message(
+                action="trash", msg_id="g:m4,g:m3", thread=True,
+            )
+
+        mock_adapter.modify_thread.assert_awaited_once_with("g:t1", "trash", None)
+
+        lines = result.split("\n")
+        assert len(lines) == 2
+        assert "g:m4: trashed" in lines[0]
+        assert "error" not in lines[1].lower()
+        assert "g:m3" in lines[1] and "g:m4" in lines[1]  # covered by the first item
+
+    @pytest.mark.asyncio
     async def test_dry_run_marks_thread_scope_and_acts_on_nothing(self, gmail_source):
         mock_adapter = AsyncMock()
         with patch("ts4k.commands._make_adapter", return_value=mock_adapter):
@@ -401,6 +424,51 @@ class TestCollapseThreads:
 
     def test_empty_input(self):
         assert collapse_threads([]) == []
+
+    def test_whatsapp_messages_collapse_by_chat_jid(self):
+        """No thread_id, but chat_jid present — group by a derived chat key."""
+        wa_messages = [
+            {
+                "id": "w:msg2",
+                "source": "w",
+                "chat_jid": "123456@g.us",
+                "from": "alice",
+                "subject": "Team chat",
+                "date": "2026-02-19T10:00:00Z",
+                "snippet": "See you then.",
+            },
+            {
+                "id": "w:msg1",
+                "source": "w",
+                "chat_jid": "123456@g.us",
+                "from": "bob",
+                "subject": "Team chat",
+                "date": "2026-02-18T09:00:00Z",
+                "snippet": "Kickoff.",
+            },
+        ]
+        rows = collapse_threads(wa_messages)
+
+        assert len(rows) == 1
+        assert rows[0]["id"] == rows[0]["thread_id"] == "w:123456@g.us"
+        assert rows[0]["message_count"] == 2
+
+    def test_whatsapp_thread_ref_resolves_via_read_thread(self):
+        """The derived row id, once stripped of its source prefix, is a chat
+        JID — exactly what WhatsAppAdapter.read_thread treats as a chat
+        lookup (see the ``"@" in raw_id`` branch)."""
+        from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
+
+        msg = {
+            "id": "w:msg1", "source": "w", "chat_jid": "555@s.whatsapp.net",
+            "from": "carol", "date": "2026-02-18T09:00:00Z",
+        }
+        row = collapse_threads([msg])[0]
+
+        adapter = WhatsAppAdapter(WhatsAppAdapterConfig(), prefix="w")
+        raw_id = adapter._strip_prefix(row["id"])
+        assert raw_id == "555@s.whatsapp.net"
+        assert "@" in raw_id  # read_thread's chat-JID branch
 
 
 # ---------------------------------------------------------------------------
@@ -560,3 +628,56 @@ class TestThreadListingIntegration:
 
         assert result.messages_processed == 5
         assert refs.resolve("1") == "g:m4"
+
+
+# ---------------------------------------------------------------------------
+# Continuation hint — must retain --threads across pagination
+# ---------------------------------------------------------------------------
+
+
+def _wa_style_messages(n: int, base_hour: int = 1) -> list[dict]:
+    return [
+        {
+            "id": f"g:m{i}",
+            "thread_id": f"g:t{i}",
+            "source": "g",
+            "from": f"s{i}@test.com",
+            "subject": f"Subj {i}",
+            "date": f"2026-03-08T{base_hour + i:02d}:00:00Z",
+        }
+        for i in range(n)
+    ]
+
+
+class TestContinuationHintThreads:
+    @pytest.mark.asyncio
+    async def test_continuation_hint_retains_threads_flag(self, gmail_source, monkeypatch):
+        """An overflowing --threads listing must not silently drop --threads
+        from the printed continuation command — copying it should keep
+        paginating in thread mode, not switch back to message rows."""
+        from ts4k import commands
+
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            return _wa_style_messages(10)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        result = await commands.updates(since="1d", source="g", count=3, threads=True)
+
+        assert result.has_more is True
+        assert "--threads" in result._continuation_hint
+
+    @pytest.mark.asyncio
+    async def test_continuation_hint_omits_threads_in_message_mode(self, gmail_source, monkeypatch):
+        """Message-mode listings must not gain a spurious --threads flag."""
+        from ts4k import commands
+
+        async def fake_fetch(prefix, cfg, since, count, **kwargs):
+            return _wa_style_messages(10)
+
+        monkeypatch.setattr(commands, "_fetch_for_source", fake_fetch)
+
+        result = await commands.updates(since="1d", source="g", count=3)
+
+        assert result.has_more is True
+        assert "--threads" not in result._continuation_hint

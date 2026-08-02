@@ -56,13 +56,19 @@ def collapse_threads(messages: list[dict]) -> list[dict]:
     not the whole upstream thread — collapsing never costs an API call.
 
     Row ``id`` is the thread ID, so refs assigned to these rows resolve to
-    threads.  Messages with no ``thread_id`` stand alone.
+    threads.  WhatsApp messages carry no ``thread_id``, so a chat-derived key
+    (``source:chat_jid``, matching the adapter's own thread ID format) is used
+    instead when ``chat_jid`` is present.  Messages with neither stand alone.
     """
     rows: dict[str, dict] = {}
     order: list[str] = []
 
     for msg in messages:
-        tid = msg.get("thread_id") or msg.get("id", "")
+        tid = msg.get("thread_id")
+        if not tid and msg.get("chat_jid"):
+            tid = f"{_source(msg)}:{msg['chat_jid']}"
+        if not tid:
+            tid = msg.get("id", "")
         if not tid:
             continue
 

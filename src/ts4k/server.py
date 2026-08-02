@@ -54,6 +54,7 @@ async def whatsnew(
     count: int = 20,
     fmt: str = "pipe",
     filter: bool = False,
+    threads: bool = False,
 ) -> str:
     """Check for new messages using keyed watermarks.
 
@@ -67,10 +68,11 @@ async def whatsnew(
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default, most compact), "json", or "xml".
         filter: Apply configured skip filters (default off).
+        threads: Collapse to one row per thread; refs then resolve to threads.
     """
     result = await commands.whatsnew(
         key=key, source=source, count=count, fmt=fmt,
-        filter=filter, ref_table=_refs,
+        filter=filter, ref_table=_refs, threads=threads,
     )
     if result.error:
         return result.error

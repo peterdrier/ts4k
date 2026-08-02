@@ -543,6 +543,8 @@ async def _fetch_messages(
                 parts.append(f"--from {sender}")
             if domain:
                 parts.append(f"--domain {domain}")
+            if threads:
+                parts.append("--threads")
             continuation_hint = " ".join(parts)
 
     _record_stats(stat_cmd, truncated, output)
@@ -1835,6 +1837,7 @@ async def manage_message(
             return f"Error listing labels: {e}"
 
     results = []
+    thread_calls: dict[tuple[str, str], tuple[str, dict]] = {}
     for mid in ids:
         prefix = mid.split(":")[0] if ":" in mid else None
         if not prefix:
@@ -1868,7 +1871,16 @@ async def manage_message(
                         results.append(f"{mid}: error — --label required")
                         continue
                     tid = await _thread_id_for(adapter, mid)
+                    key = (prefix, tid)
+                    if key in thread_calls:
+                        first_mid, prev_r = thread_calls[key]
+                        results.append(
+                            f"{mid}: {prev_r.get('status', 'ok')} "
+                            f"(same thread as {first_mid}, already {action}ed)"
+                        )
+                        continue
                     r = await adapter.modify_thread(tid, action, label)
+                    thread_calls[key] = (mid, r)
                 elif action == "archive":
                     r = await adapter.archive_message(mid)
                 elif action == "unarchive":
