@@ -287,7 +287,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
 
         # Heuristic: if it's a single-column table or a single-row table,
         # it's probably a layout table — just unwrap the text
-        if max_cols <= 1:
+        if max_cols <= 1 or len(table_data) <= 1:
             if mode == "readable":
                 # Unwrap only this table's own structure so nested tables
                 # and inline markup survive for html2text
@@ -476,8 +476,11 @@ def _strip_signatures(text: str) -> str:
         line = lines[i]
         stripped = line.strip()
 
-        # Check explicit signature triggers
-        if _SIGNATURE_TRIGGER_PATTERN.match(stripped):
+        # Check explicit signature triggers. Strip markdown emphasis
+        # wrappers first — readable mode renders "Thanks," as "**Thanks,**",
+        # which otherwise wouldn't match the anchored trigger patterns.
+        emphasis_stripped = re.sub(r"^[*_]+|[*_]+$", "", stripped)
+        if _SIGNATURE_TRIGGER_PATTERN.match(emphasis_stripped):
             sig_start = i
             break
 

@@ -302,6 +302,35 @@ class TestDecodeBody:
         payload = {"mimeType": "multipart/mixed", "parts": []}
         assert _decode_body(payload) == ""
 
+    def test_prefer_html_selects_html_part(self):
+        """prefer_html=True flips the preference order for readable mode."""
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain text"), "size": 10},
+                },
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": _b64("<p>HTML text</p>"), "size": 16},
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "<p>HTML text</p>"
+
+    def test_prefer_html_falls_back_to_plain_when_no_html_part(self):
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain only"), "size": 10},
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "Plain only"
+
 
 class TestExtractAttachments:
     """Tests for _extract_attachments()."""
@@ -668,6 +697,66 @@ class TestGmailAdapterReadMessage:
         adapter._service.users().messages().get.assert_called_with(
             userId="me", id="abc123", format="full"
         )
+
+    @pytest.mark.asyncio
+    async def test_prefer_html_selects_html_body(self):
+        """get --readable needs the HTML part to preserve emphasis/tables."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"data": _b64("<p><b>Rich</b> body</p>"), "size": 20},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+
+        msg = await adapter.read_message("g:abc123", prefer_html=True)
+
+        assert msg["body"] == "<p><b>Rich</b> body</p>"
+
+    @pytest.mark.asyncio
+    async def test_default_prefers_plain_text_body(self):
+        """Regression check: default (non-readable) reads still prefer text/plain."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"data": _b64("<p><b>Rich</b> body</p>"), "size": 20},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+
+        msg = await adapter.read_message("g:abc123")
+
+        assert msg["body"] == "Plain body"
 
 
 class TestGmailAdapterReadThread:

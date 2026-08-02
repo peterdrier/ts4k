@@ -386,6 +386,20 @@ class TestTableConversion:
         # Should NOT be pipe-delimited since it's single-column
         assert "|" not in result
 
+    def test_single_row_layout_table(self):
+        """Single-row multi-column tables are layout wrappers too — unwrap them."""
+        html = """
+        <table>
+            <tr><td>Logo</td><td>Spacer</td><td>Nav links</td></tr>
+        </table>
+        <p>Actual message content.</p>
+        """
+        result = normalize(html)
+        assert "Actual message content" in result
+        assert "Logo" in result
+        # Should NOT be pipe-delimited since it's a single row
+        assert "|" not in result
+
 
 # ---------------------------------------------------------------------------
 # 9. Real-world composite — byte reduction test
@@ -644,6 +658,20 @@ class TestReadableMode:
         # Inline markup survives the unwrap
         assert "**newsletter**" in result
 
+    def test_readable_single_row_layout_table_is_unwrapped(self):
+        """A single-row multi-column table is a layout wrapper — unwrap markup-preserving."""
+        html = """
+        <table>
+            <tr><td><b>Logo</b></td><td>Nav link</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "**Logo**" in result
+        assert "Nav link" in result
+        # No markdown table artifacts for a layout wrapper
+        assert "|" not in result
+        assert "---" not in result
+
     def test_readable_data_table_inside_layout_wrapper_survives(self):
         """A data table nested in a layout wrapper still renders as markdown."""
         html = """
@@ -697,6 +725,14 @@ class TestReadableMode:
         result = normalize(text, mode="readable")
         assert "Please review the attached." in result
         assert "VP Engineering" not in result
+
+    def test_readable_strips_emphasized_signature(self):
+        """readable mode renders "Thanks," as "**Thanks,**" — must still match."""
+        html = "<p>Please review the attached.</p><p><strong>Thanks,</strong></p><p>Alice</p>"
+        result = normalize(html, mode="readable")
+        assert "Please review the attached." in result
+        assert "Alice" not in result
+        assert "Thanks" not in result
 
     def test_readable_still_strips_reply_chain(self):
         text = (

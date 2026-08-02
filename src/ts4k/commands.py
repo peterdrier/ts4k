@@ -667,7 +667,7 @@ async def get_message(
         return CommandResult(error=f"Source {prefix!r} not available.")
 
     async with adapter:
-        msg = await adapter.read_message(id)
+        msg = await adapter.read_message(id, prefer_html=(body_mode == "readable"))
         msg = _normalize_message(msg, mode=body_mode)
         if body_mode == "compact":
             cache.store_message(id, msg)

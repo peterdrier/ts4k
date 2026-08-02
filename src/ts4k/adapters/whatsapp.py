@@ -309,7 +309,7 @@ class WhatsAppAdapter(BaseAdapter):
         })
         return parse_list_chats_response(text, self.source_prefix)
 
-    async def read_message(self, msg_id: str) -> dict:
+    async def read_message(self, msg_id: str, prefer_html: bool = False) -> dict:
         raw_id = self._strip_prefix(msg_id)
         text = await self._call_tool("get_message_context", {
             "message_id": raw_id,

@@ -67,12 +67,13 @@ def _get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
-def _decode_body(payload: dict) -> str:
+def _decode_body(payload: dict, prefer_html: bool = False) -> str:
     """Extract body text from a Gmail API payload tree.
 
-    Walks the multipart tree, preferring text/plain over text/html.
-    Returns raw HTML for text/html parts — the normalize pipeline handles
-    HTML-to-text conversion (avoiding double-processing).
+    Walks the multipart tree, preferring text/plain over text/html unless
+    *prefer_html* is set (readable mode wants the HTML part to preserve
+    emphasis/tables). Returns raw HTML for text/html parts — the normalize
+    pipeline handles HTML-to-text conversion (avoiding double-processing).
     """
     mime_type = payload.get("mimeType", "")
 
@@ -88,24 +89,24 @@ def _decode_body(payload: dict) -> str:
     if not parts:
         return ""
 
-    # Prefer text/plain.
+    preferred, fallback = ("text/html", "text/plain") if prefer_html else ("text/plain", "text/html")
+
     for part in parts:
-        if part.get("mimeType") == "text/plain":
-            text = _decode_body(part)
+        if part.get("mimeType") == preferred:
+            text = _decode_body(part, prefer_html=prefer_html)
             if text:
                 return text
 
-    # Fall back to text/html.
     for part in parts:
-        if part.get("mimeType") == "text/html":
-            text = _decode_body(part)
+        if part.get("mimeType") == fallback:
+            text = _decode_body(part, prefer_html=prefer_html)
             if text:
                 return text
 
     # Recurse into nested multipart parts.
     for part in parts:
         if "multipart" in part.get("mimeType", ""):
-            text = _decode_body(part)
+            text = _decode_body(part, prefer_html=prefer_html)
             if text:
                 return text
 
@@ -180,7 +181,7 @@ def _msg_to_headers(msg: dict, prefix: str) -> dict:
     return result
 
 
-def _msg_to_full(msg: dict, prefix: str) -> dict:
+def _msg_to_full(msg: dict, prefix: str, prefer_html: bool = False) -> dict:
     """Convert a Gmail API message (full format) to a complete message dict.
 
     Returns dict with: id, from, subject, date, body, and optional
@@ -197,7 +198,7 @@ def _msg_to_full(msg: dict, prefix: str) -> dict:
         "from": _get_header(headers, "From"),
         "subject": _get_header(headers, "Subject"),
         "date": _internal_date_to_iso(msg.get("internalDate")),
-        "body": _decode_body(payload),
+        "body": _decode_body(payload, prefer_html=prefer_html),
         "source": prefix,
     }
 
@@ -506,7 +507,7 @@ class GmailAdapter(BaseAdapter):
         header_dicts = [_msg_to_headers(msg, self._prefix) for msg in results]
         return header_dicts, failed_ids
 
-    async def read_message(self, msg_id: str) -> dict:
+    async def read_message(self, msg_id: str, prefer_html: bool = False) -> dict:
         """Fetch a single message by its ts4k prefixed ID (``g:XXXX``)."""
         service = self._require_service()
         raw_id = self._strip_prefix(msg_id)
@@ -518,7 +519,7 @@ class GmailAdapter(BaseAdapter):
                 format="full",
             ).execute()
         )
-        return _msg_to_full(msg, self._prefix)
+        return _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
 
     async def read_thread(self, thread_id: str) -> dict:
         """Fetch a full thread by its ts4k prefixed ID (``g:XXXX``)."""
