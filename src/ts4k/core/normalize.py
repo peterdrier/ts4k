@@ -254,6 +254,14 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
             el.decompose()
 
 
+def _cell_colspan(cell) -> int:
+    """Return a cell's colspan as an int, defaulting to 1 on malformed HTML."""
+    try:
+        return int(cell.get("colspan", 1))
+    except (ValueError, TypeError):
+        return 1
+
+
 def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     """Convert HTML tables to pipe-delimited text.
 
@@ -359,19 +367,64 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 # already ignores when building table_data (see the
                 # any(cell_texts) filter above) — promote the first row
                 # that actually has cell text, not just the first row.
-                first_data_row = next(
-                    (
-                        row
-                        for row in rows
-                        if any(
-                            c.get_text(strip=True)
+                nonempty_rows = [
+                    row
+                    for row in rows
+                    if any(
+                        c.get_text(strip=True)
+                        for c in row.find_all(["th", "td"])
+                        if c.find_parent("table") is table
+                    )
+                ]
+                # Prefer the first nonempty row whose effective column count
+                # (cells counting colspan) matches the table's max_cols — a
+                # colspan title row (e.g. a single <td colspan="2">) has
+                # fewer *elements* than the data rows despite spanning the
+                # same width, and promoting it would make html2text
+                # synthesize a one-column separator against multi-column
+                # data rows. Fall back to the first nonempty row if no row
+                # matches.
+                first_data_row = None
+                for row in nonempty_rows:
+                    row_cells = [
+                        c
+                        for c in row.find_all(["th", "td"])
+                        if c.find_parent("table") is table
+                    ]
+                    effective_cols = sum(_cell_colspan(c) for c in row_cells)
+                    # Require effective == raw cell count too — a single
+                    # cell with colspan="2" in a 2-column table has an
+                    # effective count equal to max_cols by definition (it
+                    # spans the full width) but is still one <th> element,
+                    # so promoting it gives html2text a one-column header
+                    # against multi-column data. Only a row with one cell
+                    # per column (no spanning) is a valid header candidate.
+                    if effective_cols == len(row_cells) == max_cols:
+                        first_data_row = row
+                        break
+                if first_data_row is None and nonempty_rows:
+                    first_data_row = nonempty_rows[0]
+                if first_data_row is not None:
+                    # html2text only emits the two-sided "---|---" separator
+                    # when the <th> row is the table's FIRST row; a title or
+                    # spacer row before it yields a bare "---" line, which
+                    # the later signature stripper mistakes for a sig
+                    # delimiter. Move any rows preceding the header out of
+                    # the table (as block divs, cells space-separated) so
+                    # the promoted row leads the table.
+                    for row in rows:
+                        if row is first_data_row:
+                            break
+                        row_cells = [
+                            c
                             for c in row.find_all(["th", "td"])
                             if c.find_parent("table") is table
-                        )
-                    ),
-                    None,
-                )
-                if first_data_row is not None:
+                        ]
+                        for c in row_cells:
+                            c.insert_after(NavigableString(" "))
+                            c.unwrap()
+                        row.name = "div"
+                        table.insert_before(row.extract())
                     first_row_cells = [
                         c
                         for c in first_data_row.find_all(["th", "td"])

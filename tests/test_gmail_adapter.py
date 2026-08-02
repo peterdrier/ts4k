@@ -874,6 +874,111 @@ class TestGmailAdapterReadMessage:
 
         assert msg["body"] == "Plain body"
 
+    @pytest.mark.asyncio
+    async def test_prefer_html_fetches_externalized_html_body(self):
+        """Gmail externalizes large bodies — a non-attachment text/html part
+        may have only an attachmentId (no inline data). readable mode must
+        fetch it via the attachments endpoint rather than falling back to
+        plain text."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"attachmentId": "ATT123", "size": 50000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(return_value={"data": _b64("<p>Big externalized HTML</p>")})
+        )
+
+        msg = await adapter.read_message("g:abc123", prefer_html=True)
+
+        assert msg["body"] == "<p>Big externalized HTML</p>"
+        adapter._service.users().messages().attachments().get.assert_called_with(
+            userId="me", messageId="abc123", id="ATT123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_compact_read_does_not_call_attachments_endpoint(self):
+        """Compact mode prefers inline plain text — it must not resolve
+        attachment-backed body parts at all."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"attachmentId": "ATT123", "size": 50000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+
+        msg = await adapter.read_message("g:abc123")
+
+        assert msg["body"] == "Plain body"
+        adapter._service.users().messages().attachments().get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prefer_html_attachment_fetch_failure_falls_back(self):
+        """If the attachments().get() call fails, readable mode must fall
+        back to the current inline-search result rather than raising."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"attachmentId": "ATT123", "size": 50000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(side_effect=Exception("boom"))
+        )
+
+        msg = await adapter.read_message("g:abc123", prefer_html=True)
+
+        assert msg["body"] == "Plain body"
+
 
 class TestGmailAdapterReadThread:
     """Test GmailAdapter.read_thread() with mocked Google API."""

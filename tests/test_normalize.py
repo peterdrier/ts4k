@@ -770,6 +770,35 @@ class TestReadableMode:
         assert "Alice" in result
         assert "$500" in result
 
+    def test_readable_td_only_table_colspan_title_row_not_promoted(self):
+        """A title row spanning the full table width via colspan must not
+        be promoted to <th> — it has only one cell element, so promoting
+        it would give html2text a one-column header against the 2-column
+        data rows below it, producing a mismatched separator."""
+        html = """
+        <table>
+            <tr><td colspan="2">Sales</td></tr>
+            <tr><td>Q1</td><td>$100</td></tr>
+            <tr><td>Q2</td><td>$200</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        # Title text is not lost, just not promoted to the header.
+        assert "Sales" in result
+        assert "Q1" in result
+        assert "$100" in result
+        assert "Q2" in result
+        assert "$200" in result
+        # The separator row must have 2 columns, not 1.
+        lines = [line for line in result.split("\n") if line.strip()]
+        sep_line = next(
+            line
+            for line in lines
+            if "-" in line and set(line.strip()) <= set("-|: ")
+        )
+        cols = [c for c in sep_line.split("|") if c.strip()]
+        assert len(cols) == 2
+
     def test_readable_layout_row_cells_are_space_separated(self):
         """Unwrapping a layout row's cells must not merge adjacent text —
         "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""

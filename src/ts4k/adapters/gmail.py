@@ -135,6 +135,29 @@ def _find_body_part(parts: list[dict], mime: str) -> str:
     return ""
 
 
+def _find_body_part_ref(parts: list[dict], mime: str) -> dict | None:
+    """Depth-first search for an acceptable part of the given MIME type.
+
+    Like _find_body_part, but returns the raw part dict instead of decoded
+    text, and accepts a part with EITHER body.data OR body.attachmentId.
+    Gmail externalizes large bodies — a legitimate (non-attachment) part
+    can carry only an attachmentId with no inline data — so a caller with
+    API access can fetch the content separately. Same traversal order and
+    attachment-subtree skip rules as _find_body_part.
+    """
+    for part in parts:
+        if part.get("mimeType") == mime and not _is_attachment_part(part):
+            body = part.get("body", {})
+            if body.get("data") or body.get("attachmentId"):
+                return part
+    for part in parts:
+        if "multipart" in part.get("mimeType", "") and not _is_attachment_part(part):
+            found = _find_body_part_ref(part.get("parts", []), mime)
+            if found is not None:
+                return found
+    return None
+
+
 def _extract_attachments(payload: dict) -> list[dict]:
     """Extract attachment metadata from a Gmail API payload tree.
 
@@ -541,7 +564,37 @@ class GmailAdapter(BaseAdapter):
                 format="full",
             ).execute()
         )
-        return _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
+        full = _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
+
+        if prefer_html:
+            html_part = _find_body_part_ref(
+                msg.get("payload", {}).get("parts", []), "text/html"
+            )
+            if html_part is not None:
+                body = html_part.get("body", {})
+                attachment_id = body.get("attachmentId")
+                if attachment_id and not body.get("data"):
+                    # Gmail externalized this HTML part — fetch it via the
+                    # attachments endpoint instead of settling for the
+                    # plain-text fallback _msg_to_full already picked.
+                    try:
+                        attachment = await asyncio.to_thread(
+                            lambda: service.users().messages().attachments().get(
+                                userId="me", messageId=raw_id, id=attachment_id,
+                            ).execute()
+                        )
+                        data = attachment.get("data")
+                        if data:
+                            full["body"] = base64.urlsafe_b64decode(data).decode(
+                                "utf-8", errors="replace"
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to fetch externalized HTML body for %s",
+                            msg_id, exc_info=True,
+                        )
+
+        return full
 
     async def read_thread(self, thread_id: str) -> dict:
         """Fetch a full thread by its ts4k prefixed ID (``g:XXXX``)."""
