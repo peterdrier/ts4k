@@ -363,11 +363,25 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     if c.find_parent("table") is table
                 ]
 
-            # A row that already carries <th> cells is the header.
-            header_row = next(
-                (r for r in rows if any(c.name == "th" for c in _own_cells(r))),
-                None,
-            )
+            # A row that already carries <th> cells is the header — but a
+            # grouped header row (e.g. a single <th colspan="2"> title
+            # spanning the real column headers below it) has fewer
+            # *elements* than the label row despite spanning the same
+            # width. Promoting it would make html2text synthesize a
+            # one-column separator against multi-column data rows, so
+            # prefer the first th-bearing row with one cell per column
+            # (same rule as the synthesized-header case below); fall back
+            # to the first th-bearing row if none qualifies.
+            th_rows = [r for r in rows if any(c.name == "th" for c in _own_cells(r))]
+            header_row = None
+            for r in th_rows:
+                r_cells = _own_cells(r)
+                effective_cols = sum(_cell_colspan(c) for c in r_cells)
+                if effective_cols == len(r_cells) == max_cols:
+                    header_row = r
+                    break
+            if header_row is None and th_rows:
+                header_row = th_rows[0]
             if header_row is None:
                 # rows[0] may be an all-empty spacer row that classification
                 # already ignores when building table_data (see the
@@ -477,13 +491,25 @@ def _html_to_text(html: str, mode: str = "compact") -> str:
     def _simplify_link(m: re.Match) -> str:
         link_text = m.group(1).strip()
         url = m.group(2).strip()
+        # html2text's protect_links wraps targets in angle brackets —
+        # strip them so equality checks against the visible text work
+        if url.startswith("<") and url.endswith(">"):
+            url = url[1:-1]
+
+        # Readable mode may wrap link text in emphasis markup (e.g.
+        # "**https://example.com**"), which defeats a plain equality check
+        # against the href. Compare against a markup-stripped copy, but
+        # keep returning link_text (not url) so the emphasis survives —
+        # the two are equal apart from that markup, so there's no
+        # information lost by preferring the original display text.
+        stripped_text = link_text.strip("*_")
 
         # Skip if link text IS the URL (html2text sometimes does this)
-        if link_text == url or link_text == url.rstrip("/"):
-            return url
+        if stripped_text == url or stripped_text == url.rstrip("/"):
+            return link_text
 
         # Skip mailto: links where the text is the email address
-        if url.startswith("mailto:") and url[7:] == link_text:
+        if url.startswith("mailto:") and url[7:] == stripped_text:
             return link_text
 
         # Skip tracking/click-through URLs

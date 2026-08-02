@@ -825,6 +825,33 @@ class TestReadableMode:
         cols = [c for c in sep_line.split("|") if c.strip()]
         assert len(cols) == 2
 
+    def test_readable_grouped_th_header_row_not_promoted(self):
+        """A grouped header row (a single <th colspan="2"> title spanning
+        the real column headers below it) must not be selected as the
+        markdown header row — it has only one cell element, so promoting
+        it would give html2text a one-column separator against the
+        2-column label/data rows below it."""
+        html = """
+        <table>
+            <tr><th colspan="2">Sales</th></tr>
+            <tr><th>Quarter</th><th>Total</th></tr>
+            <tr><td>Q1</td><td>$100</td></tr>
+            <tr><td>Q2</td><td>$200</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Sales" in result
+        assert "Quarter" in result
+        assert "Q1" in result
+        assert "$200" in result
+        sep_line = next(
+            line
+            for line in result.split("\n")
+            if "-" in line and set(line.strip()) <= set("-|: ")
+        )
+        cols = [c for c in sep_line.split("|") if c.strip()]
+        assert len(cols) == 2
+
     def test_readable_layout_row_cells_are_space_separated(self):
         """Unwrapping a layout row's cells must not merge adjacent text —
         "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""
@@ -919,6 +946,37 @@ class TestReadableMode:
         result = normalize(html, mode="readable")
         assert "weekly digest" in result
         assert "unsubscribe" not in result.lower()
+
+    def test_readable_emphasized_url_as_text_not_duplicated(self):
+        """readable mode bolds the link text ("**https://...**"), which
+        must still be recognized as text == href — otherwise it renders
+        as "**https://example.com** (https://example.com)"."""
+        html = '<p>Visit <a href="https://example.com"><strong>https://example.com</strong></a></p>'
+        result = normalize(html, mode="readable")
+        assert "https://example.com" in result
+        count = result.count("https://example.com")
+        assert count == 1
+        # Emphasis on the display text survives.
+        assert "**https://example.com**" in result
+
+    def test_readable_emphasized_mailto_not_duplicated(self):
+        """readable mode bolds an emphasized mailto link's text — must
+        still suppress the redundant mailto: target."""
+        html = '<p>Contact <a href="mailto:alice@example.com"><strong>alice@example.com</strong></a></p>'
+        result = normalize(html, mode="readable")
+        assert "alice@example.com" in result
+        assert "mailto:" not in result
+        count = result.count("alice@example.com")
+        assert count == 1
+
+    def test_compact_url_as_text_unaffected_by_emphasis_stripping(self):
+        """Compact mode strips emphasis before the link-simplify pass runs,
+        so plain (non-emphasized) url-as-text behavior must be unchanged."""
+        html = '<p>Visit <a href="https://example.com"><strong>https://example.com</strong></a></p>'
+        result = normalize(html, mode="compact")
+        assert "https://example.com" in result
+        assert result.count("https://example.com") == 1
+        assert "*" not in result
 
 
 class TestHeaderNormalization:
