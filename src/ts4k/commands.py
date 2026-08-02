@@ -219,7 +219,9 @@ _ACTIVITY_TRACKED_PROVIDERS = {"gmail", "o365"}
 _ACTIVITY_ACTIVE_DAYS = 30
 
 
-def source_activity(prefix: str, provider: str = "") -> dict[str, Any]:
+def source_activity(
+    prefix: str, provider: str = "", headers: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Cache-derived activity metadata for a source. Local cache only, no network calls.
 
     Returns a dict with ``count`` (cached message count), ``newest`` (ISO date
@@ -228,7 +230,13 @@ def source_activity(prefix: str, provider: str = "") -> dict[str, Any]:
     - ``"active"``: newest cached message within the last 30 days
     - ``"low"``: cached messages exist, but the newest is older than 30 days
     - ``"empty"``: no cached messages (nothing fetched yet, or genuinely idle)
-    - ``"n/a"``: provider isn't cached locally (WhatsApp, calendars)
+    - ``"n/a"``: provider isn't cached locally (WhatsApp, calendars), or the
+      source uses a custom prefix that ``cache.CACHEABLE_SOURCES`` doesn't
+      recognize (caching is keyed by prefix today; see issue #64)
+
+    *headers*, if given, is a pre-loaded list of this source's cached headers
+    (see ``cached_headers_by_source``) — pass it to avoid reloading the whole
+    cache index per call. ``None`` (default) loads just this source's headers.
 
     Note: this reflects what ts4k has *cached* so far, not a live mailbox
     count — a source that's never been queried also reports "empty".
@@ -236,7 +244,11 @@ def source_activity(prefix: str, provider: str = "") -> dict[str, Any]:
     if provider and provider.lower() not in _ACTIVITY_TRACKED_PROVIDERS:
         return {"count": 0, "newest": None, "tag": "n/a"}
 
-    headers = cache.list_headers(source=prefix)
+    if prefix not in cache.CACHEABLE_SOURCES:
+        return {"count": 0, "newest": None, "tag": "n/a"}
+
+    if headers is None:
+        headers = cache.list_headers(source=prefix)
     if not headers:
         return {"count": 0, "newest": None, "tag": "empty"}
 
@@ -249,6 +261,19 @@ def source_activity(prefix: str, provider: str = "") -> dict[str, Any]:
     else:
         tag = "low"
     return {"count": len(headers), "newest": newest, "tag": tag}
+
+
+def cached_headers_by_source() -> dict[str, list[dict[str, Any]]]:
+    """Load the entire cache index once and group headers by source prefix.
+
+    Pass the result's per-prefix lists to ``source_activity(..., headers=...)``
+    when computing activity for every configured source, so callers don't
+    reload and rescan the full cache index once per source.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for h in cache.list_headers():
+        groups.setdefault(h.get("source", ""), []).append(h)
+    return groups
 
 
 def _prefix_from_id(prefixed_id: str, all_cfg: dict[str, dict[str, Any]]) -> str:

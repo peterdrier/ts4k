@@ -266,3 +266,41 @@ class TestSourceActivity:
         )
         result = commands.source_activity("g", provider="gmail")
         assert result["tag"] == "active"
+
+    def test_custom_prefix_gmail_is_na(self, ts4k_config):
+        # "gw" isn't in cache.CACHEABLE_SOURCES ({"g", "o"}) even though its
+        # provider is tracked — cache.store_header silently drops entries for
+        # it, so reporting "empty" would imply "checked, nothing there" when
+        # really it was never checkable. See issue #64 for the real fix.
+        result = commands.source_activity("gw", provider="gmail")
+        assert result == {"count": 0, "newest": None, "tag": "n/a"}
+
+    def test_custom_prefix_o365_is_na(self, ts4k_config):
+        result = commands.source_activity("oh", provider="o365")
+        assert result == {"count": 0, "newest": None, "tag": "n/a"}
+
+    def test_dateless_headers_do_not_crash_and_still_count(self, ts4k_config):
+        cache.store_header("g:1", {"source": "g", "from": "a@b.com", "subject": "hi"})
+        result = commands.source_activity("g", provider="gmail")
+        assert result["count"] == 1
+        assert result["newest"] is None
+        assert result["tag"] == "low"
+
+    def test_preloaded_headers_match_per_source_lookup(self, ts4k_config):
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+        )
+        old = (datetime.now(timezone.utc) - timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "o:1", {"source": "o", "date": old, "from": "c@d.com", "subject": "hi"}
+        )
+
+        groups = commands.cached_headers_by_source()
+        via_group_g = commands.source_activity("g", provider="gmail", headers=groups.get("g", []))
+        via_lookup_g = commands.source_activity("g", provider="gmail")
+        assert via_group_g == via_lookup_g
+
+        via_group_o = commands.source_activity("o", provider="o365", headers=groups.get("o", []))
+        via_lookup_o = commands.source_activity("o", provider="o365")
+        assert via_group_o == via_lookup_o

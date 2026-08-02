@@ -41,6 +41,37 @@ class TestSourcesListActivity:
         out = capsys.readouterr().out
         assert "activity: n/a" in out
 
+    def test_custom_prefix_gmail_source_shows_na(self, ts4k_config, capsys):
+        # "gw" is a Gmail source but isn't in cache.CACHEABLE_SOURCES, so
+        # nothing ever lands in the cache for it — "empty" would wrongly
+        # imply it was checked and found idle.
+        sources.add("gw", provider="gmail", email="work@gmail.com")
+        cli._cmd_sources(_args("list"))
+        out = capsys.readouterr().out
+        assert "activity: n/a" in out
+
+    def test_dateless_cached_headers_do_not_crash(self, ts4k_config, capsys):
+        sources.add("g", provider="gmail", email="a@b.com")
+        cache.store_header("g:1", {"source": "g", "from": "a@b.com", "subject": "hi"})
+        cli._cmd_sources(_args("list"))
+        out = capsys.readouterr().out
+        assert "activity: low" in out
+        assert "1 cached" in out
+        assert "newest unknown" in out
+
+    def test_multiple_sources_activity_matches_individual_lookups(self, ts4k_config, capsys):
+        sources.add("g", provider="gmail", email="a@b.com")
+        sources.add("o", provider="o365", email="c@d.com")
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+        )
+        cli._cmd_sources(_args("list"))
+        out = capsys.readouterr().out
+        assert "g: gmail" in out
+        assert "activity: active" in out
+        assert "activity: empty" in out
+
     def test_note_shown_when_present(self, ts4k_config, capsys):
         sources.add("oh", provider="o365", email="help@burn.camp", note="mostly DMARC reports")
         cli._cmd_sources(_args("list"))

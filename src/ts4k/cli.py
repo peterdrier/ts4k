@@ -487,18 +487,22 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             print("No sources configured.")
             print("Add one:  ts4k src add g gmail email=you@gmail.com")
             return
+        headers_by_source = commands.cached_headers_by_source()
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
             level = cfg.get("level", "readonly")
             print(f"  {prefix}: {provider} ({detail}) [{level}]")
-            act = commands.source_activity(prefix, provider)
+            act = commands.source_activity(
+                prefix, provider, headers=headers_by_source.get(prefix, [])
+            )
             if act["tag"] == "n/a":
                 print("    activity: n/a (not cached locally)")
             elif act["tag"] == "empty":
                 print("    activity: empty (no cached messages yet)")
             else:
-                print(f"    activity: {act['tag']} — {act['count']} cached, newest {act['newest'][:10]}")
+                newest = act["newest"][:10] if act["newest"] else "unknown"
+                print(f"    activity: {act['tag']} — {act['count']} cached, newest {newest}")
             note = cfg.get("note")
             if note:
                 print(f"    note: {note}")
