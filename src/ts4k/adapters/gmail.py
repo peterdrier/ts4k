@@ -101,10 +101,14 @@ def _find_body_part(parts: list[dict], mime: str) -> str:
 
     Skips parts with a filename — those are attachments (even inline ones
     carrying body data), not the message body. Mirrors the attachment
-    detection in _extract_attachments.
+    detection in _extract_attachments. Also skips parts with an empty
+    filename that are still marked as attachments via a part-level
+    Content-Disposition header.
     """
     for part in parts:
-        if part.get("mimeType") == mime and not part.get("filename"):
+        disposition = _get_header(part.get("headers", []), "Content-Disposition")
+        is_attachment = disposition.lower().startswith("attachment")
+        if part.get("mimeType") == mime and not part.get("filename") and not is_attachment:
             body_data = part.get("body", {}).get("data")
             if body_data:
                 decoded = base64.urlsafe_b64decode(body_data).decode(

@@ -381,6 +381,37 @@ class TestDecodeBody:
         assert _decode_body(payload) == "Real plain body"
         assert _decode_body(payload, prefer_html=True) == "Real plain body"
 
+    def test_disposition_attachment_with_empty_filename_not_mistaken_for_body(self):
+        """A part with no filename but a Content-Disposition: attachment
+        header is still an attachment, not the body — even in prefer_html
+        mode, it must not be returned in place of the real message body."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "body": {"size": 0},
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": _b64("Real plain body"), "size": 15},
+                        },
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": _b64("<p>Real HTML body</p>"), "size": 21},
+                        },
+                    ],
+                },
+                {
+                    "mimeType": "text/html",
+                    "headers": [{"name": "Content-Disposition", "value": "attachment; filename=\"\""}],
+                    "body": {"data": _b64("<p>Attached snippet</p>"), "size": 23},
+                },
+            ],
+        }
+        assert _decode_body(payload) == "Real plain body"
+        assert _decode_body(payload, prefer_html=True) == "<p>Real HTML body</p>"
+
 
 class TestExtractAttachments:
     """Tests for _extract_attachments()."""

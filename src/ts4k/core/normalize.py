@@ -263,7 +263,12 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     table renderer, and layout-table unwrapping preserves inline markup and
     nested tables instead of collapsing to bare text.
     """
-    for table in soup.find_all("table"):
+    # Innermost-first: find_all returns tables in document order (a wrapper
+    # appears before the table nested inside it), so reversing means a
+    # nested data table is already converted to pipe text by the time an
+    # outer layout wrapper is unwrapped — otherwise the wrapper's unwrap
+    # would flatten the still-raw nested table into undelimited text.
+    for table in reversed(soup.find_all("table")):
         # Scope to this table's own rows/cells — find_all is recursive, so a
         # nested table's rows/cells would otherwise be double-counted and
         # skew classification (e.g. a single-column wrapper around a
@@ -306,9 +311,22 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     t.unwrap()
                 table.unwrap()
                 continue
-            text_content = "\n".join(
-                " ".join(row) for row in table_data if any(row)
-            )
+            # Re-extract cell text with a newline-preserving separator
+            # instead of reusing table_data (which used get_text(strip=True)
+            # — fine for plain single-node cells, but it collapses a cell
+            # containing a just-converted nested table's multi-line pipe
+            # text into one undelimited line). Single-node cells are
+            # unaffected since the separator only matters when a cell has
+            # more than one text descendant.
+            lines = []
+            for row in rows:
+                cells = [
+                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
+                ]
+                cell_texts = [c.get_text("\n", strip=True) for c in cells]
+                if any(cell_texts):
+                    lines.append(" ".join(cell_texts))
+            text_content = "\n".join(lines)
             table.replace_with(text_content)
             continue
 

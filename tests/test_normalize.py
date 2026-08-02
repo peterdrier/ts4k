@@ -406,6 +406,24 @@ class TestTableConversion:
         # Should NOT be pipe-delimited since it's a single row
         assert "|" not in result
 
+    def test_compact_data_table_inside_layout_wrapper_survives(self):
+        """A data table nested in a single-cell layout wrapper must still
+        convert to pipe-delimited rows, not get flattened into undelimited
+        text by the wrapper's unwrap."""
+        html = """
+        <table>
+            <tr><td>
+                <table>
+                    <tr><th>Item</th><th>Price</th></tr>
+                    <tr><td>Widget</td><td>$9</td></tr>
+                </table>
+            </td></tr>
+        </table>
+        """
+        result = normalize(html)
+        assert "Item | Price" in result
+        assert "Widget | $9" in result
+
 
 # ---------------------------------------------------------------------------
 # 9. Real-world composite — byte reduction test
