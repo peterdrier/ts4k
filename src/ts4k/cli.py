@@ -360,7 +360,7 @@ def _ensure_apple_password(
         # has no such format and must be stored exactly as entered.
         stripped = "".join(raw.split())
         looks_apple = bool(re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", stripped))
-        if not looks_apple and re.fullmatch(r"[a-z]{16}", stripped):
+        if is_icloud and not looks_apple and re.fullmatch(r"[a-z]{16}", stripped):
             # Apple's account page also renders the password space-grouped
             # ("xxxx xxxx xxxx xxxx"); stripping whitespace above collapses
             # that to 16 contiguous letters instead of the hyphenated form
@@ -368,7 +368,10 @@ def _ensure_apple_password(
             # stored the same way as a hyphenated paste.
             stripped = "-".join(stripped[i:i + 4] for i in range(0, 16, 4))
             looks_apple = True
-        candidate = stripped if (is_icloud or looks_apple) else raw
+        # Apple-format normalization applies ONLY to iCloud — a generic
+        # server's password may legitimately be 16 lowercase letters (or
+        # Apple-shaped) and must be stored byte-for-byte as entered
+        candidate = stripped if is_icloud else raw
         if not candidate.strip():
             print("No password entered — aborting.")
             return None

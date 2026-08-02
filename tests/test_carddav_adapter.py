@@ -663,3 +663,16 @@ class TestListContacts:
         )
         with pytest.raises(RuntimeError, match="no principal URL"):
             await a.list_contacts()
+
+
+class TestIcloudUrlPorts:
+    def test_explicit_default_port_is_icloud(self):
+        from ts4k.auth.caldav import is_icloud_carddav_url
+
+        assert is_icloud_carddav_url("https://contacts.icloud.com:443")
+        assert is_icloud_carddav_url("https://contacts.icloud.com:443/")
+
+    def test_nonstandard_port_is_not_icloud(self):
+        from ts4k.auth.caldav import is_icloud_carddav_url
+
+        assert not is_icloud_carddav_url("https://contacts.icloud.com:8443")

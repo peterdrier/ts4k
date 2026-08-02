@@ -30,9 +30,16 @@ def is_icloud_carddav_url(url: str) -> bool:
     """
     canonical = urlsplit(ICLOUD_CARDDAV_URL)
     candidate = urlsplit(url)
+    try:
+        candidate_port = candidate.port
+    except ValueError:
+        return False
+    # Compare hostname + effective port so an explicit default port
+    # (https://contacts.icloud.com:443) still counts as iCloud
     return (
         candidate.scheme.lower() == canonical.scheme.lower()
-        and candidate.netloc.lower() == canonical.netloc.lower()
+        and (candidate.hostname or "") == (canonical.hostname or "")
+        and (candidate_port or 443) == (canonical.port or 443)
     )
 
 

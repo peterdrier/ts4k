@@ -269,3 +269,17 @@ class TestAuthCarddav:
 
         assert "ts4k src add ic apple-contacts email=a@icloud.com" in out
         assert str(credentials_path("a@icloud.com")) in out
+
+
+class TestGenericPasswordVerbatim:
+    def test_generic_16_letter_password_is_not_rehyphenated(
+        self, ts4k_config, monkeypatch
+    ):
+        """A generic server's password may legitimately be 16 lowercase
+        letters — Apple-format normalization must not rewrite it."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcdefghijklmnop")
+        cli._cmd_sources(_args("carddav", [
+            "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
+        ]))
+        creds = load_credentials("me@fastmail.com#carddav#carddav.fastmail.com")
+        assert creds["app_password"] == "abcdefghijklmnop"
