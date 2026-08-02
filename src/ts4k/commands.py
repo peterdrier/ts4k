@@ -2180,12 +2180,18 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         return validate_token(client_id, tenant_id=tenant_id, scopes=required or None, username=username)
 
     if provider in ("caldav", "carddav"):
-        # Both share one app-specific password per Apple ID
-        from ts4k.auth.caldav import load_credentials
+        # Both share one app-specific password per Apple ID — except a
+        # generic (non-iCloud) CardDAV source, which is keyed separately.
+        from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, load_credentials
         email = cfg.get("email", "")
         if not email:
             return TokenHealth(status="na", expiry=None, scopes=[], detail="no email configured")
-        if load_credentials(email, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
+        if provider == "carddav":
+            from ts4k.adapters.carddav import carddav_credential_key
+            key = carddav_credential_key(email, cfg.get("server_url", ICLOUD_CARDDAV_URL))
+        else:
+            key = email
+        if load_credentials(key, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
             alias = "apple-contacts" if provider == "carddav" else "apple"
             return TokenHealth(status="na", expiry=None, scopes=[],
                                detail=f"no credentials — run: ts4k src add <prefix> {alias} email={email}")

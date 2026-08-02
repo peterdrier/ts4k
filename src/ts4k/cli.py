@@ -505,6 +505,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 return
             kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
 
+            from ts4k.adapters.carddav import carddav_credential_key
             is_icloud_contacts = kwargs["server_url"] == ICLOUD_CARDDAV_URL
             stored = _ensure_apple_password(
                 email,
@@ -513,7 +514,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 username=kwargs.get("username"),
                 store_server_url=False,
                 config_dir=Path(kwargs["config_dir"]) if kwargs.get("config_dir") else None,
-                credential_key=None if is_icloud_contacts else f"{email}#carddav",
+                credential_key=carddav_credential_key(email, kwargs["server_url"]),
             )
             if stored is None:
                 return
@@ -1210,17 +1211,27 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
             elif provider == "whatsapp":
                 print(f"  {prefix}: whatsapp — session-based, no auth needed")
             elif provider in ("caldav", "carddav"):
-                from ts4k.auth.caldav import credentials_path
+                from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, credentials_path
                 email = cfg.get("email", "<your-apple-id>")
-                alias = "apple-contacts" if provider == "carddav" else "apple"
+                server_url = cfg.get("server_url", ICLOUD_CARDDAV_URL)
+                is_generic_carddav = provider == "carddav" and server_url != ICLOUD_CARDDAV_URL
                 print(f"  {prefix}: {provider} — no OAuth; uses an app-specific password")
                 print(f"        Generate one at https://account.apple.com "
                       f"(Sign-In and Security → App-Specific Passwords),")
-                print(f"        then store it with: ts4k src add {prefix} {alias} email={email}")
+                if is_generic_carddav:
+                    from ts4k.adapters.carddav import carddav_credential_key
+                    key = carddav_credential_key(email, server_url)
+                    print(f"        then store it with: ts4k src add {prefix} carddav "
+                          f"email={email} server_url={server_url}")
+                else:
+                    alias = "apple-contacts" if provider == "carddav" else "apple"
+                    key = email
+                    print(f"        then store it with: ts4k src add {prefix} {alias} email={email}")
                 # src add only prompts when no credential is stored, so a revoked
                 # password has to be removed first or the re-run is a no-op.
+                config_dir = Path(cfg["config_dir"]) if cfg.get("config_dir") else None
                 print(f"        Replacing a revoked password? delete "
-                      f"{credentials_path(email)} first.")
+                      f"{credentials_path(key, config_dir)} first.")
             else:
                 print(f"  {prefix}: unknown provider '{provider}' — skipping")
         except SystemExit:

@@ -216,6 +216,18 @@ def parse_vcards(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def carddav_credential_key(email: str, server_url: str) -> str:
+    """Credential file key for a CardDAV source.
+
+    iCloud shares one app-specific password across CalDAV and CardDAV
+    (Apple issues it per Apple ID, not per service), so it reads the
+    plain-email credential file. A generic CardDAV server has no such
+    guarantee — it may need different credentials than a CalDAV source
+    for the same email — so it gets its own service-scoped key.
+    """
+    return email if server_url == ICLOUD_CARDDAV_URL else f"{email}#carddav"
+
+
 @dataclass
 class CarddavAdapterConfig:
     """Configuration for a CardDAV contacts source."""
@@ -237,15 +249,7 @@ class CarddavAdapter:
 
     async def connect(self) -> None:
         email = self._config.email
-        # iCloud shares one app-specific password across CalDAV and CardDAV
-        # (Apple issues it per Apple ID, not per service), so it reads the
-        # plain-email credential file.  A generic CardDAV server has no such
-        # guarantee — it may need different credentials than a CalDAV source
-        # for the same email — so it gets its own service-scoped key.
-        self._credential_key = (
-            email if self._config.server_url == ICLOUD_CARDDAV_URL
-            else f"{email}#carddav"
-        )
+        self._credential_key = carddav_credential_key(email, self._config.server_url)
         creds = load_credentials(self._credential_key, self._config.config_dir)
         if creds is None:
             raise RuntimeError(

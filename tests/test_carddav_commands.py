@@ -46,6 +46,42 @@ class TestTokenHealth:
         health = commands.check_token_health("ic", dict(CARDDAV_CFG))
         assert health.status == "ok"
 
+    def test_generic_carddav_source_reports_healthy_under_its_scoped_key(self, ts4k_config):
+        """A generic (non-iCloud) CardDAV source stores its credential
+        under a service-scoped key, not the plain email — the health
+        check must look there instead of reporting a false [na]."""
+        from ts4k.auth.caldav import save_credentials
+
+        cfg = {
+            "provider": "carddav", "email": "me@fastmail.com",
+            "server_url": "https://carddav.fastmail.com/",
+        }
+        save_credentials("me@fastmail.com#carddav", username="me@fastmail.com",
+                         app_password="carddav-pw", server_url="")
+
+        health = commands.check_token_health("fm", cfg)
+        assert health.status == "ok"
+
+    def test_generic_carddav_source_ignores_a_same_email_caldav_credential(self, ts4k_config):
+        """The plain-email credential belongs to CalDAV — a generic CardDAV
+        source must not be reported healthy just because that exists."""
+        from ts4k.auth.caldav import save_credentials
+
+        cfg = {
+            "provider": "carddav", "email": "me@fastmail.com",
+            "server_url": "https://carddav.fastmail.com/",
+        }
+        save_credentials("me@fastmail.com", username="me@fastmail.com",
+                         app_password="caldav-pw", server_url="https://caldav.fastmail.com/")
+
+        health = commands.check_token_health("fm", cfg)
+        assert health.status == "na"
+
+    def test_icloud_carddav_health_check_is_unchanged(self, ts4k_config):
+        health = commands.check_token_health("ic", dict(CARDDAV_CFG))
+        assert health.status == "na"
+        assert "apple-contacts" in health.detail
+
 
 class TestPlanContactImport:
     def test_emails_and_phones_become_identifiers(self, ts4k_config):

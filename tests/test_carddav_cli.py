@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 
 from ts4k import cli
-from ts4k.auth.caldav import ICLOUD_CALDAV_URL, ICLOUD_CARDDAV_URL, load_credentials
+from ts4k.auth.caldav import (
+    ICLOUD_CALDAV_URL,
+    ICLOUD_CARDDAV_URL,
+    credentials_path,
+    load_credentials,
+)
 from ts4k.state import sources
 
 PASSWORD = "abcd-efgh-ijkl-mnop"
@@ -212,3 +217,28 @@ class TestAuthCarddav:
         assert "unknown provider" not in out
         assert "app-specific password" in out
         assert "apple-contacts" in out
+
+    def test_generic_carddav_guidance_names_the_scoped_credential_and_server_url(
+        self, ts4k_config, capsys
+    ):
+        """A generic CardDAV source must not be told to re-run the
+        apple-contacts preset (wrong credential, would drop server_url) or
+        to delete a plain-email credential path it never wrote to."""
+        sources.add("fm", provider="carddav", email="me@fastmail.com",
+                     server_url="https://carddav.fastmail.com/")
+        cli._cmd_auth(argparse.Namespace(target="fm", check=False, no_calendar=False))
+        out = capsys.readouterr().out
+
+        assert "apple-contacts" not in out
+        assert "ts4k src add fm carddav email=me@fastmail.com " \
+               "server_url=https://carddav.fastmail.com/" in out
+        assert str(credentials_path("me@fastmail.com#carddav")) in out
+        assert str(credentials_path("me@fastmail.com")) not in out
+
+    def test_icloud_carddav_guidance_is_unchanged(self, ts4k_config, capsys):
+        sources.add("ic", provider="carddav", email="a@icloud.com")
+        cli._cmd_auth(argparse.Namespace(target="ic", check=False, no_calendar=False))
+        out = capsys.readouterr().out
+
+        assert "ts4k src add ic apple-contacts email=a@icloud.com" in out
+        assert str(credentials_path("a@icloud.com")) in out
