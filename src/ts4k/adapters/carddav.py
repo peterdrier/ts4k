@@ -25,7 +25,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, load_credentials
+from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, credentials_path, load_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +223,13 @@ def carddav_credential_key(email: str, server_url: str) -> str:
     (Apple issues it per Apple ID, not per service), so it reads the
     plain-email credential file. A generic CardDAV server has no such
     guarantee — it may need different credentials than a CalDAV source
-    for the same email — so it gets its own service-scoped key.
+    for the same email — so it gets its own service-scoped key, further
+    scoped by host: two generic sources sharing an email but pointed at
+    different servers must not collide on the same credential file.
     """
-    return email if server_url == ICLOUD_CARDDAV_URL else f"{email}#carddav"
+    if server_url == ICLOUD_CARDDAV_URL:
+        return email
+    return f"{email}#carddav:{urlsplit(server_url).netloc}"
 
 
 @dataclass
@@ -321,14 +325,31 @@ class CarddavAdapter:
                         f"downgrading from HTTPS to a non-HTTPS URL would send the "
                         f"CardDAV credentials in cleartext."
                     )
+                current_host = urlsplit(str(resp.url)).netloc.lower()
+                new_host = urlsplit(new_url).netloc.lower()
+                is_icloud_account = self._config.server_url == ICLOUD_CARDDAV_URL
+                same_host = new_host == current_host
+                trusted_icloud_shard = is_icloud_account and new_host.endswith(".icloud.com")
+                if not same_host and not trusted_icloud_shard:
+                    raise RuntimeError(
+                        f"Refusing to follow a redirect from {resp.url} to {new_url} — "
+                        f"the destination host is not trusted, so re-sending CardDAV "
+                        f"credentials to it would risk leaking them to an unrelated server."
+                    )
                 url = new_url
                 continue
             if resp.status_code in (401, 403):
+                # self._credential_key is only set by connect() — fall back to
+                # recomputing it so this message stays accurate even when a
+                # caller (e.g. a test) sets up _client without calling connect().
+                key = self._credential_key or carddav_credential_key(
+                    self._config.email, self._config.server_url
+                )
                 raise RuntimeError(
                     f"CardDAV auth failed for {self._config.email} — the app-specific "
                     f"password may be revoked (they expire when the Apple ID password "
                     f"changes). Generate a new one at https://account.apple.com, delete "
-                    f"~/.config/ts4k/caldav/{self._credential_key}/credentials.json, and "
+                    f"{credentials_path(key, self._config.config_dir)}, and "
                     f"re-run ts4k src add."
                 )
             resp.raise_for_status()

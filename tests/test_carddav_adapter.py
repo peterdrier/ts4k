@@ -12,10 +12,16 @@ from ts4k.adapters.carddav import (
     _MAX_REDIRECTS,
     CarddavAdapter,
     CarddavAdapterConfig,
+    carddav_credential_key,
     normalize_phone,
     parse_vcards,
 )
-from ts4k.auth.caldav import ICLOUD_CALDAV_URL, ICLOUD_CARDDAV_URL, save_credentials
+from ts4k.auth.caldav import (
+    ICLOUD_CALDAV_URL,
+    ICLOUD_CARDDAV_URL,
+    credentials_path,
+    save_credentials,
+)
 
 
 @pytest.fixture
@@ -90,7 +96,7 @@ class TestConnect:
 
     async def test_generic_server_uses_its_own_scoped_credential(self, tmp_path: Path):
         save_credentials(
-            "test@fastmail.com#carddav", username="test@fastmail.com",
+            "test@fastmail.com#carddav:carddav.fastmail.com", username="test@fastmail.com",
             app_password="carddav-pw", server_url="",
             config_dir=tmp_path,
         )
@@ -105,6 +111,36 @@ class TestConnect:
             assert a._client is not None
         finally:
             await a.disconnect()
+
+    async def test_401_message_names_the_config_dir_scoped_credential_path(
+        self, carddav_config: CarddavAdapterConfig
+    ):
+        """The auth-failure message must point at the credential file under
+        this source's config_dir, not the global default — a source with a
+        custom config_dir stores its credential there, not at ~/.config/ts4k."""
+        a = CarddavAdapter(carddav_config)
+        a._client = _fake_client(_ROUTES, status_code=401)
+        with pytest.raises(RuntimeError) as excinfo:
+            await a.list_contacts()
+        expected_path = str(credentials_path("test@icloud.com", carddav_config.config_dir))
+        assert expected_path in str(excinfo.value)
+
+
+class TestCredentialKey:
+    def test_icloud_uses_the_plain_email(self):
+        assert carddav_credential_key("a@icloud.com", ICLOUD_CARDDAV_URL) == "a@icloud.com"
+
+    def test_generic_server_key_is_scoped_by_email_and_host(self):
+        key = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
+        assert key == "me@fastmail.com#carddav:carddav.fastmail.com"
+
+    def test_same_email_different_hosts_get_distinct_keys(self):
+        """Two generic CardDAV sources sharing an email but pointed at
+        different servers must not collide on the same credential file —
+        each needs its own password prompt and its own stored credential."""
+        key_a = carddav_credential_key("me@example.com", "https://carddav.example-a.com/")
+        key_b = carddav_credential_key("me@example.com", "https://carddav.example-b.com/")
+        assert key_a != key_b
 
 
 class TestRedirectHandling:
@@ -181,6 +217,54 @@ class TestRedirectHandling:
             await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
         # Only the original https request went out — the downgraded http
         # URL never received a second (authenticated) request.
+        assert call_count == 1
+
+    async def test_same_origin_https_redirect_is_followed(self, tmp_path: Path):
+        """A generic (non-iCloud) CardDAV server redirecting within its own
+        host — e.g. adding a trailing slash or moving to a sibling path —
+        is a routine same-origin hop and must still be followed."""
+        config = CarddavAdapterConfig(
+            email="test@fastmail.com", server_url="https://carddav.fastmail.com/",
+            config_dir=tmp_path,
+        )
+        a = CarddavAdapter(config)
+        moved_url = "https://carddav.fastmail.com/dav/principal/"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == "https://carddav.fastmail.com/":
+                return httpx.Response(301, headers={"Location": moved_url})
+            assert str(request.url) == moved_url
+            return httpx.Response(207, content=PRINCIPAL_XML.encode())
+
+        a._client = httpx.AsyncClient(
+            auth=("test@fastmail.com", "carddav-pw"),
+            follow_redirects=False,
+            transport=httpx.MockTransport(handler),
+        )
+        root, base = await a._dav(
+            "PROPFIND", "https://carddav.fastmail.com/", "<propfind/>", "0"
+        )
+        assert base == moved_url
+
+    async def test_redirect_to_an_unrelated_https_host_is_rejected(self, tmp_path: Path):
+        """A non-iCloud server (or a compromised/misconfigured one) redirecting
+        to a completely different host must not have credentials re-sent to
+        it — only same-host hops, or an iCloud account's own shard hosts, are
+        trusted."""
+        call_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(
+                302, headers={"Location": "https://evil.example/steal-creds/"}
+            )
+
+        a = self._adapter(tmp_path, handler)
+        with pytest.raises(RuntimeError, match="not trusted"):
+            await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
+        # Only the original request went out — the untrusted host never
+        # received a second (authenticated) request.
         assert call_count == 1
 
 

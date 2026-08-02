@@ -337,10 +337,11 @@ def _ensure_apple_password(
     poisoning a CalDAV source that later reuses the same email.
 
     ``credential_key`` overrides the credential file's directory name
-    (default: *email*).  Generic CardDAV setups pass a service-scoped key
-    (``<email>#carddav``) so they neither silently reuse a CalDAV
+    (default: *email*).  Generic CardDAV setups pass a host-scoped key
+    (``<email>#carddav:<host>``) so they neither silently reuse a CalDAV
     credential for the same email — which may be a different password for
-    a different service — nor clobber it.
+    a different service — nor collide with another generic CardDAV server
+    that happens to share the same email.
     """
     from ts4k.auth.caldav import ICLOUD_CALDAV_URL, load_credentials, save_credentials
 
