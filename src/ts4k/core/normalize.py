@@ -631,7 +631,12 @@ def _strip_signatures(text: str) -> str:
         if _SIGNATURE_TRIGGER_PATTERN.match(stripped):
             sig_start = i
             break
-        emphasis_stripped = re.sub(r"^[*_]+|[*_]+$", "", stripped)
+        # Remove short emphasis-marker runs anywhere in the line (same
+        # pattern the reply-header pass uses) — "**Thanks**," keeps its
+        # trailing markers before the comma, so edge-only stripping
+        # misses them. The raw line was already tested above, so a "___"
+        # delimiter can't be destroyed by this.
+        emphasis_stripped = re.sub(r"[*_]{1,3}", "", stripped)
         if emphasis_stripped and _SIGNATURE_TRIGGER_PATTERN.match(emphasis_stripped):
             sig_start = i
             break

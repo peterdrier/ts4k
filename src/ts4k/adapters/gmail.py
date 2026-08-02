@@ -566,18 +566,23 @@ class GmailAdapter(BaseAdapter):
         )
         full = _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
 
-        if prefer_html:
+        # Resolve an externalized preferred body part. Always for HTML mode
+        # (the whole point is preferring HTML over the inline plain
+        # fallback); for plain mode only when nothing decoded inline —
+        # keeping the normal compact path off the attachments endpoint.
+        if prefer_html or not (full.get("body") or "").strip():
+            preferred_mime = "text/html" if prefer_html else "text/plain"
             # Search from the root payload itself, not just its parts — a
-            # non-multipart message can BE a text/html leaf whose body was
+            # non-multipart message can BE a leaf whose body was
             # externalized to an attachmentId.
-            html_part = _find_body_part_ref([msg.get("payload", {})], "text/html")
+            html_part = _find_body_part_ref([msg.get("payload", {})], preferred_mime)
             if html_part is not None:
                 body = html_part.get("body", {})
                 attachment_id = body.get("attachmentId")
                 if attachment_id and not body.get("data"):
-                    # Gmail externalized this HTML part — fetch it via the
-                    # attachments endpoint instead of settling for the
-                    # plain-text fallback _msg_to_full already picked.
+                    # Gmail externalized this part — fetch it via the
+                    # attachments endpoint instead of settling for an
+                    # empty or fallback body.
                     try:
                         attachment = await asyncio.to_thread(
                             lambda: service.users().messages().attachments().get(
@@ -591,8 +596,8 @@ class GmailAdapter(BaseAdapter):
                             )
                     except Exception:
                         logger.warning(
-                            "Failed to fetch externalized HTML body for %s",
-                            msg_id, exc_info=True,
+                            "Failed to fetch externalized %s body for %s",
+                            preferred_mime, msg_id, exc_info=True,
                         )
 
         return full

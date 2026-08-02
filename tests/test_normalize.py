@@ -875,6 +875,18 @@ class TestReadableMode:
             for line in result.split("\n")
         )
 
+    def test_readable_strips_emphasized_signature_with_outside_punctuation(self):
+        """Punctuation outside the emphasis — <strong>Thanks</strong>, —
+        yields "**Thanks**," whose trailing markers sit before the comma;
+        mid-line marker stripping must still match the trigger."""
+        html = (
+            "<p>See you tomorrow.</p>"
+            "<p><strong>Thanks</strong>,<br>Alice Smith<br>VP Engineering</p>"
+        )
+        result = normalize(html, mode="readable")
+        assert "See you tomorrow." in result
+        assert "VP Engineering" not in result
+
     def test_readable_layout_row_cells_are_space_separated(self):
         """Unwrapping a layout row's cells must not merge adjacent text —
         "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""

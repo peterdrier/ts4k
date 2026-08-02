@@ -943,6 +943,40 @@ class TestGmailAdapterReadMessage:
         )
 
     @pytest.mark.asyncio
+    async def test_plain_read_resolves_externalized_plain_body(self):
+        """When nothing decodes inline and the text/plain part is
+        attachment-backed, the plain-mode read must resolve it too —
+        otherwise the readable empty-HTML retry returns empty again."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc125",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"attachmentId": "ATT789", "size": 40000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(return_value={"data": _b64("Externalized plain body")})
+        )
+
+        msg = await adapter.read_message("g:abc125", prefer_html=False)
+
+        assert msg["body"] == "Externalized plain body"
+        adapter._service.users().messages().attachments().get.assert_called_with(
+            userId="me", messageId="abc125", id="ATT789"
+        )
+
+    @pytest.mark.asyncio
     async def test_compact_read_does_not_call_attachments_endpoint(self):
         """Compact mode prefers inline plain text — it must not resolve
         attachment-backed body parts at all."""
