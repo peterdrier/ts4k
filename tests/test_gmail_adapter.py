@@ -412,6 +412,41 @@ class TestDecodeBody:
         assert _decode_body(payload) == "Real plain body"
         assert _decode_body(payload, prefer_html=True) == "<p>Real HTML body</p>"
 
+    def test_attachment_marked_multipart_subtree_not_selected_as_body(self):
+        """A multipart/related container marked as an attachment must not
+        have its unmarked HTML child selected as the message body — the
+        attachment guard must apply to multipart containers, not just leaf
+        parts."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Real plain body"), "size": 15},
+                },
+                {
+                    "mimeType": "multipart/related",
+                    "headers": [
+                        {
+                            "name": "Content-Disposition",
+                            "value": 'attachment; filename="doc.eml"',
+                        }
+                    ],
+                    "body": {"size": 0},
+                    "parts": [
+                        {
+                            "mimeType": "text/html",
+                            "body": {
+                                "data": _b64("<p>Attached document</p>"),
+                                "size": 24,
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "Real plain body"
+
 
 class TestExtractAttachments:
     """Tests for _extract_attachments()."""

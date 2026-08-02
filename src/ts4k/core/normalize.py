@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import html2text
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +307,20 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
                     if t.find_parent("table") is table
                 ]
+                # Unwrapping td/tr drops the tag boundaries that kept
+                # adjacent cells/rows apart — "<td>Logo</td><td>Nav</td>"
+                # would collapse to "LogoNav". Insert a space after each
+                # own cell, and turn each own row into a <div> (a bare
+                # "\n" text node would be collapsed by html2text; a block
+                # element forces the line break).
                 for t in own:
-                    t.unwrap()
+                    if t.name in ("th", "td"):
+                        t.insert_after(NavigableString(" "))
+                        t.unwrap()
+                    elif t.name == "tr":
+                        t.name = "div"
+                    else:
+                        t.unwrap()
                 table.unwrap()
                 continue
             # Re-extract cell text with a newline-preserving separator
@@ -343,11 +355,30 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 if cell.find_parent("table") is table
             )
             if not has_th:
-                first_row_cells = [
-                    c for c in rows[0].find_all(["th", "td"]) if c.find_parent("table") is table
-                ]
-                for cell in first_row_cells:
-                    cell.name = "th"
+                # rows[0] may be an all-empty spacer row that classification
+                # already ignores when building table_data (see the
+                # any(cell_texts) filter above) — promote the first row
+                # that actually has cell text, not just the first row.
+                first_data_row = next(
+                    (
+                        row
+                        for row in rows
+                        if any(
+                            c.get_text(strip=True)
+                            for c in row.find_all(["th", "td"])
+                            if c.find_parent("table") is table
+                        )
+                    ),
+                    None,
+                )
+                if first_data_row is not None:
+                    first_row_cells = [
+                        c
+                        for c in first_data_row.find_all(["th", "td"])
+                        if c.find_parent("table") is table
+                    ]
+                    for cell in first_row_cells:
+                        cell.name = "th"
             continue
 
         # Build pipe-delimited output

@@ -754,6 +754,41 @@ class TestReadableMode:
         assert alice_line != bob_line
         assert "Bob" not in alice_line
 
+    def test_readable_td_only_table_with_empty_first_row_still_gets_separator(self):
+        """An empty spacer <tr> as the first row must not block
+        th-promotion — the first row WITH data must be promoted, not
+        rows[0] itself."""
+        html = """
+        <table>
+            <tr><td></td><td></td></tr>
+            <tr><td>Name</td><td>Amount</td></tr>
+            <tr><td>Alice</td><td>$500</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "---" in result
+        assert "Alice" in result
+        assert "$500" in result
+
+    def test_readable_layout_row_cells_are_space_separated(self):
+        """Unwrapping a layout row's cells must not merge adjacent text —
+        "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""
+        html = "<table><tr><td>Logo</td><td>Nav</td></tr></table>"
+        result = normalize(html, mode="readable")
+        assert "LogoNav" not in result
+        assert "Logo Nav" in result
+
+    def test_readable_layout_rows_stay_on_separate_lines(self):
+        """Unwrapping a single-column layout table's rows must not merge
+        them onto the same line."""
+        html = "<table><tr><td>First</td></tr><tr><td>Second</td></tr></table>"
+        result = normalize(html, mode="readable")
+        lines = [line.strip() for line in result.split("\n") if line.strip()]
+        first_line = next(line for line in lines if "First" in line)
+        second_line = next(line for line in lines if "Second" in line)
+        assert first_line != second_line
+        assert "Second" not in first_line
+
     def test_readable_still_strips_tracking_pixel(self):
         html = """
         <p>Content here.</p>

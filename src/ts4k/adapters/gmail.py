@@ -96,19 +96,30 @@ def _decode_body(payload: dict, prefer_html: bool = False) -> str:
     return _find_body_part(parts, preferred) or _find_body_part(parts, fallback)
 
 
+def _is_attachment_part(part: dict) -> bool:
+    """True if a payload part is marked as an attachment.
+
+    A filename, or a part-level Content-Disposition: attachment header
+    (even with an empty filename), marks the part as an attachment rather
+    than message body content. Applies to leaf parts and multipart
+    containers alike — an attachment can itself be a multipart document
+    (e.g. a forwarded .eml as multipart/related).
+    """
+    if part.get("filename"):
+        return True
+    disposition = _get_header(part.get("headers", []), "Content-Disposition")
+    return disposition.lower().startswith("attachment")
+
+
 def _find_body_part(parts: list[dict], mime: str) -> str:
     """Depth-first search for a decodable leaf part of the given MIME type.
 
-    Skips parts with a filename — those are attachments (even inline ones
-    carrying body data), not the message body. Mirrors the attachment
-    detection in _extract_attachments. Also skips parts with an empty
-    filename that are still marked as attachments via a part-level
-    Content-Disposition header.
+    Skips parts marked as attachments (see _is_attachment_part) — both leaf
+    candidates and multipart containers, so an attachment that is itself a
+    multipart document doesn't have an unmarked child selected as the body.
     """
     for part in parts:
-        disposition = _get_header(part.get("headers", []), "Content-Disposition")
-        is_attachment = disposition.lower().startswith("attachment")
-        if part.get("mimeType") == mime and not part.get("filename") and not is_attachment:
+        if part.get("mimeType") == mime and not _is_attachment_part(part):
             body_data = part.get("body", {}).get("data")
             if body_data:
                 decoded = base64.urlsafe_b64decode(body_data).decode(
@@ -117,7 +128,7 @@ def _find_body_part(parts: list[dict], mime: str) -> str:
                 if decoded:
                     return decoded
     for part in parts:
-        if "multipart" in part.get("mimeType", ""):
+        if "multipart" in part.get("mimeType", "") and not _is_attachment_part(part):
             text = _find_body_part(part.get("parts", []), mime)
             if text:
                 return text
