@@ -97,9 +97,14 @@ def _decode_body(payload: dict, prefer_html: bool = False) -> str:
 
 
 def _find_body_part(parts: list[dict], mime: str) -> str:
-    """Depth-first search for a decodable leaf part of the given MIME type."""
+    """Depth-first search for a decodable leaf part of the given MIME type.
+
+    Skips parts with a filename — those are attachments (even inline ones
+    carrying body data), not the message body. Mirrors the attachment
+    detection in _extract_attachments.
+    """
     for part in parts:
-        if part.get("mimeType") == mime:
+        if part.get("mimeType") == mime and not part.get("filename"):
             body_data = part.get("body", {}).get("data")
             if body_data:
                 decoded = base64.urlsafe_b64decode(body_data).decode(

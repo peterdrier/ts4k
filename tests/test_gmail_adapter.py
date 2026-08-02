@@ -360,6 +360,27 @@ class TestDecodeBody:
         }
         assert _decode_body(payload, prefer_html=True) == "Plain only"
 
+    def test_html_attachment_not_mistaken_for_body(self):
+        """A text/html part with a filename is an attachment, not the body —
+        even in prefer_html mode, it must not be returned in place of the
+        real message body."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Real plain body"), "size": 15},
+                },
+                {
+                    "mimeType": "text/html",
+                    "filename": "notes.html",
+                    "body": {"data": _b64("<p>Attached snippet</p>"), "size": 23},
+                },
+            ],
+        }
+        assert _decode_body(payload) == "Real plain body"
+        assert _decode_body(payload, prefer_html=True) == "Real plain body"
+
 
 class TestExtractAttachments:
     """Tests for _extract_attachments()."""

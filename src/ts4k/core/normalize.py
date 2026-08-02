@@ -264,7 +264,11 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     nested tables instead of collapsing to bare text.
     """
     for table in soup.find_all("table"):
-        rows = table.find_all("tr")
+        # Scope to this table's own rows/cells — find_all is recursive, so a
+        # nested table's rows/cells would otherwise be double-counted and
+        # skew classification (e.g. a single-column wrapper around a
+        # multi-cell nested table would wrongly look like a data table).
+        rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
         if not rows:
             # Empty table, remove
             table.decompose()
@@ -275,7 +279,9 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         max_cols = 0
 
         for row in rows:
-            cells = row.find_all(["th", "td"])
+            cells = [
+                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
+            ]
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
                 table_data.append(cell_texts)
@@ -409,11 +415,19 @@ def _strip_reply_chains(text: str) -> str:
     - "--- Original Message ---" blocks
     - Outlook-style "From: ... Sent: ... To: ... Subject: ..." blocks
     """
-    # First, remove "On ... wrote:" headers and everything after them that's quoted
-    match = _REPLY_HEADER_PATTERN.search(text)
+    # First, remove "On ... wrote:" headers and everything after them that's
+    # quoted. Match against emphasis-stripped lines — readable mode renders
+    # these as "**On Mon ... wrote:**" or bolds the Outlook "From:/Sent:/
+    # To:/Subject:" labels, which the anchored header patterns don't match.
+    # Line boundaries are unchanged by stripping, so the match's line offset
+    # maps directly onto the original (unstripped) lines that get kept.
+    orig_lines = text.split("\n")
+    stripped_text = "\n".join(re.sub(r"[*_]{1,3}", "", line) for line in orig_lines)
+    match = _REPLY_HEADER_PATTERN.search(stripped_text)
     if match:
-        # Truncate at the reply header
-        text = text[:match.start()].rstrip()
+        # Truncate at the start line of the matched header.
+        start_line = stripped_text.count("\n", 0, match.start())
+        text = "\n".join(orig_lines[:start_line]).rstrip()
 
     # Remove any remaining "> " quoted lines
     lines = text.split("\n")

@@ -744,6 +744,31 @@ class TestReadableMode:
         assert "Yes, I agree with that approach." in result
         assert "option A" not in result
 
+    def test_readable_strips_emphasized_reply_header(self):
+        """readable mode renders "On Mon ... wrote:" as "**On Mon ... wrote:**" — must still match."""
+        html = (
+            "<p>Yes, I agree with that approach.</p>"
+            "<p><strong>On Mon, Feb 19, 2026 at 10:00 AM Alice wrote:</strong></p>"
+            "<blockquote><p>I think we should go with option A.</p></blockquote>"
+        )
+        result = normalize(html, mode="readable")
+        assert "Yes, I agree with that approach." in result
+        assert "option A" not in result
+
+    def test_readable_strips_emphasized_outlook_header(self):
+        """readable mode bolds Outlook "From:/Sent:/To:/Subject:" labels — must still match."""
+        html = (
+            "<p>Thanks, will do.</p>"
+            "<p><strong>From:</strong> Alice Smith<br>"
+            "<strong>Sent:</strong> Monday, February 19, 2026 10:00 AM<br>"
+            "<strong>To:</strong> Bob Jones<br>"
+            "<strong>Subject:</strong> Meeting Tomorrow</p>"
+            "<p>Bob, can you prepare the slides?</p>"
+        )
+        result = normalize(html, mode="readable")
+        assert "Thanks, will do." in result
+        assert "can you prepare the slides?" not in result
+
     def test_readable_still_strips_unsubscribe(self):
         html = """
         <div><p>Here is your weekly digest.</p></div>

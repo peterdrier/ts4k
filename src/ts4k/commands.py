@@ -669,6 +669,14 @@ async def get_message(
     async with adapter:
         msg = await adapter.read_message(id, prefer_html=(body_mode == "readable"))
         msg = _normalize_message(msg, mode=body_mode)
+        if body_mode == "readable" and not (msg.get("body") or "").strip():
+            # The preferred HTML alternative normalized to nothing (e.g. an
+            # empty shell or tracking-only markup) — retry once with the
+            # plain-text alternative instead of returning an empty body.
+            plain_msg = await adapter.read_message(id, prefer_html=False)
+            plain_msg = _normalize_message(plain_msg, mode=body_mode)
+            if (plain_msg.get("body") or "").strip():
+                msg = plain_msg
         if body_mode == "compact":
             cache.store_message(id, msg)
         output = format_message(msg, fmt=fmt)
