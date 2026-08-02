@@ -91,25 +91,27 @@ def _decode_body(payload: dict, prefer_html: bool = False) -> str:
 
     preferred, fallback = ("text/html", "text/plain") if prefer_html else ("text/plain", "text/html")
 
-    for part in parts:
-        if part.get("mimeType") == preferred:
-            text = _decode_body(part, prefer_html=prefer_html)
-            if text:
-                return text
+    # Search the whole subtree for the preferred type before accepting the
+    # fallback — the HTML alternative often nests inside multipart/related.
+    return _find_body_part(parts, preferred) or _find_body_part(parts, fallback)
 
-    for part in parts:
-        if part.get("mimeType") == fallback:
-            text = _decode_body(part, prefer_html=prefer_html)
-            if text:
-                return text
 
-    # Recurse into nested multipart parts.
+def _find_body_part(parts: list[dict], mime: str) -> str:
+    """Depth-first search for a decodable leaf part of the given MIME type."""
+    for part in parts:
+        if part.get("mimeType") == mime:
+            body_data = part.get("body", {}).get("data")
+            if body_data:
+                decoded = base64.urlsafe_b64decode(body_data).decode(
+                    "utf-8", errors="replace"
+                )
+                if decoded:
+                    return decoded
     for part in parts:
         if "multipart" in part.get("mimeType", ""):
-            text = _decode_body(part, prefer_html=prefer_html)
+            text = _find_body_part(part.get("parts", []), mime)
             if text:
                 return text
-
     return ""
 
 

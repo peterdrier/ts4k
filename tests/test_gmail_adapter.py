@@ -319,6 +319,35 @@ class TestDecodeBody:
         }
         assert _decode_body(payload, prefer_html=True) == "<p>HTML text</p>"
 
+    def test_prefer_html_finds_html_nested_in_multipart_related(self):
+        """Nested HTML wins over a direct plain part when prefer_html=True."""
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain text"), "size": 10},
+                },
+                {
+                    "mimeType": "multipart/related",
+                    "body": {"size": 0},
+                    "parts": [
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": _b64("<p>Rich</p>"), "size": 11},
+                        },
+                        {
+                            "mimeType": "image/png",
+                            "body": {"attachmentId": "att1", "size": 999},
+                            "filename": "logo.png",
+                        },
+                    ],
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "<p>Rich</p>"
+        assert _decode_body(payload, prefer_html=False) == "Plain text"
+
     def test_prefer_html_falls_back_to_plain_when_no_html_part(self):
         payload = {
             "mimeType": "multipart/alternative",
