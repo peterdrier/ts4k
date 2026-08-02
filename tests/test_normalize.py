@@ -887,6 +887,31 @@ class TestReadableMode:
         assert "See you tomorrow." in result
         assert "VP Engineering" not in result
 
+    def test_readable_degraded_table_preserves_links(self):
+        """The no-clean-header degrade must keep link destinations —
+        table_data-based conversion would flatten a linked product name
+        to its bare label."""
+        html = """
+        <table>
+            <tr><th rowspan="2">Item</th><th colspan="2">Sales</th></tr>
+            <tr><th>Q1</th><th>Q2</th></tr>
+            <tr><td><a href="https://shop.example.com/widget">Widget</a></td>
+                <td>$100</td><td>$150</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Widget" in result
+        assert "https://shop.example.com/widget" in result
+        assert "$100" in result
+
+    def test_readable_underscore_mailto_text_not_mangled(self):
+        """A link whose visible address legitimately starts with an
+        underscore must keep it — only balanced emphasis wrappers strip."""
+        html = '<p>Page <a href="mailto:_ops@example.com">_ops@example.com</a></p>'
+        result = normalize(html, mode="readable")
+        assert "_ops@example.com" in result
+        assert "mailto:" not in result
+
     def test_readable_layout_row_cells_are_space_separated(self):
         """Unwrapping a layout row's cells must not merge adjacent text —
         "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""

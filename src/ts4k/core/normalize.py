@@ -434,7 +434,25 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     table.insert_before(row.extract())
                 continue
             # No clean header exists (e.g. a rowspan/colspan header grid)
-            # — degrade to the compact pipe conversion below.
+            # — degrade to pipe-separated rows, but in-place on the soup
+            # so inline markup (links, emphasis) survives for html2text;
+            # the compact table_data conversion would flatten it to bare
+            # text and drop link destinations entirely.
+            for row in rows:
+                r_cells = _own_cells(row)
+                for c in r_cells[:-1]:
+                    c.insert_after(NavigableString(" | "))
+                for c in r_cells:
+                    c.unwrap()
+                row.name = "div"
+            for t in [
+                t
+                for t in table.find_all(["thead", "tbody"])
+                if t.find_parent("table") is table
+            ]:
+                t.unwrap()
+            table.unwrap()
+            continue
 
         # Build pipe-delimited output
         lines = []
@@ -487,18 +505,19 @@ def _html_to_text(html: str, mode: str = "compact") -> str:
 
         # Readable mode may wrap link text in emphasis markup (e.g.
         # "**https://example.com**"), which defeats a plain equality check
-        # against the href. Compare against a markup-stripped copy, but
-        # keep returning link_text (not url) so the emphasis survives —
-        # the two are equal apart from that markup, so there's no
-        # information lost by preferring the original display text.
-        stripped_text = link_text.strip("*_")
+        # against the href. Compare the raw text first, then a copy with
+        # only BALANCED emphasis wrappers removed — an address that
+        # legitimately starts with "_" must not lose it. Keep returning
+        # link_text so the emphasized display form survives.
+        wrap = re.fullmatch(r"(\*{1,3}|_{1,3})(.+)\1", link_text, re.DOTALL)
+        texts = (link_text, wrap.group(2)) if wrap else (link_text,)
 
         # Skip if link text IS the URL (html2text sometimes does this)
-        if stripped_text == url or stripped_text == url.rstrip("/"):
+        if any(t == url or t == url.rstrip("/") for t in texts):
             return link_text
 
         # Skip mailto: links where the text is the email address
-        if url.startswith("mailto:") and url[7:] == stripped_text:
+        if url.startswith("mailto:") and url[7:] in texts:
             return link_text
 
         # Skip tracking/click-through URLs

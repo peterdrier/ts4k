@@ -566,39 +566,40 @@ class GmailAdapter(BaseAdapter):
         )
         full = _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
 
-        # Resolve an externalized preferred body part. Always for HTML mode
-        # (the whole point is preferring HTML over the inline plain
-        # fallback); for plain mode only when nothing decoded inline —
-        # keeping the normal compact path off the attachments endpoint.
-        if prefer_html or not (full.get("body") or "").strip():
-            preferred_mime = "text/html" if prefer_html else "text/plain"
-            # Search from the root payload itself, not just its parts — a
-            # non-multipart message can BE a leaf whose body was
-            # externalized to an attachmentId.
-            html_part = _find_body_part_ref([msg.get("payload", {})], preferred_mime)
-            if html_part is not None:
-                body = html_part.get("body", {})
-                attachment_id = body.get("attachmentId")
-                if attachment_id and not body.get("data"):
-                    # Gmail externalized this part — fetch it via the
-                    # attachments endpoint instead of settling for an
-                    # empty or fallback body.
-                    try:
-                        attachment = await asyncio.to_thread(
-                            lambda: service.users().messages().attachments().get(
-                                userId="me", messageId=raw_id, id=attachment_id,
-                            ).execute()
+        # Resolve an externalized preferred body part. The preferred part's
+        # own storage decides — not whatever fallback _decode_body picked
+        # (in plain mode that fallback can be nonempty raw HTML, which
+        # would wrongly skip resolving an externalized plain part). The
+        # normal compact path stays off the attachments endpoint because
+        # an inline plain part has data and needs no fetch.
+        preferred_mime = "text/html" if prefer_html else "text/plain"
+        # Search from the root payload itself, not just its parts — a
+        # non-multipart message can BE a leaf whose body was
+        # externalized to an attachmentId.
+        preferred_part = _find_body_part_ref([msg.get("payload", {})], preferred_mime)
+        if preferred_part is not None:
+            body = preferred_part.get("body", {})
+            attachment_id = body.get("attachmentId")
+            if attachment_id and not body.get("data"):
+                # Gmail externalized this part — fetch it via the
+                # attachments endpoint instead of settling for an
+                # empty or fallback body.
+                try:
+                    attachment = await asyncio.to_thread(
+                        lambda: service.users().messages().attachments().get(
+                            userId="me", messageId=raw_id, id=attachment_id,
+                        ).execute()
+                    )
+                    data = attachment.get("data")
+                    if data:
+                        full["body"] = base64.urlsafe_b64decode(data).decode(
+                            "utf-8", errors="replace"
                         )
-                        data = attachment.get("data")
-                        if data:
-                            full["body"] = base64.urlsafe_b64decode(data).decode(
-                                "utf-8", errors="replace"
-                            )
-                    except Exception:
-                        logger.warning(
-                            "Failed to fetch externalized %s body for %s",
-                            preferred_mime, msg_id, exc_info=True,
-                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to fetch externalized %s body for %s",
+                        preferred_mime, msg_id, exc_info=True,
+                    )
 
         return full
 
