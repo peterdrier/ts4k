@@ -852,6 +852,29 @@ class TestReadableMode:
         cols = [c for c in sep_line.split("|") if c.strip()]
         assert len(cols) == 2
 
+    def test_readable_rowspan_header_grid_degrades_to_pipe_rows(self):
+        """A rowspan/colspan header grid has no row with one cell per
+        column — rather than promote a mismatched header (malformed
+        markdown), the table degrades to compact pipe conversion."""
+        html = """
+        <table>
+            <tr><th rowspan="2">Employee</th><th colspan="2">Sales</th></tr>
+            <tr><th>Q1</th><th>Q2</th></tr>
+            <tr><td>Alice</td><td>$100</td><td>$150</td></tr>
+            <tr><td>Bob</td><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        for text in ("Employee", "Q1", "Alice", "$100", "Bob", "$120"):
+            assert text in result
+        # Data rows are pipe-delimited and no bare --- separator line
+        # exists for the signature stripper to eat
+        assert "Alice | $100 | $150" in result
+        assert not any(
+            set(line.strip()) <= set("-|: ") and "-" in line
+            for line in result.split("\n")
+        )
+
     def test_readable_layout_row_cells_are_space_separated(self):
         """Unwrapping a layout row's cells must not merge adjacent text —
         "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""

@@ -262,6 +262,14 @@ def _cell_colspan(cell) -> int:
         return 1
 
 
+def _cell_rowspan(cell) -> int:
+    """Return a cell's rowspan as an int, defaulting to 1 on malformed HTML."""
+    try:
+        return int(cell.get("rowspan", 1))
+    except (ValueError, TypeError):
+        return 1
+
+
 def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     """Convert HTML tables to pipe-delimited text.
 
@@ -363,71 +371,50 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     if c.find_parent("table") is table
                 ]
 
-            # A row that already carries <th> cells is the header — but a
-            # grouped header row (e.g. a single <th colspan="2"> title
-            # spanning the real column headers below it) has fewer
-            # *elements* than the label row despite spanning the same
-            # width. Promoting it would make html2text synthesize a
-            # one-column separator against multi-column data rows, so
-            # prefer the first th-bearing row with one cell per column
-            # (same rule as the synthesized-header case below); fall back
-            # to the first th-bearing row if none qualifies.
-            th_rows = [r for r in rows if any(c.name == "th" for c in _own_cells(r))]
+            # Find a clean header row: scan rows in order while tracking
+            # columns occupied by rowspans carried down from earlier rows.
+            # A row qualifies only when no carried rowspan covers it and it
+            # has exactly one single-span cell per table column — anything
+            # else (grouped colspan titles, rowspan grids, spacer rows)
+            # would make html2text emit a separator narrower than the data
+            # rows, i.e. malformed markdown. Prefer a qualifying row that
+            # already has <th> cells; otherwise promote the first
+            # qualifying nonempty row. If NO row qualifies, fall through
+            # to the compact pipe conversion for this table — consistent
+            # pipe rows beat a malformed markdown table.
             header_row = None
-            for r in th_rows:
-                r_cells = _own_cells(r)
-                effective_cols = sum(_cell_colspan(c) for c in r_cells)
-                if effective_cols == len(r_cells) == max_cols:
-                    header_row = r
-                    break
-            if header_row is None and th_rows:
-                header_row = th_rows[0]
-            if header_row is None:
-                # rows[0] may be an all-empty spacer row that classification
-                # already ignores when building table_data (see the
-                # any(cell_texts) filter above) — promote the first row
-                # that actually has cell text, not just the first row.
-                nonempty_rows = [
-                    row
-                    for row in rows
-                    if any(
-                        c.get_text(strip=True)
-                        for c in row.find_all(["th", "td"])
-                        if c.find_parent("table") is table
-                    )
-                ]
-                # Prefer the first nonempty row whose effective column count
-                # (cells counting colspan) matches the table's max_cols — a
-                # colspan title row (e.g. a single <td colspan="2">) has
-                # fewer *elements* than the data rows despite spanning the
-                # same width, and promoting it would make html2text
-                # synthesize a one-column separator against multi-column
-                # data rows. Fall back to the first nonempty row if no row
-                # matches.
-                first_data_row = None
-                for row in nonempty_rows:
-                    row_cells = [
-                        c
-                        for c in row.find_all(["th", "td"])
-                        if c.find_parent("table") is table
-                    ]
-                    effective_cols = sum(_cell_colspan(c) for c in row_cells)
-                    # Require effective == raw cell count too — a single
-                    # cell with colspan="2" in a 2-column table has an
-                    # effective count equal to max_cols by definition (it
-                    # spans the full width) but is still one <th> element,
-                    # so promoting it gives html2text a one-column header
-                    # against multi-column data. Only a row with one cell
-                    # per column (no spanning) is a valid header candidate.
-                    if effective_cols == len(row_cells) == max_cols:
-                        first_data_row = row
+            promoted_candidate = None
+            has_any_th = False
+            active_spans: list[list[int]] = []  # [remaining_rows, colspan]
+            for row in rows:
+                carried = sum(cs for _, cs in active_spans)
+                r_cells = _own_cells(row)
+                has_any_th = has_any_th or any(c.name == "th" for c in r_cells)
+                clean = all(
+                    _cell_colspan(c) == 1 and _cell_rowspan(c) == 1
+                    for c in r_cells
+                )
+                nonempty = any(c.get_text(strip=True) for c in r_cells)
+                if carried == 0 and clean and nonempty and len(r_cells) == max_cols:
+                    if any(c.name == "th" for c in r_cells):
+                        header_row = row
                         break
-                if first_data_row is None and nonempty_rows:
-                    first_data_row = nonempty_rows[0]
-                if first_data_row is not None:
-                    for cell in _own_cells(first_data_row):
-                        cell.name = "th"
-                    header_row = first_data_row
+                    if promoted_candidate is None:
+                        promoted_candidate = row
+                for span in active_spans:
+                    span[0] -= 1
+                active_spans = [s for s in active_spans if s[0] > 0]
+                for c in r_cells:
+                    if _cell_rowspan(c) > 1:
+                        active_spans.append([_cell_rowspan(c) - 1, _cell_colspan(c)])
+            if header_row is None and promoted_candidate is not None and not has_any_th:
+                # Promotion is only right when the table has no real header
+                # anywhere — if <th> labels exist but none qualifies (e.g.
+                # a rowspan/colspan header grid), promoting a data row
+                # would misrepresent it as the header; degrade instead.
+                for cell in _own_cells(promoted_candidate):
+                    cell.name = "th"
+                header_row = promoted_candidate
             if header_row is not None:
                 # html2text only emits the two-sided "---|---" separator
                 # when the <th> row is the table's FIRST row; a title or
@@ -445,7 +432,9 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                         c.unwrap()
                     row.name = "div"
                     table.insert_before(row.extract())
-            continue
+                continue
+            # No clean header exists (e.g. a rowspan/colspan header grid)
+            # — degrade to the compact pipe conversion below.
 
         # Build pipe-delimited output
         lines = []
