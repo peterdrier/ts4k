@@ -106,7 +106,8 @@ def collapse_threads(messages: list[dict]) -> list[dict]:
                     row["subject"] = msg["subject"]
             if date > row["date"]:
                 row["date"] = date
-                row["snippet"] = msg.get("snippet", "")
+                # WhatsApp rows carry content in "body", not "snippet"
+                row["snippet"] = msg.get("snippet") or msg.get("body", "")
 
     return [rows[tid] for tid in order]
 

@@ -453,6 +453,25 @@ class TestCollapseThreads:
         assert rows[0]["id"] == rows[0]["thread_id"] == "w:123456@g.us"
         assert rows[0]["message_count"] == 2
 
+    def test_whatsapp_snippet_falls_back_to_body(self):
+        """WhatsApp rows carry content in body, not snippet — the latest
+        message's text must still surface on the collapsed row."""
+        wa_messages = [
+            {
+                "id": "w:msg2", "source": "w", "chat_jid": "123456@g.us",
+                "from": "alice", "date": "2026-02-19T10:00:00Z",
+                "body": "See you then.",
+            },
+            {
+                "id": "w:msg1", "source": "w", "chat_jid": "123456@g.us",
+                "from": "bob", "date": "2026-02-18T09:00:00Z",
+                "body": "Kickoff.",
+            },
+        ]
+        rows = collapse_threads(wa_messages)
+        assert len(rows) == 1
+        assert rows[0]["snippet"] == "See you then."
+
     def test_whatsapp_thread_ref_resolves_via_read_thread(self):
         """The derived row id, once stripped of its source prefix, is a chat
         JID — exactly what WhatsAppAdapter.read_thread treats as a chat
