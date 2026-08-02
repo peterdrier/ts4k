@@ -164,6 +164,12 @@ class TestSignatureRemoval:
         assert "Let me know your thoughts." in result
         assert "Bob Jones" not in result
 
+    def test_underscore_delimiter(self):
+        text = "Let me know your thoughts.\n\n___\nBob Jones\nSenior Developer"
+        result = normalize(text)
+        assert "Let me know your thoughts." in result
+        assert "Bob Jones" not in result
+
     def test_sent_from_iphone(self):
         text = "Sure, sounds good.\n\nSent from my iPhone"
         result = normalize(text)
@@ -711,6 +717,25 @@ class TestReadableMode:
         assert alice_line != bob_line
         assert "Bob" not in alice_line
 
+    def test_readable_td_only_table_is_markdown(self):
+        """A genuine data table using only <td> cells (no <th>) still renders as markdown."""
+        html = """
+        <table>
+            <tr><td>Name</td><td>Amount</td></tr>
+            <tr><td>Alice</td><td>$500</td></tr>
+            <tr><td>Bob</td><td>$750</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        # A markdown header-separator row (e.g. "---|---") must be present.
+        assert "---" in result
+        # Rows must be on separate lines, not pipe-collapsed onto one line.
+        lines = [line for line in result.split("\n") if line.strip()]
+        alice_line = next(line for line in lines if "Alice" in line)
+        bob_line = next(line for line in lines if "Bob" in line)
+        assert alice_line != bob_line
+        assert "Bob" not in alice_line
+
     def test_readable_still_strips_tracking_pixel(self):
         html = """
         <p>Content here.</p>
@@ -733,6 +758,13 @@ class TestReadableMode:
         assert "Please review the attached." in result
         assert "Alice" not in result
         assert "Thanks" not in result
+
+    def test_readable_strips_signature_after_underscore_delimiter(self):
+        """Regression: emphasis-stripping "___" to "" must not defeat the raw match."""
+        text = "Please review the attached.\n\n___\nAlice Smith\nVP Engineering"
+        result = normalize(text, mode="readable")
+        assert "Please review the attached." in result
+        assert "VP Engineering" not in result
 
     def test_readable_still_strips_reply_chain(self):
         text = (

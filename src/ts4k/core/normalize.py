@@ -313,7 +313,23 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             continue
 
         if mode == "readable":
-            # Genuine data table — leave for html2text's markdown renderer
+            # Genuine data table — leave for html2text's markdown renderer.
+            # html2text only emits the markdown header-separator row when
+            # it sees <th> cells, so an all-<td> data table would otherwise
+            # render as plain pipe-y text. Promote the first row's <td>
+            # cells to <th> so html2text treats it as a proper table.
+            has_th = any(
+                cell.name == "th"
+                for row in rows
+                for cell in row.find_all(["th", "td"])
+                if cell.find_parent("table") is table
+            )
+            if not has_th:
+                first_row_cells = [
+                    c for c in rows[0].find_all(["th", "td"]) if c.find_parent("table") is table
+                ]
+                for cell in first_row_cells:
+                    cell.name = "th"
             continue
 
         # Build pipe-delimited output
@@ -490,11 +506,17 @@ def _strip_signatures(text: str) -> str:
         line = lines[i]
         stripped = line.strip()
 
-        # Check explicit signature triggers. Strip markdown emphasis
-        # wrappers first — readable mode renders "Thanks," as "**Thanks,**",
-        # which otherwise wouldn't match the anchored trigger patterns.
+        # Check explicit signature triggers against the raw line first.
+        # Only fall back to stripping markdown emphasis wrappers — readable
+        # mode renders "Thanks," as "**Thanks,**", which otherwise wouldn't
+        # match the anchored trigger patterns — if the raw line doesn't
+        # already match. Stripping a plain "___" delimiter line down to
+        # nothing must not be treated as a match.
+        if _SIGNATURE_TRIGGER_PATTERN.match(stripped):
+            sig_start = i
+            break
         emphasis_stripped = re.sub(r"^[*_]+|[*_]+$", "", stripped)
-        if _SIGNATURE_TRIGGER_PATTERN.match(emphasis_stripped):
+        if emphasis_stripped and _SIGNATURE_TRIGGER_PATTERN.match(emphasis_stripped):
             sig_start = i
             break
 
