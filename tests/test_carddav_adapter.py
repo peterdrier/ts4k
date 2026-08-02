@@ -528,11 +528,14 @@ class TestParseVcards:
     def test_duplicate_values_are_deduplicated(self):
         card = (
             "BEGIN:VCARD\nFN:Dup\nTEL:+15551234567\nTEL:+15551234567\n"
-            "EMAIL:d@x.com\nEMAIL:D@X.com\nEND:VCARD\n"
+            "EMAIL:d@x.com\nEMAIL:d@X.com\nEMAIL:D@X.com\nEND:VCARD\n"
         )
         (record,) = parse_vcards(card)
         assert record["phones"] == ["+15551234567"]
-        assert record["emails"] == ["d@x.com"]
+        # Exact duplicates collapse (d@x.com twice after domain lowering);
+        # a distinct local-part casing is kept — identifier lookup is
+        # exact, and cached headers may use either spelling
+        assert record["emails"] == ["d@x.com", "D@x.com"]
 
     def test_crlf_line_endings(self):
         records = parse_vcards(SIMPLE_VCARD.replace("\n", "\r\n"))
@@ -676,3 +679,19 @@ class TestIcloudUrlPorts:
         from ts4k.auth.caldav import is_icloud_carddav_url
 
         assert not is_icloud_carddav_url("https://contacts.icloud.com:8443")
+
+
+class TestCredentialKeyPaths:
+    def test_same_origin_different_paths_get_distinct_keys(self):
+        """Two services under different paths on one origin (e.g. separate
+        Nextcloud instances) must not share a credential file."""
+        a = carddav_credential_key("me@x.com", "https://cloud.example.com/nc1/dav")
+        b = carddav_credential_key("me@x.com", "https://cloud.example.com/nc2/dav")
+        assert a != b
+        assert "/" not in a and ":" not in a.split("#", 1)[1]
+
+    def test_root_path_key_is_unchanged(self):
+        assert (
+            carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
+            == "me@fastmail.com#carddav#carddav.fastmail.com"
+        )

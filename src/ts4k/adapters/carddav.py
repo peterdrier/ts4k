@@ -215,7 +215,10 @@ def parse_vcards(text: str) -> list[dict]:
             # headers are normalized, breaking exact-equality identifier
             # matching against a local part that legitimately carries case.
             email = _normalize_address(_unescape(value).strip())
-            if email and email.lower() not in {e.lower() for e in emails}:
+            # Exact-string dedup: local-part case is preserved by design
+            # (identifier lookup is exact), so case variants are distinct
+            # identifiers worth keeping — cached headers may use either
+            if email and email not in emails:
                 emails.append(email)
 
     return records
@@ -240,13 +243,21 @@ def carddav_credential_key(email: str, server_url: str) -> str:
     The key is used as a directory name by ``credentials_path()``, so it
     must stay filesystem-safe — ``:`` is illegal in a Windows path, which
     rules out both the ``#carddav:`` separator and a netloc carrying a
-    non-standard port (``host:port``). ``#`` is used throughout instead,
-    deterministically: ``<email>#carddav#<netloc, ':' replaced with '#'>``.
+    non-standard port (``host:port``), and ``/`` from the endpoint path.
+    ``#`` is used throughout instead, deterministically:
+    ``<email>#carddav#<netloc>[#<path segments>]``. The path is included
+    so two services under different paths on one origin (e.g. separate
+    Nextcloud instances) don't share a credential file.
     """
     if is_icloud_carddav_url(server_url):
         return email
-    netloc = urlsplit(server_url).netloc.replace(":", "#")
-    return f"{email}#carddav#{netloc}"
+    parts = urlsplit(server_url)
+    netloc = parts.netloc.replace(":", "#")
+    path = parts.path.strip("/").replace(":", "#").replace("/", "#")
+    key = f"{email}#carddav#{netloc}"
+    if path:
+        key = f"{key}#{path}"
+    return key
 
 
 @dataclass
