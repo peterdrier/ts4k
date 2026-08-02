@@ -1671,8 +1671,38 @@ def _next_month(ym: str) -> str:
     return f"{year}-{month:02d}"
 
 
-def _resolve_sender(from_field: str) -> str:
-    """Collapse a from-field to a contact alias if linked, otherwise raw."""
+def _sibling_prefixes(sources_cfg: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """Map each configured source prefix to every prefix sharing its provider.
+
+    Built once per overview/list call (not per message) so a contact
+    imported under one configured source of a provider (e.g. a custom
+    prefix like "gw" for Gmail) still resolves for messages arriving
+    under a sibling source of the same provider type.
+    """
+    by_provider: dict[str, list[str]] = {}
+    for prefix, cfg in sources_cfg.items():
+        by_provider.setdefault(cfg.get("provider", "").lower(), []).append(prefix)
+    return {
+        prefix: by_provider.get(cfg.get("provider", "").lower(), [prefix])
+        for prefix, cfg in sources_cfg.items()
+    }
+
+
+def _resolve_sender(
+    from_field: str,
+    source: str = "",
+    sibling_prefixes: dict[str, list[str]] | None = None,
+) -> str:
+    """Collapse a from-field to a contact alias if linked, otherwise raw.
+
+    *source* is the message's own configured source prefix (e.g. "gw" for
+    a custom-prefixed Gmail source) — tried first, since imported
+    identifiers are stored under whatever prefix the source actually uses,
+    not necessarily the canonical letter. *sibling_prefixes* (see
+    ``_sibling_prefixes``) extends the search to every other configured
+    source of the same provider type before falling back to the static
+    canonical letters, which still cover an unconfigured/standalone lookup.
+    """
     # Direct match (e.g. from_field is already "g:alice@x.com")
     alias = contacts.resolve(from_field)
     if alias:
@@ -1683,12 +1713,31 @@ def _resolve_sender(from_field: str) -> str:
         alias = contacts.resolve(raw)
         if alias:
             return alias
-    else:
-        # Try adding common prefixes (from field is "alice@x.com", contacts store "g:alice@x.com")
-        for prefix in _SOURCE_LABELS:
-            alias = contacts.resolve(f"{prefix}:{from_field}")
+        return from_field
+
+    tried: set[str] = set()
+
+    def try_prefix(prefix: str) -> str | None:
+        if prefix in tried:
+            return None
+        tried.add(prefix)
+        return contacts.resolve(f"{prefix}:{from_field}")
+
+    if source:
+        alias = try_prefix(source)
+        if alias:
+            return alias
+        for prefix in (sibling_prefixes or {}).get(source, []):
+            alias = try_prefix(prefix)
             if alias:
                 return alias
+
+    # Fall back to the canonical letters, for callers that don't have
+    # (or don't need) a sources config — e.g. direct tests.
+    for prefix in _SOURCE_LABELS:
+        alias = try_prefix(prefix)
+        if alias:
+            return alias
     return from_field
 
 
@@ -1728,13 +1777,15 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
         src = h.get("source", "?")
         by_source.setdefault(src, []).append(h)
 
+    sibling_prefixes = _sibling_prefixes(_ensure_sources())
+
     sources_list = []
     for src in sorted(by_source.keys()):
         msgs = by_source[src]
         dates = [m.get("date", "") for m in msgs if m.get("date")]
         sender_counts: dict[str, int] = {}
         for m in msgs:
-            sender = _resolve_sender(m.get("from", ""))
+            sender = _resolve_sender(m.get("from", ""), m.get("source", ""), sibling_prefixes)
             sender_counts[sender] = sender_counts.get(sender, 0) + 1
         top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
         sources_list.append({
@@ -1761,10 +1812,12 @@ def _build_source_view(
     filtered = [h for h in headers if h.get("source") == source]
     dates = [m.get("date", "") for m in filtered if m.get("date")]
 
+    sibling_prefixes = _sibling_prefixes(_ensure_sources())
+
     # Top senders
     sender_counts: dict[str, int] = {}
     for m in filtered:
-        sender = _resolve_sender(m.get("from", ""))
+        sender = _resolve_sender(m.get("from", ""), source, sibling_prefixes)
         sender_counts[sender] = sender_counts.get(sender, 0) + 1
     top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
 
@@ -2192,9 +2245,18 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         else:
             key = email
         if load_credentials(key, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
-            alias = "apple-contacts" if provider == "carddav" else "apple"
+            from ts4k.auth.caldav import is_icloud_carddav_url
+            server_url = cfg.get("server_url", ICLOUD_CARDDAV_URL)
+            if provider == "carddav" and not is_icloud_carddav_url(server_url):
+                # Suggesting the apple-contacts preset here would store an
+                # iCloud credential under a different key and clobber the
+                # generic source's endpoint
+                repair = f"ts4k src add <prefix> carddav email={email} server_url={server_url}"
+            else:
+                alias = "apple-contacts" if provider == "carddav" else "apple"
+                repair = f"ts4k src add <prefix> {alias} email={email}"
             return TokenHealth(status="na", expiry=None, scopes=[],
-                               detail=f"no credentials — run: ts4k src add <prefix> {alias} email={email}")
+                               detail=f"no credentials — run: {repair}")
         return TokenHealth(status="ok", expiry=None, scopes=[], detail="app-specific password")
 
     return TokenHealth(status="na", expiry=None, scopes=[], detail=f"unknown provider: {provider}")

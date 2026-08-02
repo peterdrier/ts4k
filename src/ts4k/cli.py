@@ -501,7 +501,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             kwargs.setdefault("timezone", tz_default)
 
         # Apple/iCloud contacts preset → generic carddav provider
-        from ts4k.auth.caldav import ICLOUD_CARDDAV_URL
+        from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, is_icloud_carddav_url
         if provider in ("apple-contacts", "icloud-contacts"):
             kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
             provider = "carddav"
@@ -515,7 +515,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
 
             from ts4k.adapters.carddav import carddav_credential_key
-            is_icloud_contacts = kwargs["server_url"] == ICLOUD_CARDDAV_URL
+            is_icloud_contacts = is_icloud_carddav_url(kwargs["server_url"])
             stored = _ensure_apple_password(
                 email,
                 is_icloud=is_icloud_contacts,
@@ -1220,10 +1220,14 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
             elif provider == "whatsapp":
                 print(f"  {prefix}: whatsapp — session-based, no auth needed")
             elif provider in ("caldav", "carddav"):
-                from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, credentials_path
+                from ts4k.auth.caldav import (
+                    ICLOUD_CARDDAV_URL,
+                    credentials_path,
+                    is_icloud_carddav_url,
+                )
                 email = cfg.get("email", "<your-apple-id>")
                 server_url = cfg.get("server_url", ICLOUD_CARDDAV_URL)
-                is_generic_carddav = provider == "carddav" and server_url != ICLOUD_CARDDAV_URL
+                is_generic_carddav = provider == "carddav" and not is_icloud_carddav_url(server_url)
                 print(f"  {prefix}: {provider} — no OAuth; uses an app-specific password")
                 print(f"        Generate one at https://account.apple.com "
                       f"(Sign-In and Security → App-Specific Passwords),")

@@ -25,7 +25,13 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, credentials_path, load_credentials
+from ts4k.auth.caldav import (
+    ICLOUD_CARDDAV_URL,
+    credentials_path,
+    is_icloud_carddav_url,
+    load_credentials,
+)
+from ts4k.core.normalize import _normalize_address
 
 logger = logging.getLogger(__name__)
 
@@ -204,8 +210,12 @@ def parse_vcards(text: str) -> list[dict]:
             if phone not in phones:
                 phones.append(phone)
         elif prop == "EMAIL":
-            email = _unescape(value).strip().lower()
-            if email and email not in emails:
+            # Lowercase only the domain, matching core.normalize's address
+            # handling — fully lowercasing would diverge from how message
+            # headers are normalized, breaking exact-equality identifier
+            # matching against a local part that legitimately carries case.
+            email = _normalize_address(_unescape(value).strip())
+            if email and email.lower() not in {e.lower() for e in emails}:
                 emails.append(email)
 
     return records
@@ -233,7 +243,7 @@ def carddav_credential_key(email: str, server_url: str) -> str:
     non-standard port (``host:port``). ``#`` is used throughout instead,
     deterministically: ``<email>#carddav#<netloc, ':' replaced with '#'>``.
     """
-    if server_url == ICLOUD_CARDDAV_URL:
+    if is_icloud_carddav_url(server_url):
         return email
     netloc = urlsplit(server_url).netloc.replace(":", "#")
     return f"{email}#carddav#{netloc}"
@@ -269,10 +279,22 @@ class CarddavAdapter:
         self._credential_key = carddav_credential_key(email, self._config.server_url)
         creds = load_credentials(self._credential_key, self._config.config_dir)
         if creds is None:
+            if is_icloud_carddav_url(self._config.server_url):
+                raise RuntimeError(
+                    f"No CardDAV credentials for {email} — an app-specific password is "
+                    f"required (generate at https://account.apple.com, then run: "
+                    f"ts4k src add <prefix> apple-contacts email={email})"
+                )
+            # A generic server's credential is scoped by email *and* host
+            # (see carddav_credential_key) — pointing the user at the
+            # apple-contacts preset would store an iCloud credential under
+            # the wrong key and never satisfy this source.
             raise RuntimeError(
-                f"No CardDAV credentials for {email} — an app-specific password is "
-                f"required (generate at https://account.apple.com, then run: "
-                f"ts4k src add <prefix> apple-contacts email={email})"
+                f"No CardDAV credentials for {email} at {self._config.server_url} — "
+                f"a password is required, then run: "
+                f"ts4k src add <prefix> carddav email={email} "
+                f"server_url={self._config.server_url} "
+                f"(stored at {credentials_path(self._credential_key, self._config.config_dir)})"
             )
         # The stored server_url is the CalDAV endpoint; CardDAV lives on its
         # own host, so the adapter config wins.
@@ -323,7 +345,7 @@ class CarddavAdapter:
             )
         current_host = urlsplit(base_url).netloc.lower()
         new_host = urlsplit(target_url).netloc.lower()
-        is_icloud_account = self._config.server_url == ICLOUD_CARDDAV_URL
+        is_icloud_account = is_icloud_carddav_url(self._config.server_url)
         same_host = new_host == current_host
         trusted_icloud_shard = is_icloud_account and new_host.endswith(".icloud.com")
         if not same_host and not trusted_icloud_shard:

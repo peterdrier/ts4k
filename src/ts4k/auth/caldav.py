@@ -14,9 +14,26 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ICLOUD_CALDAV_URL = "https://caldav.icloud.com"
 ICLOUD_CARDDAV_URL = "https://contacts.icloud.com"
+
+
+def is_icloud_carddav_url(url: str) -> bool:
+    """True when *url* points at the iCloud CardDAV endpoint.
+
+    Compares scheme + lowercased host only, ignoring path — a shard
+    redirect's trailing slash or a differently-cased host must still
+    count as iCloud, or credential reuse and shard trust silently break
+    for anything that isn't byte-identical to ``ICLOUD_CARDDAV_URL``.
+    """
+    canonical = urlsplit(ICLOUD_CARDDAV_URL)
+    candidate = urlsplit(url)
+    return (
+        candidate.scheme.lower() == canonical.scheme.lower()
+        and candidate.netloc.lower() == canonical.netloc.lower()
+    )
 
 
 def _default_config_dir() -> Path:

@@ -190,6 +190,21 @@ class TestPlanContactImport:
             ]),
         ]
 
+    def test_identifier_differing_only_by_local_part_case_is_a_conflict_not_a_silent_merge(
+        self, ts4k_config
+    ):
+        """core.normalize lowercases only the email domain, so a stored
+        identifier and a freshly-imported one that differ solely in
+        local-part case are not treated as equal. That must surface as a
+        conflict — the existing link left untouched — rather than being
+        silently accepted as if the import were already up to date."""
+        existing = {"sarah": ["g:sarah@example.com"]}
+        plan = commands._plan_contact_import(
+            [_record("Sarah", emails=["Sarah@example.com"])], existing
+        )
+        assert plan["links"] == []
+        assert plan["conflicts"] == ["sarah|alias already exists"]
+
     def test_no_matching_source_falls_back_to_canonical_letter(self, ts4k_config):
         """Without a configured gmail/whatsapp source, import must still
         work standalone using the canonical g:/w: letters."""

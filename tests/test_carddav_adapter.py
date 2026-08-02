@@ -47,6 +47,26 @@ class TestConnect:
         with pytest.raises(RuntimeError, match="app-specific password"):
             await a.connect()
 
+    async def test_generic_server_missing_credential_error_names_server_url_and_scoped_path(
+        self, tmp_path: Path
+    ):
+        """A generic (non-iCloud) source with no stored credential must be
+        told to add itself as 'carddav' with its own server_url — steering
+        it at the apple-contacts preset would store an iCloud credential
+        under a different key and never satisfy this source."""
+        config = CarddavAdapterConfig(
+            email="nobody@fastmail.com", server_url="https://carddav.fastmail.com/",
+            config_dir=tmp_path,
+        )
+        a = CarddavAdapter(config)
+        with pytest.raises(RuntimeError) as excinfo:
+            await a.connect()
+        message = str(excinfo.value)
+        assert "apple-contacts" not in message
+        assert "server_url=https://carddav.fastmail.com/" in message
+        expected_key = carddav_credential_key("nobody@fastmail.com", config.server_url)
+        assert str(credentials_path(expected_key, tmp_path)) in message
+
     async def test_reuses_the_caldav_credential_for_the_same_apple_id(
         self, carddav_config: CarddavAdapterConfig
     ):
@@ -147,6 +167,16 @@ class TestConnect:
 class TestCredentialKey:
     def test_icloud_uses_the_plain_email(self):
         assert carddav_credential_key("a@icloud.com", ICLOUD_CARDDAV_URL) == "a@icloud.com"
+
+    def test_icloud_url_with_trailing_slash_is_still_icloud(self):
+        """A shard/redirect response can hand back the endpoint with a
+        trailing slash — it must still be recognized as iCloud, or
+        credential reuse breaks for every account that hits this path."""
+        assert carddav_credential_key("a@icloud.com", ICLOUD_CARDDAV_URL + "/") == "a@icloud.com"
+
+    def test_icloud_url_with_uppercase_host_is_still_icloud(self):
+        key = carddav_credential_key("a@icloud.com", "https://Contacts.ICloud.com")
+        assert key == "a@icloud.com"
 
     def test_generic_server_key_is_scoped_by_email_and_host(self):
         key = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
@@ -297,6 +327,22 @@ class TestRedirectHandling:
         # received a second (authenticated) request.
         assert call_count == 1
 
+    def test_icloud_shard_is_trusted_when_configured_url_has_trailing_slash(
+        self, tmp_path: Path
+    ):
+        """A source configured with 'https://contacts.icloud.com/' (trailing
+        slash) must still recognize itself as an iCloud account and trust a
+        *.icloud.com shard redirect — an exact-string compare against the
+        bare constant would misclassify it as GENERIC and reject the shard."""
+        config = CarddavAdapterConfig(
+            email="test@icloud.com", server_url=ICLOUD_CARDDAV_URL + "/",
+            config_dir=tmp_path,
+        )
+        a = CarddavAdapter(config)
+        a._check_trusted_target(
+            ICLOUD_CARDDAV_URL + "/", "https://p01-contacts.icloud.com/1234/principal/"
+        )  # must not raise
+
     async def test_discovery_href_on_an_unrelated_host_is_rejected(self, tmp_path: Path):
         """An absolute cross-origin href inside a discovery response body
         (as opposed to an HTTP redirect) must not get an authenticated
@@ -434,7 +480,9 @@ class TestParseVcards:
         (record,) = parse_vcards(SIMPLE_VCARD)
         assert record["display_name"] == "Sarah Connor"
         assert record["phones"] == ["+1 (555) 123-4567", "+1 555 987 6543"]
-        assert record["emails"] == ["sarah@example.com", "sarah@work.example"]
+        # Only the domain is lowercased — matching core.normalize's address
+        # handling so identifiers line up with message headers.
+        assert record["emails"] == ["Sarah@example.com", "sarah@work.example"]
 
     def test_group_prefixes_and_parameters_are_stripped(self):
         (record,) = parse_vcards(SIMPLE_VCARD)
@@ -584,7 +632,8 @@ class TestListContacts:
     async def test_walks_principal_home_and_addressbook(self, adapter: CarddavAdapter):
         records = await adapter.list_contacts()
         assert [r["display_name"] for r in records] == ["Sarah Connor", "Maria Reyes"]
-        assert records[0]["emails"] == ["sarah@example.com", "sarah@work.example"]
+        # Local-part casing preserved; only the domain is lowered
+        assert records[0]["emails"] == ["Sarah@example.com", "sarah@work.example"]
 
     async def test_only_issues_read_only_methods(self, adapter: CarddavAdapter):
         """Read-only posture: nothing but PROPFIND and REPORT ever goes out."""

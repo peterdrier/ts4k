@@ -14,6 +14,7 @@ from ts4k.commands import (
     _filter_by_contact,
     _parse_period,
     _resolve_sender,
+    _sibling_prefixes,
     overview,
 )
 from ts4k.core.format import format_overview
@@ -119,6 +120,37 @@ class TestResolveSender:
 
     def test_unprefixed_returns_raw(self, seeded_contacts):
         assert _resolve_sender("nobody@example.com") == "nobody@example.com"
+
+    def test_custom_prefix_resolves_via_the_message_own_source(self, ts4k_config):
+        """A contact imported under a custom-prefixed source (e.g. "gw" for
+        a second Gmail account) must resolve for a message whose own
+        `source` is that same prefix — the static g/o/w letters alone
+        never see it."""
+        from ts4k.state import contacts
+
+        contacts.link("alice", "gw:alice@x.com")
+        assert _resolve_sender("alice@x.com", "gw") == "alice"
+
+    def test_canonical_prefixes_still_resolve_without_a_source(self, ts4k_config):
+        """No source/sibling_prefixes given — must still fall back to the
+        canonical letters, e.g. for direct/standalone callers."""
+        from ts4k.state import contacts
+
+        contacts.link("alice", "g:alice@gmail.com")
+        assert _resolve_sender("alice@gmail.com") == "alice"
+
+    def test_sibling_source_of_the_same_provider_resolves(self, ts4k_config):
+        """A message arriving under one configured Gmail source ("g") must
+        still resolve a contact imported under a sibling Gmail source
+        ("gw") of the same provider type."""
+        from ts4k.state import contacts, sources
+
+        sources.add("g", provider="gmail", email="a@gmail.com")
+        sources.add("gw", provider="gmail", email="b@gmail.com")
+        contacts.link("alice", "gw:alice@x.com")
+
+        siblings = _sibling_prefixes(sources.list_all())
+        assert _resolve_sender("alice@x.com", "g", siblings) == "alice"
 
 
 # ---------------------------------------------------------------------------
