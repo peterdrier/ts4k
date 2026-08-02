@@ -318,7 +318,7 @@ def _prompt_password(prompt: str) -> str:
 
 def _ensure_apple_password(
     email: str, *, is_icloud: bool, server_url: str, username: str | None = None,
-    store_server_url: bool = True,
+    store_server_url: bool = True, config_dir: Path | None = None,
 ) -> str | None:
     """Make sure an app-specific password is stored for *email*.
 
@@ -337,7 +337,7 @@ def _ensure_apple_password(
     """
     from ts4k.auth.caldav import ICLOUD_CALDAV_URL, load_credentials, save_credentials
 
-    if load_credentials(email) is not None:
+    if load_credentials(email, config_dir) is not None:
         return "existing"
 
     print("An app-specific password is required "
@@ -365,6 +365,7 @@ def _ensure_apple_password(
         email, username=username or email, app_password=pw,
         server_url=ICLOUD_CALDAV_URL if is_icloud
         else (server_url if store_server_url else ""),
+        config_dir=config_dir,
     )
     print(f"Saved credentials for {email}.")
     return "saved"
@@ -407,12 +408,14 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 print(f"Usage: ts4k src add {prefix} apple email=you@icloud.com")
                 return
             kwargs.setdefault("server_url", ICLOUD_CALDAV_URL)
+            config_dir_path = Path(kwargs["config_dir"]) if kwargs.get("config_dir") else None
 
             stored = _ensure_apple_password(
                 email,
                 is_icloud=kwargs["server_url"] == ICLOUD_CALDAV_URL,
                 server_url=kwargs["server_url"],
                 username=kwargs.get("username"),
+                config_dir=config_dir_path,
             )
             if stored is None:
                 return
@@ -423,12 +426,14 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             if "calendar_id" not in kwargs:
                 print(f"Fetching calendars for {email}...")
                 try:
-                    cals = asyncio.run(commands.cal_list_caldav_calendars(email))
+                    cals = asyncio.run(
+                        commands.cal_list_caldav_calendars(email, config_dir_path)
+                    )
                 except Exception as e:
                     print(f"Error: could not list calendars — {e}")
                     if fresh:
                         from ts4k.auth.caldav import credentials_path
-                        credentials_path(email).unlink(missing_ok=True)
+                        credentials_path(email, config_dir_path).unlink(missing_ok=True)
                         print("Could not connect with that password — discarded the "
                               "saved credentials; run the command again to retry.")
                     return
@@ -490,6 +495,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 server_url=kwargs["server_url"],
                 username=kwargs.get("username"),
                 store_server_url=False,
+                config_dir=Path(kwargs["config_dir"]) if kwargs.get("config_dir") else None,
             )
             if stored is None:
                 return

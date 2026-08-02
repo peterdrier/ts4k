@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from ts4k.adapters.carddav import (
+    _MAX_REDIRECTS,
     CarddavAdapter,
     CarddavAdapterConfig,
     normalize_phone,
@@ -65,6 +67,63 @@ class TestConnect:
         a = CarddavAdapter(carddav_config)
         with pytest.raises(RuntimeError, match="not connected"):
             a._require_client()
+
+
+class TestRedirectHandling:
+    """iCloud redirects the well-known host to a per-account shard on a
+    different origin.  httpx's automatic follow_redirects strips the
+    Authorization header on a cross-origin hop, so `_dav` follows
+    redirects itself, re-issuing a fresh (authenticated) top-level
+    request for each hop — verified here against a real httpx.AsyncClient
+    over a mock transport, since the auth-stripping behavior lives inside
+    httpx itself and a hand-rolled fake client wouldn't exercise it."""
+
+    def _adapter(self, tmp_path: Path, handler) -> CarddavAdapter:
+        config = CarddavAdapterConfig(email="test@icloud.com", config_dir=tmp_path)
+        a = CarddavAdapter(config)
+        a._client = httpx.AsyncClient(
+            auth=("test@icloud.com", "abcd-efgh"),
+            follow_redirects=False,
+            transport=httpx.MockTransport(handler),
+        )
+        return a
+
+    async def test_redirect_to_different_origin_preserves_auth(self, tmp_path: Path):
+        shard_url = "https://p01-contacts.icloud.com/1234/principal/"
+        seen_auth: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_auth.append(request.headers.get("authorization"))
+            if str(request.url) == ICLOUD_CARDDAV_URL:
+                return httpx.Response(301, headers={"Location": shard_url})
+            assert str(request.url) == shard_url
+            return httpx.Response(207, content=PRINCIPAL_XML.encode())
+
+        a = self._adapter(tmp_path, handler)
+        root, base = await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
+
+        assert base == shard_url
+        assert len(seen_auth) == 2
+        # Both hops are authenticated, and with the SAME credentials —
+        # follow_redirects=True would leave seen_auth[1] as None because
+        # the shard is a different origin.
+        assert seen_auth[0] is not None
+        assert seen_auth[1] == seen_auth[0]
+
+    async def test_redirect_loop_errors_after_hop_limit(self, tmp_path: Path):
+        call_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(
+                302, headers={"Location": "https://p01-contacts.icloud.com/loop"}
+            )
+
+        a = self._adapter(tmp_path, handler)
+        with pytest.raises(RuntimeError, match="Too many redirects"):
+            await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
+        assert call_count == _MAX_REDIRECTS
 
 
 class TestNormalizePhone:
@@ -142,6 +201,12 @@ TEL:+34 600 123 456
 END:VCARD
 """
 
+NO_FN_ESCAPED_SEMICOLON_VCARD = """BEGIN:VCARD
+VERSION:3.0
+N:Doe\\;Smith;John;;;
+END:VCARD
+"""
+
 ESCAPED_VCARD = """BEGIN:VCARD
 VERSION:3.0
 FN:Smith\\, Jr.\\; John
@@ -184,6 +249,13 @@ class TestParseVcards:
     def test_falls_back_to_structured_name(self):
         (record,) = parse_vcards(NO_FN_VCARD)
         assert record["display_name"] == "Maria Reyes"
+
+    def test_structured_name_with_escaped_semicolon_is_not_split(self):
+        """An escaped ';' inside a component is part of the value, not a
+        component boundary — splitting on every ';' before unescaping
+        would drop everything after it (see _split_unescaped)."""
+        (record,) = parse_vcards(NO_FN_ESCAPED_SEMICOLON_VCARD)
+        assert record["display_name"] == "John Doe;Smith"
 
     def test_escapes_are_resolved(self):
         (record,) = parse_vcards(ESCAPED_VCARD)

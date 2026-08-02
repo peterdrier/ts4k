@@ -49,6 +49,11 @@ _ADDRESSBOOK_QUERY = """<?xml version="1.0" encoding="utf-8"?>
 <c:addressbook-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav">
 <d:prop><c:address-data/></d:prop><c:filter/></c:addressbook-query>"""
 
+# iCloud redirects the well-known host to a per-account shard on a
+# different origin; bounded to stay well clear of any redirect loop.
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
+
 
 # ---------------------------------------------------------------------------
 # vCard parsing
@@ -98,6 +103,32 @@ def _unfold(text: str) -> list[str]:
     return lines
 
 
+def _split_unescaped(value: str, sep: str = ";") -> list[str]:
+    """Split a vCard structured value on *sep*, skipping backslash-escaped ones.
+
+    ``N:Doe\\;Smith;John;;;`` has an escaped literal ``;`` in the family
+    name component — splitting on every ``;`` before unescaping would treat
+    it as a component boundary instead.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for ch in value:
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\":
+            current.append(ch)
+            escaped = True
+        elif ch == sep:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
 def _unescape(value: str) -> str:
     """Resolve vCard backslash escapes (``\\,`` ``\\;`` ``\\n``)."""
     out: list[str] = []
@@ -113,7 +144,7 @@ def _unescape(value: str) -> str:
 
 def _name_from_n(value: str) -> str:
     """Build a display name from a structured ``N`` value."""
-    parts = [_unescape(p).strip() for p in value.split(";")]
+    parts = [_unescape(p).strip() for p in _split_unescaped(value)]
     family = parts[0] if parts else ""
     given = parts[1] if len(parts) > 1 else ""
     return " ".join(p for p in (given, family) if p)
@@ -207,9 +238,11 @@ class CarddavAdapter:
             )
         # The stored server_url is the CalDAV endpoint; CardDAV lives on its
         # own host, so the adapter config wins.
+        # follow_redirects=False: `_dav` handles redirects itself so the
+        # per-account shard redirect stays authenticated (see its docstring).
         self._client = httpx.AsyncClient(
             auth=(creds["username"], creds["app_password"]),
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=30.0,
         )
 
@@ -242,27 +275,40 @@ class CarddavAdapter:
 
         The final URL is the base for resolving relative hrefs — iCloud
         redirects the well-known host to a per-account shard.
+
+        Redirects are followed by hand, re-issuing the same authenticated
+        request against the new URL, rather than via httpx's
+        ``follow_redirects`` — httpx strips the Authorization header on a
+        cross-origin redirect, and the shard is a different origin.
         """
         client = self._require_client()
-        resp = await client.request(
-            method,
-            url,
-            content=body.encode("utf-8"),
-            headers={
-                "Content-Type": "application/xml; charset=utf-8",
-                "Depth": depth,
-            },
+        content = body.encode("utf-8")
+        headers = {
+            "Content-Type": "application/xml; charset=utf-8",
+            "Depth": depth,
+        }
+        for _ in range(_MAX_REDIRECTS):
+            resp = await client.request(method, url, content=content, headers=headers)
+            if resp.status_code in _REDIRECT_STATUS_CODES:
+                location = resp.headers.get("Location")
+                if not location:
+                    break
+                url = urljoin(str(resp.url), location)
+                continue
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"CardDAV auth failed for {self._config.email} — the app-specific "
+                    f"password may be revoked (they expire when the Apple ID password "
+                    f"changes). Generate a new one at https://account.apple.com, delete "
+                    f"~/.config/ts4k/caldav/{self._config.email}/credentials.json, and "
+                    f"re-run ts4k src add."
+                )
+            resp.raise_for_status()
+            return ET.fromstring(resp.content), str(resp.url)
+        raise RuntimeError(
+            f"Too many redirects ({_MAX_REDIRECTS}) fetching {url} for "
+            f"{self._config.email} — the CardDAV server may be misconfigured"
         )
-        if resp.status_code in (401, 403):
-            raise RuntimeError(
-                f"CardDAV auth failed for {self._config.email} — the app-specific "
-                f"password may be revoked (they expire when the Apple ID password "
-                f"changes). Generate a new one at https://account.apple.com, delete "
-                f"~/.config/ts4k/caldav/{self._config.email}/credentials.json, and "
-                f"re-run ts4k src add."
-            )
-        resp.raise_for_status()
-        return ET.fromstring(resp.content), str(resp.url)
 
     async def _principal_url(self) -> str:
         root, base = await self._dav(

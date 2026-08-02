@@ -88,6 +88,24 @@ class TestSrcAddAppleContacts:
         creds = load_credentials("me@fastmail.com")
         assert creds["server_url"] != "https://carddav.fastmail.com/"
 
+    def test_config_dir_credentials_land_where_the_adapter_reads_them(
+        self, ts4k_config, monkeypatch, tmp_path
+    ):
+        """A source added with config_dir=<custom> must save/check its
+        credentials there — sync passes that same config_dir to
+        CarddavAdapter, which would otherwise find nothing."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": PASSWORD)
+        custom_dir = tmp_path / "custom"
+        cli._cmd_sources(_args("apple-contacts", [
+            "email=a@icloud.com", f"config_dir={custom_dir}",
+        ]))
+
+        assert load_credentials("a@icloud.com") is None
+        creds = load_credentials("a@icloud.com", custom_dir)
+        assert creds is not None and creds["app_password"] == PASSWORD
+
+        assert sources.list_all()["ic"]["config_dir"] == str(custom_dir)
+
     def test_generic_carddav_setup_does_not_overwrite_an_existing_credential(
         self, ts4k_config, monkeypatch
     ):
