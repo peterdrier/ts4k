@@ -48,7 +48,7 @@ class TestTokenHealth:
 
 
 class TestPlanContactImport:
-    def test_emails_and_phones_become_identifiers(self):
+    def test_emails_and_phones_become_identifiers(self, ts4k_config):
         plan = commands._plan_contact_import(
             [_record("Sarah Connor", ["+1 (555) 123-4567"], ["sarah@example.com"])],
             {},
@@ -59,30 +59,30 @@ class TestPlanContactImport:
         ]
         assert plan["conflicts"] == []
 
-    def test_alias_is_lowercased_and_whitespace_collapsed(self):
+    def test_alias_is_lowercased_and_whitespace_collapsed(self, ts4k_config):
         plan = commands._plan_contact_import(
             [_record("  Sarah   CONNOR ", emails=["s@x.com"])], {}
         )
         assert plan["links"][0][0] == "sarah connor"
 
-    def test_record_without_a_name_is_skipped(self):
+    def test_record_without_a_name_is_skipped(self, ts4k_config):
         plan = commands._plan_contact_import([_record("", emails=["x@y.com"])], {})
         assert plan["links"] == []
         assert plan["skipped"]["no name"] == 1
 
-    def test_record_without_identifiers_is_skipped(self):
+    def test_record_without_identifiers_is_skipped(self, ts4k_config):
         plan = commands._plan_contact_import([_record("Acme Storage")], {})
         assert plan["links"] == []
         assert plan["skipped"]["no phone or email"] == 1
 
-    def test_local_phone_number_is_counted_as_skipped(self):
+    def test_local_phone_number_is_counted_as_skipped(self, ts4k_config):
         plan = commands._plan_contact_import(
             [_record("Bob", ["555-1234567"], ["bob@x.com"])], {}
         )
         assert plan["links"] == [("bob", ["g:bob@x.com"])]
         assert plan["skipped"]["phone number without a country code (+ or 00)"] == 1
 
-    def test_existing_alias_is_a_conflict_not_an_overwrite(self):
+    def test_existing_alias_is_a_conflict_not_an_overwrite(self, ts4k_config):
         existing = {"sarah": ["g:sarah@gmail.com"]}
         plan = commands._plan_contact_import(
             [_record("Sarah", emails=["sarah@work.example"])], existing
@@ -90,7 +90,7 @@ class TestPlanContactImport:
         assert plan["links"] == []
         assert plan["conflicts"] == ["sarah|alias already exists"]
 
-    def test_identifier_owned_by_another_alias_is_a_conflict(self):
+    def test_identifier_owned_by_another_alias_is_a_conflict(self, ts4k_config):
         existing = {"sarah": ["g:sarah@gmail.com"]}
         plan = commands._plan_contact_import(
             [_record("Sarah Connor", emails=["sarah@gmail.com"])], existing
@@ -100,7 +100,7 @@ class TestPlanContactImport:
             "sarah connor|g:sarah@gmail.com already linked to 'sarah'"
         ]
 
-    def test_already_linked_record_is_skipped_quietly(self):
+    def test_already_linked_record_is_skipped_quietly(self, ts4k_config):
         existing = {"sarah": ["g:sarah@gmail.com", "w:15551234567@s.whatsapp.net"]}
         plan = commands._plan_contact_import(
             [_record("Sarah", ["+15551234567"], ["sarah@gmail.com"])], existing
@@ -109,7 +109,7 @@ class TestPlanContactImport:
         assert plan["conflicts"] == []
         assert plan["skipped"]["already up to date"] == 1
 
-    def test_two_records_sharing_an_identifier_conflict(self):
+    def test_two_records_sharing_an_identifier_conflict(self, ts4k_config):
         plan = commands._plan_contact_import(
             [
                 _record("Ann Smith", emails=["family@example.com"]),
@@ -120,6 +120,49 @@ class TestPlanContactImport:
         assert plan["links"] == [("ann smith", ["g:family@example.com"])]
         assert plan["conflicts"] == [
             "bob smith|g:family@example.com already linked to 'ann smith'"
+        ]
+
+    def test_two_records_with_the_same_alias_do_not_silently_merge(self, ts4k_config):
+        """Two distinct vCards that normalize to the same display name must
+        not both become links for that alias — the second would silently
+        link a stranger's identifiers into the first person's alias."""
+        plan = commands._plan_contact_import(
+            [
+                _record("John Smith", emails=["john.a@example.com"]),
+                _record("John Smith", emails=["john.b@example.com"]),
+            ],
+            {},
+        )
+        assert plan["links"] == [("john smith", ["g:john.a@example.com"])]
+        assert plan["conflicts"] == ["john smith|duplicate in import"]
+
+    def test_configured_prefixes_are_used_for_identifiers(self, ts4k_config):
+        """Identifiers must land under the user's configured source
+        prefixes, not the hardcoded canonical letters, or downstream
+        filtering by source prefix finds nothing."""
+        sources.add("gw", provider="gmail", email="a@gmail.com")
+        sources.add("oy", provider="o365", email="a@work.example")
+        sources.add("wa", provider="whatsapp", mcp_cwd="/tmp")
+        plan = commands._plan_contact_import(
+            [_record("Sarah Connor", ["+15551234567"], ["sarah@example.com"])], {}
+        )
+        assert plan["links"] == [
+            ("sarah connor", [
+                "gw:sarah@example.com",
+                "oy:sarah@example.com",
+                "wa:15551234567@s.whatsapp.net",
+            ]),
+        ]
+
+    def test_no_matching_source_falls_back_to_canonical_letter(self, ts4k_config):
+        """Without a configured gmail/whatsapp source, import must still
+        work standalone using the canonical g:/w: letters."""
+        plan = commands._plan_contact_import(
+            [_record("Sarah Connor", ["+15551234567"], ["sarah@example.com"])], {}
+        )
+        assert plan["links"] == [
+            ("sarah connor",
+             ["g:sarah@example.com", "w:15551234567@s.whatsapp.net"]),
         ]
 
 

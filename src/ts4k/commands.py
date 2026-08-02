@@ -1075,9 +1075,23 @@ def _plan_contact_import(
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
 
+    # Emit identifiers under every configured source of the matching
+    # provider, so filtering by source prefix (e.g. _contact_to_query)
+    # finds them regardless of what the user named their sources. Fall
+    # back to the canonical letter if no such source is configured, so
+    # import still works standalone.
+    email_prefixes = list(sources.by_provider("gmail")) + list(sources.by_provider("o365"))
+    if not email_prefixes:
+        email_prefixes = ["g"]
+    phone_prefixes = list(sources.by_provider("whatsapp"))
+    if not phone_prefixes:
+        phone_prefixes = ["w"]
+
     # identifier -> alias that already owns it (stored links first, then
     # links proposed earlier in this run)
     owner = {ident: alias for alias, idents in existing.items() for ident in idents}
+    # aliases already proposed earlier in this run (not yet in `existing`)
+    proposed: set[str] = set()
 
     for record in records:
         alias = " ".join(record.get("display_name", "").lower().split())
@@ -1085,13 +1099,24 @@ def _plan_contact_import(
             skip("no name")
             continue
 
-        idents = [f"g:{email}" for email in record.get("emails", [])]
+        idents: list[str] = []
+        seen: set[str] = set()
+
+        def add_ident(ident: str) -> None:
+            if ident not in seen:
+                seen.add(ident)
+                idents.append(ident)
+
+        for email in record.get("emails", []):
+            for p in email_prefixes:
+                add_ident(f"{p}:{email}")
         for phone in record.get("phones", []):
             jid = normalize_phone(phone)
             if jid is None:
                 skip("phone number without a country code (+ or 00)")
             else:
-                idents.append(f"w:{jid}")
+                for p in phone_prefixes:
+                    add_ident(f"{p}:{jid}")
 
         if not idents:
             skip("no phone or email")
@@ -1104,6 +1129,10 @@ def _plan_contact_import(
                 conflicts.append(f"{alias}|alias already exists")
             continue
 
+        if alias in proposed:
+            conflicts.append(f"{alias}|duplicate in import")
+            continue
+
         taken = [(i, owner[i]) for i in idents if i in owner]
         if taken:
             ident, other = taken[0]
@@ -1111,6 +1140,7 @@ def _plan_contact_import(
             continue
 
         links.append((alias, idents))
+        proposed.add(alias)
         for ident in idents:
             owner[ident] = alias
 

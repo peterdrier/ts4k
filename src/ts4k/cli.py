@@ -317,7 +317,8 @@ def _prompt_password(prompt: str) -> str:
 
 
 def _ensure_apple_password(
-    email: str, *, is_icloud: bool, server_url: str, username: str | None = None
+    email: str, *, is_icloud: bool, server_url: str, username: str | None = None,
+    store_server_url: bool = True,
 ) -> str | None:
     """Make sure an app-specific password is stored for *email*.
 
@@ -329,6 +330,10 @@ def _ensure_apple_password(
     ``server_url`` is read back by the CalDAV adapter, so an iCloud
     contacts setup stores the CalDAV sibling endpoint, not the contacts
     host — the CardDAV adapter takes its base URL from the source config.
+    Generic (non-iCloud) CardDAV setups pass ``store_server_url=False`` for
+    the same reason: the CardDAV adapter never reads the shared file's
+    ``server_url``, so writing the CardDAV endpoint there would only risk
+    poisoning a CalDAV source that later reuses the same email.
     """
     from ts4k.auth.caldav import ICLOUD_CALDAV_URL, load_credentials, save_credentials
 
@@ -356,8 +361,11 @@ def _ensure_apple_password(
         print("Too many failed attempts — aborting.")
         return None
 
-    save_credentials(email, username=username or email, app_password=pw,
-                     server_url=ICLOUD_CALDAV_URL if is_icloud else server_url)
+    save_credentials(
+        email, username=username or email, app_password=pw,
+        server_url=ICLOUD_CALDAV_URL if is_icloud
+        else (server_url if store_server_url else ""),
+    )
     print(f"Saved credentials for {email}.")
     return "saved"
 
@@ -481,6 +489,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 is_icloud=kwargs["server_url"] == ICLOUD_CARDDAV_URL,
                 server_url=kwargs["server_url"],
                 username=kwargs.get("username"),
+                store_server_url=False,
             )
             if stored is None:
                 return

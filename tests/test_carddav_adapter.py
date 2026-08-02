@@ -93,6 +93,27 @@ class TestNormalizePhone:
     def test_empty_is_rejected(self):
         assert normalize_phone("   ") is None
 
+    def test_too_long_is_rejected(self):
+        # Beyond E.164's 15-digit max
+        assert normalize_phone("+1234567890123456") is None
+
+    def test_max_length_e164_is_accepted(self):
+        assert normalize_phone("+123456789012345") == "123456789012345@s.whatsapp.net"
+
+    def test_extension_word_is_rejected(self):
+        # Concatenating the extension would fabricate a JID for a
+        # different number entirely — skip rather than guess.
+        assert normalize_phone("+1 555 123 4567 ext 89") is None
+
+    def test_extension_abbreviation_with_dot_is_rejected(self):
+        assert normalize_phone("+1 555 123 4567 ext. 89") is None
+
+    def test_trailing_x_extension_is_rejected(self):
+        assert normalize_phone("+1 555 123 4567 x89") is None
+
+    def test_extension_word_full_is_rejected(self):
+        assert normalize_phone("+1 555 123 4567 extension 89") is None
+
 
 SIMPLE_VCARD = """BEGIN:VCARD
 VERSION:3.0

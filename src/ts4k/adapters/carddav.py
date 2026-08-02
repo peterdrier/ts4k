@@ -17,6 +17,7 @@ Read-only by construction — every request is a PROPFIND or a REPORT.
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,17 +55,26 @@ _ADDRESSBOOK_QUERY = """<?xml version="1.0" encoding="utf-8"?>
 # ---------------------------------------------------------------------------
 
 
+_EXTENSION_RE = re.compile(r"\bext\.?\b|\bextension\b|x\d+\s*$", re.IGNORECASE)
+
+
 def normalize_phone(raw: str) -> str | None:
     """Convert an address-book phone number to a WhatsApp JID.
 
     Returns ``<E164 digits>@s.whatsapp.net``, or ``None`` when the number
     carries no country code — a guessed country code would fabricate a
-    JID pointing at a stranger.
+    JID pointing at a stranger — or when it doesn't cleanly resolve to a
+    single E.164 number (an extension, or a digit count outside 7-15).
     """
     value = raw.strip()
     if value.lower().startswith("tel:"):
         value = value[4:]
     value = value.split(";", 1)[0].strip()
+
+    if _EXTENSION_RE.search(value):
+        # Concatenating the extension's digits would fabricate a JID
+        # pointing at an unrelated number — skip rather than guess.
+        return None
 
     international = value.startswith("+")
     digits = "".join(c for c in value if c.isdigit())
@@ -72,7 +82,7 @@ def normalize_phone(raw: str) -> str | None:
         digits = digits[2:]
         international = True
 
-    if not international or len(digits) < 7:
+    if not international or len(digits) < 7 or len(digits) > 15:
         return None
     return f"{digits}{WHATSAPP_SUFFIX}"
 
