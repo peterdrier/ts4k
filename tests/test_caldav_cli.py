@@ -61,6 +61,22 @@ class TestSrcAddApple:
         assert "email" in capsys.readouterr().out
         assert "cc" not in sources.list_all()
 
+    def test_discovered_source_carries_config_dir(self, ts4k_config, monkeypatch, tmp_path):
+        """With config_dir=<custom>, credentials are saved there, so the
+        discovered source entries must carry it too — otherwise later
+        commands fall back to the default dir and fail auth."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd-efgh-ijkl-mnop")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        custom_dir = tmp_path / "custom"
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", [
+                "email=a@icloud.com", f"config_dir={custom_dir}",
+            ]))
+
+        cfg = sources.list_all()["cc"]
+        assert cfg["config_dir"] == str(custom_dir)
+
 
 class TestAuthCaldav:
     """`ts4k auth cc` should explain the app-specific password, not call caldav unknown."""

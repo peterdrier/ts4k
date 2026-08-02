@@ -70,23 +70,22 @@ class TestSrcAddAppleContacts:
         ]))
         cfg = sources.list_all()["ic"]
         assert cfg["server_url"] == "https://carddav.fastmail.com/"
-        # Non-Apple servers skip the xxxx-xxxx-xxxx-xxxx format check
-        assert load_credentials("me@fastmail.com")["app_password"] == "any-password"
+        # Non-Apple servers skip the xxxx-xxxx-xxxx-xxxx format check.
+        # Credentials land under a service-scoped key, not the plain email.
+        assert load_credentials("me@fastmail.com#carddav")["app_password"] == "any-password"
 
     def test_generic_carddav_setup_does_not_poison_the_shared_credential(
         self, ts4k_config, monkeypatch
     ):
-        """A non-iCloud CardDAV server_url must stay in the source's own
-        config, not the shared per-email credential file — otherwise a
-        later CalDAV source for the same email would connect to the
-        CardDAV endpoint (CaldavAdapter.connect prefers a stored
-        server_url over the source config)."""
+        """A non-iCloud CardDAV setup must never write to the shared
+        per-email credential file — otherwise a later CalDAV source for the
+        same email would connect to the CardDAV endpoint (CaldavAdapter.connect
+        prefers a stored server_url over the source config)."""
         monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "any-password")
         cli._cmd_sources(_args("carddav", [
             "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
         ]))
-        creds = load_credentials("me@fastmail.com")
-        assert creds["server_url"] != "https://carddav.fastmail.com/"
+        assert load_credentials("me@fastmail.com") is None
 
     def test_config_dir_credentials_land_where_the_adapter_reads_them(
         self, ts4k_config, monkeypatch, tmp_path
@@ -106,25 +105,71 @@ class TestSrcAddAppleContacts:
 
         assert sources.list_all()["ic"]["config_dir"] == str(custom_dir)
 
-    def test_generic_carddav_setup_does_not_overwrite_an_existing_credential(
+    def test_generic_carddav_setup_prompts_separately_from_an_existing_caldav_credential(
         self, ts4k_config, monkeypatch
     ):
-        """A pre-existing credential file (e.g. from an earlier CalDAV
-        setup) must survive a later CardDAV setup for the same email."""
+        """A generic (non-iCloud) CardDAV server must not blindly reuse a
+        CalDAV credential for the same email — it may be a different
+        username/password for an unrelated service. It must prompt and
+        store under its own key, leaving the CalDAV credential untouched."""
         from ts4k.auth.caldav import save_credentials
 
         save_credentials("me@fastmail.com", username="me@fastmail.com",
-                         app_password="existing-pw",
+                         app_password="caldav-pw",
                          server_url="https://caldav.fastmail.com/")
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "carddav-pw")
+
+        cli._cmd_sources(_args("carddav", [
+            "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
+        ]))
+
+        caldav_creds = load_credentials("me@fastmail.com")
+        assert caldav_creds["app_password"] == "caldav-pw"
+        assert caldav_creds["server_url"] == "https://caldav.fastmail.com/"
+
+        carddav_creds = load_credentials("me@fastmail.com#carddav")
+        assert carddav_creds is not None
+        assert carddav_creds["app_password"] == "carddav-pw"
+
+    def test_generic_carddav_setup_reuses_its_own_existing_credential(
+        self, ts4k_config, monkeypatch
+    ):
+        """A credential already stored under the service-scoped key is
+        reused, same as the iCloud shared-credential case."""
+        from ts4k.auth.caldav import save_credentials
+
+        save_credentials("me@fastmail.com#carddav", username="me@fastmail.com",
+                         app_password="existing-pw",
+                         server_url="")
         monkeypatch.setattr(cli, "_prompt_password", _refuse_prompt)
 
         cli._cmd_sources(_args("carddav", [
             "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
         ]))
 
-        creds = load_credentials("me@fastmail.com")
-        assert creds["server_url"] == "https://caldav.fastmail.com/"
+        creds = load_credentials("me@fastmail.com#carddav")
         assert creds["app_password"] == "existing-pw"
+
+    def test_generic_carddav_password_whitespace_is_preserved(
+        self, ts4k_config, monkeypatch
+    ):
+        """Unlike Apple app-specific passwords, a generic server's password
+        must be stored exactly as entered — whitespace and all."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "pass with spaces")
+        cli._cmd_sources(_args("carddav", [
+            "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
+        ]))
+        creds = load_credentials("me@fastmail.com#carddav")
+        assert creds["app_password"] == "pass with spaces"
+
+    def test_icloud_carddav_password_whitespace_is_still_normalized(
+        self, ts4k_config, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "_prompt_password",
+                            lambda prompt="": " abcd-efgh-ijkl-mnop\n")
+        cli._cmd_sources(_args("apple-contacts", ["email=a@icloud.com"]))
+        creds = load_credentials("a@icloud.com")
+        assert creds["app_password"] == "abcd-efgh-ijkl-mnop"
 
 
 class TestContactsSyncParser:

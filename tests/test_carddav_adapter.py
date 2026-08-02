@@ -68,6 +68,44 @@ class TestConnect:
         with pytest.raises(RuntimeError, match="not connected"):
             a._require_client()
 
+    async def test_generic_server_does_not_reuse_the_caldav_credential(
+        self, tmp_path: Path
+    ):
+        """A non-iCloud CardDAV server must not connect using a CalDAV
+        credential stored for the same email — different service, possibly
+        a different password."""
+        save_credentials(
+            "test@fastmail.com", username="test@fastmail.com",
+            app_password="caldav-pw", server_url="https://caldav.fastmail.com/",
+            config_dir=tmp_path,
+        )
+        config = CarddavAdapterConfig(
+            email="test@fastmail.com",
+            server_url="https://carddav.fastmail.com/",
+            config_dir=tmp_path,
+        )
+        a = CarddavAdapter(config)
+        with pytest.raises(RuntimeError, match="No CardDAV credentials"):
+            await a.connect()
+
+    async def test_generic_server_uses_its_own_scoped_credential(self, tmp_path: Path):
+        save_credentials(
+            "test@fastmail.com#carddav", username="test@fastmail.com",
+            app_password="carddav-pw", server_url="",
+            config_dir=tmp_path,
+        )
+        config = CarddavAdapterConfig(
+            email="test@fastmail.com",
+            server_url="https://carddav.fastmail.com/",
+            config_dir=tmp_path,
+        )
+        a = CarddavAdapter(config)
+        await a.connect()
+        try:
+            assert a._client is not None
+        finally:
+            await a.disconnect()
+
 
 class TestRedirectHandling:
     """iCloud redirects the well-known host to a per-account shard on a
@@ -125,6 +163,26 @@ class TestRedirectHandling:
             await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
         assert call_count == _MAX_REDIRECTS
 
+    async def test_https_to_http_redirect_is_rejected(self, tmp_path: Path):
+        """A server redirecting an authenticated https request to a plain
+        http URL must not have the request re-issued against it — that
+        would send the CardDAV credentials in cleartext."""
+        call_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(
+                302, headers={"Location": "http://evil.example/shard/"}
+            )
+
+        a = self._adapter(tmp_path, handler)
+        with pytest.raises(RuntimeError, match="HTTPS"):
+            await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
+        # Only the original https request went out — the downgraded http
+        # URL never received a second (authenticated) request.
+        assert call_count == 1
+
 
 class TestNormalizePhone:
     def test_international_with_punctuation(self):
@@ -133,8 +191,13 @@ class TestNormalizePhone:
     def test_double_zero_prefix(self):
         assert normalize_phone("0031 6 12345678") == "31612345678@s.whatsapp.net"
 
-    def test_tel_uri_with_params(self):
-        assert normalize_phone("tel:+15551234567;ext=99") == "15551234567@s.whatsapp.net"
+    def test_tel_uri_with_ext_param_is_rejected(self):
+        # ext= is a real RFC 3966 extension — concatenating the base number
+        # would link a JID for a different, unrelated number.
+        assert normalize_phone("tel:+15551234567;ext=99") is None
+
+    def test_tel_uri_with_non_ext_param_is_accepted(self):
+        assert normalize_phone("tel:+15551234567;type=cell") == "15551234567@s.whatsapp.net"
 
     def test_already_bare_e164(self):
         assert normalize_phone("+15551234567") == "15551234567@s.whatsapp.net"

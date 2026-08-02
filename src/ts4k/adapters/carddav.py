@@ -21,7 +21,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -61,6 +61,7 @@ _REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 
 
 _EXTENSION_RE = re.compile(r"\bext\.?\b|\bextension\b|x\d+\s*$", re.IGNORECASE)
+_TEL_EXT_PARAM_RE = re.compile(r";\s*(?:ext|extension)\s*=", re.IGNORECASE)
 
 
 def normalize_phone(raw: str) -> str | None:
@@ -72,8 +73,14 @@ def normalize_phone(raw: str) -> str | None:
     single E.164 number (an extension, or a digit count outside 7-15).
     """
     value = raw.strip()
-    if value.lower().startswith("tel:"):
+    is_tel_uri = value.lower().startswith("tel:")
+    if is_tel_uri:
         value = value[4:]
+        if _TEL_EXT_PARAM_RE.search(value):
+            # A tel: URI's ;ext= parameter (RFC 3966) is stripped below
+            # along with the rest of the params — check for it first, or
+            # a number with an extension would be linked as if it had none.
+            return None
     value = value.split(";", 1)[0].strip()
 
     if _EXTENSION_RE.search(value):
@@ -224,12 +231,22 @@ class CarddavAdapter:
     def __init__(self, config: CarddavAdapterConfig) -> None:
         self._config = config
         self._client: httpx.AsyncClient | None = None
+        self._credential_key: str | None = None
 
     # -- Connection ------------------------------------------------------------
 
     async def connect(self) -> None:
         email = self._config.email
-        creds = load_credentials(email, self._config.config_dir)
+        # iCloud shares one app-specific password across CalDAV and CardDAV
+        # (Apple issues it per Apple ID, not per service), so it reads the
+        # plain-email credential file.  A generic CardDAV server has no such
+        # guarantee — it may need different credentials than a CalDAV source
+        # for the same email — so it gets its own service-scoped key.
+        self._credential_key = (
+            email if self._config.server_url == ICLOUD_CARDDAV_URL
+            else f"{email}#carddav"
+        )
+        creds = load_credentials(self._credential_key, self._config.config_dir)
         if creds is None:
             raise RuntimeError(
                 f"No CardDAV credentials for {email} — an app-specific password is "
@@ -293,14 +310,21 @@ class CarddavAdapter:
                 location = resp.headers.get("Location")
                 if not location:
                     break
-                url = urljoin(str(resp.url), location)
+                new_url = urljoin(str(resp.url), location)
+                if resp.url.scheme == "https" and urlsplit(new_url).scheme != "https":
+                    raise RuntimeError(
+                        f"Refusing to follow a redirect from {resp.url} to {new_url} — "
+                        f"downgrading from HTTPS to a non-HTTPS URL would send the "
+                        f"CardDAV credentials in cleartext."
+                    )
+                url = new_url
                 continue
             if resp.status_code in (401, 403):
                 raise RuntimeError(
                     f"CardDAV auth failed for {self._config.email} — the app-specific "
                     f"password may be revoked (they expire when the Apple ID password "
                     f"changes). Generate a new one at https://account.apple.com, delete "
-                    f"~/.config/ts4k/caldav/{self._config.email}/credentials.json, and "
+                    f"~/.config/ts4k/caldav/{self._credential_key}/credentials.json, and "
                     f"re-run ts4k src add."
                 )
             resp.raise_for_status()

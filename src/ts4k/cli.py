@@ -319,6 +319,7 @@ def _prompt_password(prompt: str) -> str:
 def _ensure_apple_password(
     email: str, *, is_icloud: bool, server_url: str, username: str | None = None,
     store_server_url: bool = True, config_dir: Path | None = None,
+    credential_key: str | None = None,
 ) -> str | None:
     """Make sure an app-specific password is stored for *email*.
 
@@ -334,10 +335,17 @@ def _ensure_apple_password(
     the same reason: the CardDAV adapter never reads the shared file's
     ``server_url``, so writing the CardDAV endpoint there would only risk
     poisoning a CalDAV source that later reuses the same email.
+
+    ``credential_key`` overrides the credential file's directory name
+    (default: *email*).  Generic CardDAV setups pass a service-scoped key
+    (``<email>#carddav``) so they neither silently reuse a CalDAV
+    credential for the same email — which may be a different password for
+    a different service — nor clobber it.
     """
     from ts4k.auth.caldav import ICLOUD_CALDAV_URL, load_credentials, save_credentials
 
-    if load_credentials(email, config_dir) is not None:
+    key = credential_key or email
+    if load_credentials(key, config_dir) is not None:
         return "existing"
 
     print("An app-specific password is required "
@@ -346,13 +354,18 @@ def _ensure_apple_password(
     pw = None
     for _attempt in range(3):
         raw = _prompt_password(f"App-specific password for {email}: ")
-        candidate = "".join(raw.split())
-        if not candidate:
+        # Apple's app-specific passwords are pasted as "xxxx xxxx xxxx xxxx"
+        # and stripped to "xxxx-xxxx-xxxx-xxxx"; a generic server's password
+        # has no such format and must be stored exactly as entered.
+        stripped = "".join(raw.split())
+        looks_apple = bool(re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", stripped))
+        candidate = stripped if (is_icloud or looks_apple) else raw
+        if not candidate.strip():
             print("No password entered — aborting.")
             return None
-        if is_icloud and not re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", candidate):
+        if is_icloud and not looks_apple:
             print("That doesn't look like an Apple app-specific password "
-                  f"(expected xxxx-xxxx-xxxx-xxxx, got {len(candidate)} characters) "
+                  f"(expected xxxx-xxxx-xxxx-xxxx, got {len(stripped)} characters) "
                   "— try again.")
             continue
         pw = candidate
@@ -362,7 +375,7 @@ def _ensure_apple_password(
         return None
 
     save_credentials(
-        email, username=username or email, app_password=pw,
+        key, username=username or email, app_password=pw,
         server_url=ICLOUD_CALDAV_URL if is_icloud
         else (server_url if store_server_url else ""),
         config_dir=config_dir,
@@ -463,12 +476,15 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                     if pfx in all_sources:
                         print(f"  Prefix '{pfx}' already in use — skipping.")
                         continue
-                    sources.add(
-                        pfx, provider="caldav", email=email,
+                    add_kwargs: dict[str, Any] = dict(
+                        provider="caldav", email=email,
                         server_url=kwargs["server_url"],
                         calendar_id=cal["id"], calendar_name=cal["summary"],
                         timezone=tz_default, level="readonly",
                     )
+                    if kwargs.get("config_dir"):
+                        add_kwargs["config_dir"] = kwargs["config_dir"]
+                    sources.add(pfx, **add_kwargs)
                     all_sources[pfx] = {}
                     print(f"  Added '{cal['summary']}' as '{pfx}' (readonly)")
                 return
@@ -489,13 +505,15 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 return
             kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
 
+            is_icloud_contacts = kwargs["server_url"] == ICLOUD_CARDDAV_URL
             stored = _ensure_apple_password(
                 email,
-                is_icloud=kwargs["server_url"] == ICLOUD_CARDDAV_URL,
+                is_icloud=is_icloud_contacts,
                 server_url=kwargs["server_url"],
                 username=kwargs.get("username"),
                 store_server_url=False,
                 config_dir=Path(kwargs["config_dir"]) if kwargs.get("config_dir") else None,
+                credential_key=None if is_icloud_contacts else f"{email}#carddav",
             )
             if stored is None:
                 return
