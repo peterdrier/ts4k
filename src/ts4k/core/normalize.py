@@ -356,13 +356,19 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # it sees <th> cells, so an all-<td> data table would otherwise
             # render as plain pipe-y text. Promote the first row's <td>
             # cells to <th> so html2text treats it as a proper table.
-            has_th = any(
-                cell.name == "th"
-                for row in rows
-                for cell in row.find_all(["th", "td"])
-                if cell.find_parent("table") is table
+            def _own_cells(row):
+                return [
+                    c
+                    for c in row.find_all(["th", "td"])
+                    if c.find_parent("table") is table
+                ]
+
+            # A row that already carries <th> cells is the header.
+            header_row = next(
+                (r for r in rows if any(c.name == "th" for c in _own_cells(r))),
+                None,
             )
-            if not has_th:
+            if header_row is None:
                 # rows[0] may be an all-empty spacer row that classification
                 # already ignores when building table_data (see the
                 # any(cell_texts) filter above) — promote the first row
@@ -405,33 +411,26 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 if first_data_row is None and nonempty_rows:
                     first_data_row = nonempty_rows[0]
                 if first_data_row is not None:
-                    # html2text only emits the two-sided "---|---" separator
-                    # when the <th> row is the table's FIRST row; a title or
-                    # spacer row before it yields a bare "---" line, which
-                    # the later signature stripper mistakes for a sig
-                    # delimiter. Move any rows preceding the header out of
-                    # the table (as block divs, cells space-separated) so
-                    # the promoted row leads the table.
-                    for row in rows:
-                        if row is first_data_row:
-                            break
-                        row_cells = [
-                            c
-                            for c in row.find_all(["th", "td"])
-                            if c.find_parent("table") is table
-                        ]
-                        for c in row_cells:
-                            c.insert_after(NavigableString(" "))
-                            c.unwrap()
-                        row.name = "div"
-                        table.insert_before(row.extract())
-                    first_row_cells = [
-                        c
-                        for c in first_data_row.find_all(["th", "td"])
-                        if c.find_parent("table") is table
-                    ]
-                    for cell in first_row_cells:
+                    for cell in _own_cells(first_data_row):
                         cell.name = "th"
+                    header_row = first_data_row
+            if header_row is not None:
+                # html2text only emits the two-sided "---|---" separator
+                # when the <th> row is the table's FIRST row; a title or
+                # spacer row before it yields a bare "---" line, which
+                # the later signature stripper mistakes for a sig
+                # delimiter. Move any rows preceding the header out of
+                # the table (as block divs, cells space-separated) so the
+                # header row leads the table — this applies equally to
+                # tables that already had <th> cells mid-table.
+                for row in rows:
+                    if row is header_row:
+                        break
+                    for c in _own_cells(row):
+                        c.insert_after(NavigableString(" "))
+                        c.unwrap()
+                    row.name = "div"
+                    table.insert_before(row.extract())
             continue
 
         # Build pipe-delimited output

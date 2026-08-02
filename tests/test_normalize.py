@@ -799,6 +799,32 @@ class TestReadableMode:
         cols = [c for c in sep_line.split("|") if c.strip()]
         assert len(cols) == 2
 
+    def test_readable_existing_th_mid_table_survives_title_row(self):
+        """A table that already has <th> cells but starts with a title row
+        must relocate the title out of the table — otherwise html2text
+        emits a bare --- that the signature stripper eats along with all
+        the data rows."""
+        html = """
+        <table>
+            <tr><td colspan="2">Quarterly Sales</td></tr>
+            <tr><th>Quarter</th><th>Total</th></tr>
+            <tr><td>Q1</td><td>$100</td></tr>
+            <tr><td>Q2</td><td>$200</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Quarterly Sales" in result
+        assert "Quarter" in result
+        assert "Q1" in result
+        assert "$200" in result
+        sep_line = next(
+            line
+            for line in result.split("\n")
+            if "-" in line and set(line.strip()) <= set("-|: ")
+        )
+        cols = [c for c in sep_line.split("|") if c.strip()]
+        assert len(cols) == 2
+
     def test_readable_layout_row_cells_are_space_separated(self):
         """Unwrapping a layout row's cells must not merge adjacent text —
         "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""

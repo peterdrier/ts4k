@@ -914,6 +914,35 @@ class TestGmailAdapterReadMessage:
         )
 
     @pytest.mark.asyncio
+    async def test_prefer_html_fetches_externalized_root_html_body(self):
+        """A non-multipart message can BE a text/html leaf whose body was
+        externalized — the resolver must consider the root payload, not
+        just payload.parts."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc124",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "text/html",
+                "body": {"attachmentId": "ATT456", "size": 60000},
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(return_value={"data": _b64("<p>Root externalized HTML</p>")})
+        )
+
+        msg = await adapter.read_message("g:abc124", prefer_html=True)
+
+        assert msg["body"] == "<p>Root externalized HTML</p>"
+        adapter._service.users().messages().attachments().get.assert_called_with(
+            userId="me", messageId="abc124", id="ATT456"
+        )
+
+    @pytest.mark.asyncio
     async def test_compact_read_does_not_call_attachments_endpoint(self):
         """Compact mode prefers inline plain text — it must not resolve
         attachment-backed body parts at all."""

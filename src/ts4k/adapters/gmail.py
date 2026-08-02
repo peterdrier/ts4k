@@ -567,9 +567,10 @@ class GmailAdapter(BaseAdapter):
         full = _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
 
         if prefer_html:
-            html_part = _find_body_part_ref(
-                msg.get("payload", {}).get("parts", []), "text/html"
-            )
+            # Search from the root payload itself, not just its parts — a
+            # non-multipart message can BE a text/html leaf whose body was
+            # externalized to an attachmentId.
+            html_part = _find_body_part_ref([msg.get("payload", {})], "text/html")
             if html_part is not None:
                 body = html_part.get("body", {})
                 attachment_id = body.get("attachmentId")
