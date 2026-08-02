@@ -226,10 +226,17 @@ def carddav_credential_key(email: str, server_url: str) -> str:
     for the same email — so it gets its own service-scoped key, further
     scoped by host: two generic sources sharing an email but pointed at
     different servers must not collide on the same credential file.
+
+    The key is used as a directory name by ``credentials_path()``, so it
+    must stay filesystem-safe — ``:`` is illegal in a Windows path, which
+    rules out both the ``#carddav:`` separator and a netloc carrying a
+    non-standard port (``host:port``). ``#`` is used throughout instead,
+    deterministically: ``<email>#carddav#<netloc, ':' replaced with '#'>``.
     """
     if server_url == ICLOUD_CARDDAV_URL:
         return email
-    return f"{email}#carddav:{urlsplit(server_url).netloc}"
+    netloc = urlsplit(server_url).netloc.replace(":", "#")
+    return f"{email}#carddav#{netloc}"
 
 
 @dataclass
@@ -253,6 +260,12 @@ class CarddavAdapter:
 
     async def connect(self) -> None:
         email = self._config.email
+        if urlsplit(self._config.server_url).scheme != "https":
+            raise RuntimeError(
+                f"Refusing to connect to {self._config.server_url} — CardDAV "
+                f"requires HTTPS; a plain http:// endpoint would send the "
+                f"credentials in cleartext on the very first request."
+            )
         self._credential_key = carddav_credential_key(email, self._config.server_url)
         creds = load_credentials(self._credential_key, self._config.config_dir)
         if creds is None:
@@ -291,6 +304,35 @@ class CarddavAdapter:
             )
         return self._client
 
+    def _check_trusted_target(self, base_url: str, target_url: str) -> None:
+        """Raise unless *target_url* is safe to send credentials to.
+
+        Trusted targets are HTTPS and either same-host as *base_url* or —
+        for an iCloud account — any ``*.icloud.com`` shard host. Used both
+        by the redirect loop in ``_dav`` and by every href resolved out of
+        a discovery/query XML response before it becomes the URL of the
+        next authenticated request: an absolute cross-origin href in a
+        response body can steer credentials at an untrusted server just as
+        easily as an HTTP redirect can.
+        """
+        if urlsplit(target_url).scheme != "https":
+            raise RuntimeError(
+                f"Refusing to send CardDAV credentials to {target_url} — it "
+                f"is not HTTPS, and sending them over a non-HTTPS URL would "
+                f"expose them in cleartext."
+            )
+        current_host = urlsplit(base_url).netloc.lower()
+        new_host = urlsplit(target_url).netloc.lower()
+        is_icloud_account = self._config.server_url == ICLOUD_CARDDAV_URL
+        same_host = new_host == current_host
+        trusted_icloud_shard = is_icloud_account and new_host.endswith(".icloud.com")
+        if not same_host and not trusted_icloud_shard:
+            raise RuntimeError(
+                f"Refusing to send CardDAV credentials to {target_url} — the "
+                f"destination host is not trusted (expected {current_host} "
+                f"or, for an iCloud account, an *.icloud.com shard)."
+            )
+
     # -- DAV plumbing ----------------------------------------------------------
 
     async def _dav(
@@ -319,23 +361,7 @@ class CarddavAdapter:
                 if not location:
                     break
                 new_url = urljoin(str(resp.url), location)
-                if resp.url.scheme == "https" and urlsplit(new_url).scheme != "https":
-                    raise RuntimeError(
-                        f"Refusing to follow a redirect from {resp.url} to {new_url} — "
-                        f"downgrading from HTTPS to a non-HTTPS URL would send the "
-                        f"CardDAV credentials in cleartext."
-                    )
-                current_host = urlsplit(str(resp.url)).netloc.lower()
-                new_host = urlsplit(new_url).netloc.lower()
-                is_icloud_account = self._config.server_url == ICLOUD_CARDDAV_URL
-                same_host = new_host == current_host
-                trusted_icloud_shard = is_icloud_account and new_host.endswith(".icloud.com")
-                if not same_host and not trusted_icloud_shard:
-                    raise RuntimeError(
-                        f"Refusing to follow a redirect from {resp.url} to {new_url} — "
-                        f"the destination host is not trusted, so re-sending CardDAV "
-                        f"credentials to it would risk leaking them to an unrelated server."
-                    )
+                self._check_trusted_target(str(resp.url), new_url)
                 url = new_url
                 continue
             if resp.status_code in (401, 403):
@@ -369,7 +395,9 @@ class CarddavAdapter:
                 f"{self._config.server_url} returned no principal URL — "
                 f"is it a CardDAV server?"
             )
-        return urljoin(base, href.text)
+        url = urljoin(base, href.text)
+        self._check_trusted_target(base, url)
+        return url
 
     async def _home_set_url(self, principal_url: str) -> str:
         root, base = await self._dav(
@@ -381,7 +409,9 @@ class CarddavAdapter:
                 f"No address book home set for {self._config.email} — the account "
                 f"may not have contacts enabled."
             )
-        return urljoin(base, href.text)
+        url = urljoin(base, href.text)
+        self._check_trusted_target(base, url)
+        return url
 
     async def _addressbook_urls(self, home_set_url: str) -> list[str]:
         root, base = await self._dav(
@@ -393,7 +423,9 @@ class CarddavAdapter:
                 continue
             href = response.find(f"{{{_DAV}}}href")
             if href is not None and href.text:
-                urls.append(urljoin(base, href.text))
+                url = urljoin(base, href.text)
+                self._check_trusted_target(base, url)
+                urls.append(url)
         return urls
 
     async def _fetch_cards(self, addressbook_url: str) -> list[str]:

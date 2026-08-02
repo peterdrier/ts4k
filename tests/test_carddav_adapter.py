@@ -96,7 +96,7 @@ class TestConnect:
 
     async def test_generic_server_uses_its_own_scoped_credential(self, tmp_path: Path):
         save_credentials(
-            "test@fastmail.com#carddav:carddav.fastmail.com", username="test@fastmail.com",
+            "test@fastmail.com#carddav#carddav.fastmail.com", username="test@fastmail.com",
             app_password="carddav-pw", server_url="",
             config_dir=tmp_path,
         )
@@ -111,6 +111,24 @@ class TestConnect:
             assert a._client is not None
         finally:
             await a.disconnect()
+
+    async def test_http_server_url_is_rejected_before_any_request(self, tmp_path: Path):
+        """A plain http:// endpoint must be refused before the client is
+        even built — the downgrade check on redirects only protects
+        subsequent requests, not the very first one."""
+        save_credentials(
+            "test@example.com", username="test@example.com",
+            app_password="pw", server_url="http://carddav.example.com/",
+            config_dir=tmp_path,
+        )
+        config = CarddavAdapterConfig(
+            email="test@example.com", server_url="http://carddav.example.com/",
+            config_dir=tmp_path,
+        )
+        a = CarddavAdapter(config)
+        with pytest.raises(RuntimeError, match="HTTPS"):
+            await a.connect()
+        assert a._client is None
 
     async def test_401_message_names_the_config_dir_scoped_credential_path(
         self, carddav_config: CarddavAdapterConfig
@@ -132,7 +150,7 @@ class TestCredentialKey:
 
     def test_generic_server_key_is_scoped_by_email_and_host(self):
         key = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
-        assert key == "me@fastmail.com#carddav:carddav.fastmail.com"
+        assert key == "me@fastmail.com#carddav#carddav.fastmail.com"
 
     def test_same_email_different_hosts_get_distinct_keys(self):
         """Two generic CardDAV sources sharing an email but pointed at
@@ -141,6 +159,18 @@ class TestCredentialKey:
         key_a = carddav_credential_key("me@example.com", "https://carddav.example-a.com/")
         key_b = carddav_credential_key("me@example.com", "https://carddav.example-b.com/")
         assert key_a != key_b
+
+    def test_key_contains_no_colon(self):
+        """The key is used as a directory name by credentials_path() — a
+        ':' is illegal in a Windows path component, so it must never
+        appear, even when the server URL carries a non-standard port."""
+        key = carddav_credential_key("me@example.com", "https://carddav.example.com:8443/")
+        assert ":" not in key
+
+    def test_nonstandard_port_still_gets_a_distinct_key(self):
+        key_default = carddav_credential_key("me@example.com", "https://carddav.example.com/")
+        key_port = carddav_credential_key("me@example.com", "https://carddav.example.com:8443/")
+        assert key_default != key_port
 
 
 class TestRedirectHandling:
@@ -265,6 +295,31 @@ class TestRedirectHandling:
             await a._dav("PROPFIND", ICLOUD_CARDDAV_URL, "<propfind/>", "0")
         # Only the original request went out — the untrusted host never
         # received a second (authenticated) request.
+        assert call_count == 1
+
+    async def test_discovery_href_on_an_unrelated_host_is_rejected(self, tmp_path: Path):
+        """An absolute cross-origin href inside a discovery response body
+        (as opposed to an HTTP redirect) must not get an authenticated
+        request either — the redirect-only trust check would miss this."""
+        call_count = 0
+        evil_home_set = """<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav"><response>
+  <href>/1234/principal/</href>
+  <propstat><prop><card:addressbook-home-set>
+  <href>https://evil.example/steal-creds/</href>
+  </card:addressbook-home-set></prop><status>HTTP/1.1 200 OK</status></propstat>
+</response></multistatus>"""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(207, content=evil_home_set.encode())
+
+        a = self._adapter(tmp_path, handler)
+        with pytest.raises(RuntimeError, match="not trusted"):
+            await a._home_set_url("https://contacts.icloud.com/1234/principal/")
+        # Only the home-set PROPFIND went out — the untrusted host named in
+        # the response body never received a second (authenticated) request.
         assert call_count == 1
 
 

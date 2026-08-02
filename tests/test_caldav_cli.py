@@ -212,6 +212,23 @@ class TestSrcAddPasswordFormat:
         creds = load_credentials("a@icloud.com")
         assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
 
+    def test_space_grouped_password_is_accepted_and_stored_hyphenated(
+        self, ts4k_config, monkeypatch
+    ):
+        """Apple's account page also renders app-specific passwords
+        space-grouped ("xxxx xxxx xxxx xxxx"); stripping whitespace alone
+        would collapse that to 16 contiguous letters and fail the
+        hyphenated-format check on every attempt."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd efgh ijkl mnop")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import load_credentials
+        creds = load_credentials("a@icloud.com")
+        assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
+
     def test_three_bad_attempts_aborts(self, ts4k_config, monkeypatch, capsys):
         monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "nope")
         cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))

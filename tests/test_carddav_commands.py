@@ -56,7 +56,7 @@ class TestTokenHealth:
             "provider": "carddav", "email": "me@fastmail.com",
             "server_url": "https://carddav.fastmail.com/",
         }
-        save_credentials("me@fastmail.com#carddav:carddav.fastmail.com", username="me@fastmail.com",
+        save_credentials("me@fastmail.com#carddav#carddav.fastmail.com", username="me@fastmail.com",
                          app_password="carddav-pw", server_url="")
 
         health = commands.check_token_health("fm", cfg)

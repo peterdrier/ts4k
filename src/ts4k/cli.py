@@ -338,7 +338,7 @@ def _ensure_apple_password(
 
     ``credential_key`` overrides the credential file's directory name
     (default: *email*).  Generic CardDAV setups pass a host-scoped key
-    (``<email>#carddav:<host>``) so they neither silently reuse a CalDAV
+    (``<email>#carddav#<host>``) so they neither silently reuse a CalDAV
     credential for the same email — which may be a different password for
     a different service — nor collide with another generic CardDAV server
     that happens to share the same email.
@@ -360,6 +360,14 @@ def _ensure_apple_password(
         # has no such format and must be stored exactly as entered.
         stripped = "".join(raw.split())
         looks_apple = bool(re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", stripped))
+        if not looks_apple and re.fullmatch(r"[a-z]{16}", stripped):
+            # Apple's account page also renders the password space-grouped
+            # ("xxxx xxxx xxxx xxxx"); stripping whitespace above collapses
+            # that to 16 contiguous letters instead of the hyphenated form
+            # — re-hyphenate so it passes the format check below and is
+            # stored the same way as a hyphenated paste.
+            stripped = "-".join(stripped[i:i + 4] for i in range(0, 16, 4))
+            looks_apple = True
         candidate = stripped if (is_icloud or looks_apple) else raw
         if not candidate.strip():
             print("No password entered — aborting.")
