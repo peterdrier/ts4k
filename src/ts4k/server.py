@@ -18,10 +18,7 @@ import argparse
 import asyncio
 import contextlib
 import io
-import os
 import shlex
-import sys
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 

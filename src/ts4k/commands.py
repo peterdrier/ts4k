@@ -13,7 +13,7 @@ import logging
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -36,7 +36,7 @@ from ts4k.core.format import (
     format_thread,
 )
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import batch, cache, contacts, filters, sources, stats, watermarks
+from ts4k.state import batch, cache, contacts, filters, sources, stats
 from ts4k.state.refs import RefTable
 
 logger = logging.getLogger("ts4k")

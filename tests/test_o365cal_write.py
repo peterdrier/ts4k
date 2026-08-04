@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
 from ts4k.adapters.o365cal import O365CalAdapter, O365CalAdapterConfig
-from ts4k.core.levels import AccessLevel
 
 
 def _mock_response(data: dict | None = None, status_code: int = 200) -> httpx.Response:

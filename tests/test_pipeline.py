@@ -13,14 +13,12 @@ import base64
 import json
 from xml.etree import ElementTree as ET
 
-import pytest
 
 from ts4k.adapters.gmail import (
     _msg_to_full,
     _thread_to_dict,
 )
 from ts4k.core.format import (
-    estimate_size,
     format_listing,
     format_message,
     format_thread,
@@ -421,7 +419,7 @@ class TestPerMessageSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [Rich HTML -> Pipe]")
+        print("\n  [Rich HTML -> Pipe]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -444,7 +442,7 @@ class TestPerMessageSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [Rich HTML -> JSON]")
+        print("\n  [Rich HTML -> JSON]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -470,7 +468,7 @@ class TestPerMessageSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [Rich HTML -> XML]")
+        print("\n  [Rich HTML -> XML]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -494,7 +492,7 @@ class TestPerMessageSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [Plain text -> Pipe]")
+        print("\n  [Plain text -> Pipe]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -531,7 +529,7 @@ class TestListingSavings:
 
         reduction = 1.0 - (pipe_bytes / raw_total_bytes)
 
-        print(f"\n  [5 messages -> Pipe listing]")
+        print("\n  [5 messages -> Pipe listing]")
         print(f"  Raw API total:       {raw_total_bytes:,} bytes ({len(api_messages)} msgs)")
         print(f"  ts4k pipe listing:   {pipe_bytes:,} bytes")
         print(f"  Reduction:           {reduction:.1%}")
@@ -558,7 +556,7 @@ class TestListingSavings:
 
         reduction = 1.0 - (json_bytes / raw_total_bytes)
 
-        print(f"\n  [5 messages -> JSON listing]")
+        print("\n  [5 messages -> JSON listing]")
         print(f"  Raw API total:       {raw_total_bytes:,} bytes")
         print(f"  ts4k JSON listing:   {json_bytes:,} bytes")
         print(f"  Reduction:           {reduction:.1%}")
@@ -583,7 +581,7 @@ class TestListingSavings:
 
         reduction = 1.0 - (xml_bytes / raw_total_bytes)
 
-        print(f"\n  [5 messages -> XML listing]")
+        print("\n  [5 messages -> XML listing]")
         print(f"  Raw API total:       {raw_total_bytes:,} bytes")
         print(f"  ts4k XML listing:    {xml_bytes:,} bytes")
         print(f"  Reduction:           {reduction:.1%}")
@@ -612,7 +610,7 @@ class TestThreadSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [3-msg thread -> Pipe]")
+        print("\n  [3-msg thread -> Pipe]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -634,7 +632,7 @@ class TestThreadSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [3-msg thread -> JSON]")
+        print("\n  [3-msg thread -> JSON]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -659,7 +657,7 @@ class TestThreadSavings:
 
         reduction = 1.0 - (output_bytes / raw_bytes)
 
-        print(f"\n  [3-msg thread -> XML]")
+        print("\n  [3-msg thread -> XML]")
         print(f"  Raw API JSON:  {raw_bytes:,} bytes")
         print(f"  ts4k output:   {output_bytes:,} bytes")
         print(f"  Reduction:     {reduction:.1%}")
@@ -819,7 +817,7 @@ class TestFormatComparison:
         json_bytes = len(json_out.encode("utf-8"))
         xml_bytes = len(xml_out.encode("utf-8"))
 
-        print(f"\n  [Format comparison — single message]")
+        print("\n  [Format comparison — single message]")
         print(f"  Pipe: {pipe_bytes:,} bytes")
         print(f"  JSON: {json_bytes:,} bytes")
         print(f"  XML:  {xml_bytes:,} bytes")
@@ -845,7 +843,7 @@ class TestFormatComparison:
         json_bytes = len(json_out.encode("utf-8"))
         xml_bytes = len(xml_out.encode("utf-8"))
 
-        print(f"\n  [Format comparison — 3-message listing]")
+        print("\n  [Format comparison — 3-message listing]")
         print(f"  Pipe: {pipe_bytes:,} bytes")
         print(f"  JSON: {json_bytes:,} bytes")
         print(f"  XML:  {xml_bytes:,} bytes")

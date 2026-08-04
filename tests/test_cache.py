@@ -1,9 +1,6 @@
 """Tests for ts4k.state.cache."""
 
-import json
-import os
 import pytest
-from pathlib import Path
 
 # Point cache at a temp directory before importing the module.
 @pytest.fixture(autouse=True)
@@ -22,7 +19,7 @@ from ts4k.state.cache import (
     get_header, get_body, get_message, has,
     list_headers, count, stats, clear,
     CacheBatch,
-    SCHEMA_VERSION, CACHEABLE_SOURCES,
+    SCHEMA_VERSION,
 )
 
 
