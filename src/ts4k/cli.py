@@ -1113,7 +1113,7 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
             elif provider in ("o365", "o365cal"):
                 _auth_o365(prefix, cfg, no_calendar)
             elif provider == "whatsapp":
-                print(f"  {prefix}: whatsapp — session-based, no auth needed")
+                _auth_whatsapp(prefix, cfg)
             elif provider == "caldav":
                 from ts4k.auth.caldav import credentials_path
                 email = cfg.get("email", "<your-apple-id>")
@@ -1135,6 +1135,27 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
 
     if any_failed:
         sys.exit(1)
+
+
+def _auth_whatsapp(prefix: str, cfg: dict) -> None:
+    """Report how a WhatsApp source authenticates — there is nothing to run.
+
+    The WhatsApp session lives in the bridge (paired by QR, once). What ts4k
+    needs is the bridge's HMAC key, which the operator pastes in rather than
+    obtains through a flow.
+    """
+    from ts4k.adapters import wa_bridge_auth
+
+    if (cfg.get("transport") or "http").lower() == "stdio":
+        print(f"  {prefix}: whatsapp (stdio) — session-based, no auth needed")
+        return
+    if wa_bridge_auth.resolve_bridge_token(cfg.get("bridge_token"), cfg.get("bridge_token_file")):
+        print(f"  {prefix}: whatsapp — bridge key configured, nothing to authorize")
+        return
+    print(f"  {prefix}: whatsapp — no bridge key configured")
+    print("        The bridge mints one at <whatsapp-bridge>/store/api_token on first run.")
+    print(f"        ts4k src add {prefix} whatsapp "
+          "bridge_token_file=/path/to/whatsapp-bridge/store/api_token")
 
 
 def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
@@ -1377,13 +1398,14 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "provider keys:\n"
             "  gmail:    email (required), mcp_url, transport\n"
-            "  whatsapp: mcp_cwd (required), server_command\n"
+            "  whatsapp: bridge_url, bridge_token, bridge_token_file, transport (http|stdio)\n"
+            "            transport=stdio also needs mcp_cwd, server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
             "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
             "\n"
             "examples:\n"
             '  ts4k src add g gmail email=you@gmail.com\n'
-            '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
+            '  ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-bridge/store/api_token\n'
             '  ts4k src add cc apple email=you@icloud.com\n'
             "\n"
             "List fields (server_command) are auto-split on spaces.\n"

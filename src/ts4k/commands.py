@@ -23,6 +23,7 @@ from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
 from ts4k.adapters.o365cal import O365CalAdapter, O365CalAdapterConfig
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
+from ts4k.adapters import wa_bridge_auth
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.filter import apply_filters
 from ts4k.core.format import (
@@ -96,14 +97,29 @@ def _make_adapter(
         )
 
     if provider == "whatsapp":
-        cwd = cfg.get("mcp_cwd", "")
-        if not cwd or not os.path.isdir(cwd):
-            return None
-        cmd = cfg.get("server_command", ["uv", "run", "main.py"])
-        if isinstance(cmd, str):
-            cmd = cmd.split()
+        # "stdio" spawns the Python whatsapp-mcp-server as a subprocess. It is
+        # the documented rollback from the HTTP transport (ts4k#71) and stays
+        # available while that server exists (whatsapp-mcp#85).
+        if (cfg.get("transport") or "http").lower() == "stdio":
+            cwd = cfg.get("mcp_cwd", "")
+            if not cwd or not os.path.isdir(cwd):
+                return None
+            cmd = cfg.get("server_command", ["uv", "run", "main.py"])
+            if isinstance(cmd, str):
+                cmd = cmd.split()
+            return WhatsAppAdapter(
+                WhatsAppAdapterConfig(
+                    transport="stdio", server_command=cmd, server_cwd=cwd
+                ),
+                prefix=prefix,
+            )
         return WhatsAppAdapter(
-            WhatsAppAdapterConfig(server_command=cmd, server_cwd=cwd),
+            WhatsAppAdapterConfig(
+                transport="http",
+                bridge_url=cfg.get("bridge_url") or wa_bridge_auth.DEFAULT_BRIDGE_URL,
+                bridge_token=cfg.get("bridge_token"),
+                bridge_token_file=cfg.get("bridge_token_file"),
+            ),
             prefix=prefix,
         )
 
@@ -1966,7 +1982,19 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
     provider = cfg.get("provider", "").lower()
 
     if provider == "whatsapp":
-        return TokenHealth(status="ok", expiry=None, scopes=[], detail="session-based")
+        # The WhatsApp session itself lives in the bridge and has no token ts4k
+        # can validate. The HTTP transport does have one — the bridge's HMAC
+        # key — and a missing key is the failure an operator hits first.
+        if (cfg.get("transport") or "http").lower() == "stdio":
+            return TokenHealth(status="ok", expiry=None, scopes=[], detail="session-based")
+        if wa_bridge_auth.resolve_bridge_token(
+            cfg.get("bridge_token"), cfg.get("bridge_token_file")
+        ):
+            return TokenHealth(status="ok", expiry=None, scopes=[], detail="bridge key configured")
+        return TokenHealth(
+            status="auth", expiry=None, scopes=[],
+            detail="no bridge key: set bridge_token_file=<bridge>/store/api_token",
+        )
 
     if provider in ("gmail", "gcal"):
         from ts4k.auth.google import validate_token
@@ -2065,9 +2093,12 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    2. O365: same auth as O365 mail (calendar scopes added automatically)")
     lines.append("    3. ts4k cal setup                           (discover calendars, auto-adds sources)")
     lines.append("    4. ts4k cal                                 (verify — shows today's events)")
-    lines.append("  WhatsApp:")
-    lines.append('    1. ts4k src add w whatsapp mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
+    lines.append("  WhatsApp (talks HTTP MCP to the Go bridge; no subprocess):")
+    lines.append("    1. ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-bridge/store/api_token")
+    lines.append("       (bridge_url defaults to http://127.0.0.1:18741/mcp)")
     lines.append("    2. ts4k list --source w --since 2d          (verify)")
+    lines.append("    Rollback to the Python stdio server:")
+    lines.append('       ts4k src add w whatsapp transport=stdio mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
 
 
 def _append_errors(lines: list[str]) -> None:
