@@ -254,3 +254,23 @@ def test_src_list_redacts_an_inline_bridge_token(ts4k_config, capsys):
     assert "bridge_token: <redacted>" in out
     assert "/keys/api_token" in out
     assert "http://127.0.0.1:18741/mcp" in out
+
+
+def test_src_add_redacts_an_inline_bridge_token(ts4k_config, capsys):
+    """`src add` echoes the saved entry — redacting only `list` moves the leak.
+
+    This is the branch that runs at the moment the key is first typed.
+    """
+    import argparse
+
+    from ts4k import cli
+
+    cli._cmd_sources(argparse.Namespace(
+        action="add", prefix="w", provider="whatsapp",
+        params=["bridge_token=s3cr3t-hmac-key", "bridge_token_file=/keys/api_token"],
+    ))
+
+    out = capsys.readouterr().out
+    assert "s3cr3t-hmac-key" not in out
+    assert "bridge_token: <redacted>" in out
+    assert "/keys/api_token" in out

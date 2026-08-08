@@ -83,7 +83,13 @@ def resolve_bridge_token(token: str | None = None, token_file: str | None = None
     if token and token.strip():
         return token.strip()
     if token_file and token_file.strip():
-        return _read_token_file(token_file.strip())
+        # Only wins if it actually resolves. A configured path that is missing,
+        # unreadable or empty — the shape a config copied to another host takes
+        # — must not shadow a working environment value, or the fallback the
+        # docstring promises is unreachable exactly when it is needed.
+        from_file = _read_token_file(token_file.strip())
+        if from_file:
+            return from_file
     env_token = os.environ.get("WHATSAPP_API_TOKEN", "").strip()
     if env_token:
         return env_token

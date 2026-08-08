@@ -377,6 +377,31 @@ def test_token_missing_is_empty_not_an_exception(monkeypatch, tmp_path):
     assert auth.resolve_bridge_token(token_file=str(tmp_path / "nope")) == ""
 
 
+def test_an_unreadable_file_does_not_shadow_the_environment(monkeypatch, tmp_path):
+    """A config copied to another host keeps a path that resolves to nothing.
+
+    If that dead path short-circuits, the documented env fallback is
+    unreachable exactly when it is the thing that would work.
+    """
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "from-env")
+    assert auth.resolve_bridge_token(token_file=str(tmp_path / "nope")) == "from-env"
+
+
+def test_an_empty_file_does_not_shadow_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "from-env")
+    path = tmp_path / "api_token"
+    path.write_text("   \n")
+    assert auth.resolve_bridge_token(token_file=str(path)) == "from-env"
+
+
+def test_a_readable_file_still_beats_the_environment(monkeypatch, tmp_path):
+    """Precedence is unchanged when the file actually resolves."""
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "from-env")
+    path = tmp_path / "api_token"
+    path.write_text("from-file")
+    assert auth.resolve_bridge_token(token_file=str(path)) == "from-file"
+
+
 def test_config_file_path_is_expanded(monkeypatch, tmp_path):
     monkeypatch.delenv("WHATSAPP_API_TOKEN", raising=False)
     monkeypatch.delenv("WHATSAPP_API_TOKEN_FILE", raising=False)

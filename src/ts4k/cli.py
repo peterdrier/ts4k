@@ -45,6 +45,16 @@ from ts4k.state.refs import RefTable
 _SECRET_SOURCE_KEYS = frozenset({"bridge_token"})
 
 
+def _shown(key: str, value: object) -> object:
+    """Value to print for a source config field — secrets never print.
+
+    Every place that echoes a source config goes through here; `src add` and
+    `src list` both display the same entries, so redacting only one of them
+    just moves where the key leaks.
+    """
+    return "<redacted>" if key in _SECRET_SOURCE_KEYS else value
+
+
 # ---------------------------------------------------------------------------
 # Ref table helpers
 # ---------------------------------------------------------------------------
@@ -467,7 +477,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         verb = "Updated" if existed else "Added"
         print(f"{verb} source {prefix!r}:")
         for k, v in sorted(entry.items()):
-            print(f"  {k}: {v}")
+            print(f"  {k}: {_shown(k, v)}")
 
     elif action == "rm":
         prefix = args.prefix
@@ -489,8 +499,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             print(f"  {prefix}: {provider} ({detail}) [{level}]")
             for k, v in sorted(cfg.items()):
                 if k not in ("provider", "email", "mailbox", "mcp_cwd"):
-                    shown = "<redacted>" if k in _SECRET_SOURCE_KEYS else v
-                    print(f"    {k}: {shown}")
+                    print(f"    {k}: {_shown(k, v)}")
 
     elif action == "discover":
         asyncio.run(_cmd_discover_o365(args))
