@@ -39,6 +39,12 @@ from ts4k.state import sources, watermarks
 from ts4k.state.refs import RefTable
 
 
+# Source config keys holding a secret rather than a pointer to one. `src list`
+# runs constantly in agent context and in terminal scrollback, so the value
+# itself never gets printed — `bridge_token_file` (a path) still does.
+_SECRET_SOURCE_KEYS = frozenset({"bridge_token"})
+
+
 # ---------------------------------------------------------------------------
 # Ref table helpers
 # ---------------------------------------------------------------------------
@@ -483,7 +489,8 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             print(f"  {prefix}: {provider} ({detail}) [{level}]")
             for k, v in sorted(cfg.items()):
                 if k not in ("provider", "email", "mailbox", "mcp_cwd"):
-                    print(f"    {k}: {v}")
+                    shown = "<redacted>" if k in _SECRET_SOURCE_KEYS else v
+                    print(f"    {k}: {shown}")
 
     elif action == "discover":
         asyncio.run(_cmd_discover_o365(args))

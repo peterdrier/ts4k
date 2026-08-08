@@ -220,3 +220,37 @@ def test_the_adapter_has_no_send_path():
     for name in forbidden:
         assert not hasattr(WhatsAppAdapter, name)
         assert f'"{name}"' not in source
+
+
+# ---------------------------------------------------------------------------
+# The key stays out of the terminal
+# ---------------------------------------------------------------------------
+
+
+def test_src_list_redacts_an_inline_bridge_token(ts4k_config, capsys):
+    """`src list` runs constantly in agent context — the HMAC key can't ride along.
+
+    Anyone who can read it can read the whole archive wherever the bridge is
+    reachable.  The pointer form stays visible: it is a path, not a secret.
+    """
+    import argparse
+
+    from ts4k import cli
+    from ts4k.state import sources
+
+    sources.add(
+        "w",
+        provider="whatsapp",
+        bridge_token="s3cr3t-hmac-key",
+        bridge_token_file="/keys/api_token",
+        bridge_url="http://127.0.0.1:18741/mcp",
+    )
+    cli._cmd_sources(argparse.Namespace(
+        action="list", prefix=None, provider=None, params=None,
+    ))
+
+    out = capsys.readouterr().out
+    assert "s3cr3t-hmac-key" not in out
+    assert "bridge_token: <redacted>" in out
+    assert "/keys/api_token" in out
+    assert "http://127.0.0.1:18741/mcp" in out
