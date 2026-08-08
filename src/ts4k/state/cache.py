@@ -30,7 +30,12 @@ _CACHE_DIR = _CONFIG_DIR / "cache"
 _INDEX_FILE = _CACHE_DIR / "index.json"
 _BODIES_DIR = _CACHE_DIR / "bodies"
 
-SCHEMA_VERSION = 1
+# 2: readable-body-mode work changed compact normalization output — nested
+# tables inside layout wrappers now convert to pipe rows, and link dedup no
+# longer duplicates emphasized url-as-text anchors. Entries cached under v1
+# hold the old text and have no expiry, so without this bump an upgraded
+# install serves the superseded body indefinitely.
+SCHEMA_VERSION = 2
 
 # Sources that participate in caching (network-heavy adapters only).
 CACHEABLE_SOURCES = {"g", "o"}
