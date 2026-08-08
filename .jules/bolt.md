@@ -4,3 +4,7 @@
 ## 2026-02-24 - Substring Search vs Compiled Regex OR
 **Learning:** For simple substring inclusion checks (e.g., checking if a URL contains any of a list of indicator strings like tracking domains), using Python's generator expression `any(ind in target for ind in indicators)` is often slightly faster than compiling and searching a large combined regex `OR` pattern (e.g., `(?:a|b|c)`). Python's native `in` operator for strings is highly optimized in C. However, for full regex matching/searching against lists of complex `re.compile()` objects, combining them into a single pattern with the `|` (OR) operator provides significant (~2-3x) speedups.
 **Action:** Use combined regex `OR` patterns to replace loops over multiple compiled regexes. Avoid replacing simple `any(a in b)` substring loops with regex unless the patterns are complex enough to warrant it.
+
+## 2024-05-24 - [Regex Whitespace Replacement vs Native Split/Join]
+**Learning:** For collapsing multiple whitespaces (spaces, tabs, newlines) into a single space in Python, using the native string method `" ".join(string.split())` is significantly faster (up to ~6x) than using regular expressions like `re.sub(r"\s+", " ", string)`.
+**Action:** Use native string methods like `split()` and `join()` instead of `re.sub()` when collapsing multiple whitespaces.

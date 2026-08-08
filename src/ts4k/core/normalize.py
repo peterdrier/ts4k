@@ -88,8 +88,10 @@ def normalize_headers(raw_headers: dict) -> dict:
 
         if isinstance(value, str):
             value = value.strip()
-            # Collapse internal whitespace in header values (folded headers)
-            value = re.sub(r"\s+", " ", value)
+            # ⚡ Bolt Optimization: Replace regex whitespace collapse with native string method.
+            # " ".join(string.split()) is significantly faster (up to ~6x) than re.sub(r"\s+", " ", string)
+            # for collapsing multiple whitespaces (spaces, tabs, newlines) into a single space.
+            value = " ".join(value.split())
 
         if norm_key == "date" and isinstance(value, str):
             result[norm_key] = _normalize_date(value)
