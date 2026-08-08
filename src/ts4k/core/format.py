@@ -954,7 +954,8 @@ def _thread_listing_xml(threads: list[dict]) -> str:
     ::
 
         <threads>
-        <t id="g:abc" subject="Meeting" who="a@x.com,b@y.com" n="3" from="..." to="..."/>
+        <t id="g:abc" subject="Meeting" who="a@x.com,b@y.com" n="3" from="..." to="..."
+           snip="Latest message text"/>
         </threads>
     """
     lines = ["<threads>"]
@@ -967,6 +968,10 @@ def _thread_listing_xml(threads: list[dict]) -> str:
             f' from={xml_quoteattr(thread.get("first_date", ""))}'
             f' to={xml_quoteattr(thread.get("date", ""))}'
         )
+        # Emitted only when there is one, matching the JSON listing — an empty
+        # attribute on every row is pure token cost.
+        if thread.get("snippet"):
+            attrs += f' snip={xml_quoteattr(thread["snippet"])}'
         lines.append(f"<t{attrs}/>")
     lines.append("</threads>")
     return "\n".join(lines)

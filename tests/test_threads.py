@@ -560,6 +560,31 @@ class TestThreadListingFormat:
         assert root[0].get("id") == "g:t1"
         assert root[0].get("n") == "4"
 
+    def test_xml_carries_the_latest_snippet(self):
+        """XML clients get the same latest-message text pipe and JSON show."""
+        from xml.etree import ElementTree as ET
+
+        msgs = [
+            {"id": "g:m1", "thread_id": "g:t", "from": "a@x.com", "subject": "S",
+             "date": "2026-02-18T08:00:00Z", "snippet": "first"},
+            {"id": "g:m2", "thread_id": "g:t", "from": "b@x.com", "subject": "S",
+             "date": "2026-02-19T08:00:00Z", "snippet": "latest word"},
+        ]
+        root = ET.fromstring(format_thread_listing(collapse_threads(msgs), fmt="xml"))
+        assert root[0].get("snip") == "latest word"
+
+    def test_xml_omits_snip_when_there_is_no_snippet(self):
+        """An empty attribute on every row is pure token cost."""
+        from xml.etree import ElementTree as ET
+
+        msgs = [
+            {"id": "g:m1", "thread_id": "g:t", "from": "a@x.com", "subject": "S",
+             "date": "2026-02-18T08:00:00Z"},
+        ]
+        out = format_thread_listing(collapse_threads(msgs), fmt="xml")
+        assert ET.fromstring(out)[0].get("snip") is None
+        assert "snip=" not in out
+
     def test_unknown_format_raises(self):
         with pytest.raises(ValueError):
             format_thread_listing([], fmt="yaml")
