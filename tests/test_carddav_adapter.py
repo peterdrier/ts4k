@@ -343,6 +343,41 @@ class TestRedirectHandling:
             ICLOUD_CARDDAV_URL + "/", "https://p01-contacts.icloud.com/1234/principal/"
         )  # must not raise
 
+    def test_shard_spelling_out_the_default_port_is_still_trusted(self, tmp_path: Path):
+        """https and :443 are the same destination.
+
+        Comparing raw netlocs makes 'p01-contacts.icloud.com:443' match neither
+        the configured netloc nor the '.icloud.com' suffix, so an ordinary
+        shard redirect aborts the sync.
+        """
+        a = CarddavAdapter(CarddavAdapterConfig(
+            email="test@icloud.com", server_url=ICLOUD_CARDDAV_URL, config_dir=tmp_path,
+        ))
+        a._check_trusted_target(
+            ICLOUD_CARDDAV_URL, "https://p01-contacts.icloud.com:443/1234/principal/"
+        )  # must not raise
+
+    def test_same_host_on_the_default_port_is_still_trusted(self, tmp_path: Path):
+        """The same normalization has to hold for generic (non-iCloud) servers."""
+        a = CarddavAdapter(CarddavAdapterConfig(
+            email="u@example.com", server_url="https://dav.example.com/dav/",
+            config_dir=tmp_path,
+        ))
+        a._check_trusted_target(
+            "https://dav.example.com/dav/", "https://dav.example.com:443/dav/home/"
+        )  # must not raise
+
+    def test_a_port_change_is_still_rejected(self, tmp_path: Path):
+        """Normalizing the *default* port must not make every port equivalent."""
+        a = CarddavAdapter(CarddavAdapterConfig(
+            email="u@example.com", server_url="https://dav.example.com/dav/",
+            config_dir=tmp_path,
+        ))
+        with pytest.raises(RuntimeError, match="not trusted"):
+            a._check_trusted_target(
+                "https://dav.example.com/dav/", "https://dav.example.com:8443/dav/"
+            )
+
     async def test_discovery_href_on_an_unrelated_host_is_rejected(self, tmp_path: Path):
         """An absolute cross-origin href inside a discovery response body
         (as opposed to an HTTP redirect) must not get an authenticated
@@ -498,7 +533,34 @@ class TestParseVcards:
 
     def test_falls_back_to_structured_name(self):
         (record,) = parse_vcards(NO_FN_VCARD)
-        assert record["display_name"] == "Maria Reyes"
+        assert record["display_name"] == "Maria J Reyes"
+
+    def test_structured_name_keeps_prefix_middle_and_suffix(self):
+        """All five N components, in vCard order.
+
+        Dropping additional/prefix/suffix collapses `Smith;John;Paul;;Jr.` and
+        `Smith;John;;;` onto one alias, so the second card imported reads as a
+        duplicate of a different person.
+        """
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\n"
+            "N:Smith;John;Paul;Dr.;Jr.\r\n"
+            "EMAIL:js@example.com\r\n"
+            "END:VCARD\r\n"
+        )
+        (record,) = parse_vcards(card)
+        assert record["display_name"] == "Dr. John Paul Smith Jr."
+
+    def test_structured_names_differing_only_in_middle_stay_distinct(self):
+        two = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Smith;John;Paul;;Jr.\r\n"
+            "EMAIL:a@example.com\r\nEND:VCARD\r\n"
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Smith;John;;;\r\n"
+            "EMAIL:b@example.com\r\nEND:VCARD\r\n"
+        )
+        names = [r["display_name"] for r in parse_vcards(two)]
+        assert names == ["John Paul Smith Jr.", "John Smith"]
+        assert len(set(names)) == 2
 
     def test_structured_name_with_escaped_semicolon_is_not_split(self):
         """An escaped ';' inside a component is part of the value, not a
@@ -523,7 +585,7 @@ class TestParseVcards:
 
     def test_multiple_cards_in_one_stream(self):
         records = parse_vcards(SIMPLE_VCARD + NO_FN_VCARD)
-        assert [r["display_name"] for r in records] == ["Sarah Connor", "Maria Reyes"]
+        assert [r["display_name"] for r in records] == ["Sarah Connor", "Maria J Reyes"]
 
     def test_duplicate_values_are_deduplicated(self):
         card = (
@@ -634,7 +696,7 @@ class TestListContacts:
 
     async def test_walks_principal_home_and_addressbook(self, adapter: CarddavAdapter):
         records = await adapter.list_contacts()
-        assert [r["display_name"] for r in records] == ["Sarah Connor", "Maria Reyes"]
+        assert [r["display_name"] for r in records] == ["Sarah Connor", "Maria J Reyes"]
         # Local-part casing preserved; only the domain is lowered
         assert records[0]["emails"] == ["Sarah@example.com", "sarah@work.example"]
 

@@ -155,12 +155,35 @@ def _unescape(value: str) -> str:
     return "".join(out)
 
 
+def _host_and_port(url: str) -> tuple[str, int]:
+    """Lowercased hostname plus effective port, for comparing two URLs.
+
+    Raw ``netloc`` comparison treats ``host`` and ``host:443`` as different
+    destinations even over https, which is how an ordinary iCloud shard ends
+    up rejected as untrusted.
+    """
+    parts = urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    default = 443 if parts.scheme.lower() == "https" else 80
+    return (parts.hostname or "").lower(), port or default
+
+
 def _name_from_n(value: str) -> str:
-    """Build a display name from a structured ``N`` value."""
+    """Build a display name from a structured ``N`` value.
+
+    vCard orders ``N`` as family;given;additional;prefix;suffix. All five are
+    used: dropping the middle name and suffix collapses `Smith;John;Paul;;Jr.`
+    and `Smith;John;;;` onto the same alias, and the second card imported then
+    looks like a duplicate of a different person.
+    """
     parts = [_unescape(p).strip() for p in _split_unescaped(value)]
-    family = parts[0] if parts else ""
-    given = parts[1] if len(parts) > 1 else ""
-    return " ".join(p for p in (given, family) if p)
+    parts += [""] * (5 - len(parts))
+    family, given, additional, prefix, suffix = parts[:5]
+    ordered = (prefix, given, additional, family, suffix)
+    return " ".join(p for p in ordered if p)
 
 
 def parse_vcards(text: str) -> list[dict]:
@@ -354,11 +377,19 @@ class CarddavAdapter:
                 f"is not HTTPS, and sending them over a non-HTTPS URL would "
                 f"expose them in cleartext."
             )
-        current_host = urlsplit(base_url).netloc.lower()
-        new_host = urlsplit(target_url).netloc.lower()
+        # Compare hostname + effective port rather than raw netloc, matching
+        # is_icloud_carddav_url: a shard that spells out the default port
+        # (https://p01-contacts.icloud.com:443/…) is the same destination, and
+        # rejecting it aborts an otherwise ordinary sync.
+        current_host, current_port = _host_and_port(base_url)
+        new_host, new_port = _host_and_port(target_url)
         is_icloud_account = is_icloud_carddav_url(self._config.server_url)
-        same_host = new_host == current_host
-        trusted_icloud_shard = is_icloud_account and new_host.endswith(".icloud.com")
+        same_host = (new_host, new_port) == (current_host, current_port)
+        trusted_icloud_shard = (
+            is_icloud_account
+            and (new_host == "icloud.com" or new_host.endswith(".icloud.com"))
+            and new_port == 443
+        )
         if not same_host and not trusted_icloud_shard:
             raise RuntimeError(
                 f"Refusing to send CardDAV credentials to {target_url} — the "
