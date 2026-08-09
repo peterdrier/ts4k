@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
-from ts4k.core.levels import AccessLevel
 
 
 def _mock_response(json_data: dict, status_code: int = 200) -> httpx.Response:

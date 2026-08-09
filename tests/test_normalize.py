@@ -4,7 +4,6 @@ Each test uses realistic inline fixtures modeled on actual email patterns.
 The composite test at the end measures byte reduction and asserts >= 70%.
 """
 
-import pytest
 from ts4k.core.normalize import normalize, normalize_headers
 
 

@@ -291,6 +291,15 @@ def _thread_to_dict(thread: dict, prefix: str) -> dict:
     }
 
 
+# Thread action -> (modify body key, label ID, result status).
+_THREAD_LABEL_OPS: dict[str, tuple[str, str, str]] = {
+    "archive": ("removeLabelIds", "INBOX", "archived"),
+    "unarchive": ("addLabelIds", "INBOX", "unarchived"),
+    "read": ("removeLabelIds", "UNREAD", "marked_read"),
+    "unread": ("addLabelIds", "UNREAD", "marked_unread"),
+}
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -777,6 +786,47 @@ class GmailAdapter(BaseAdapter):
             ).execute()
         )
         return {"id": f"{self._prefix}:{raw_id}", "status": "trashed"}
+
+    async def modify_thread(
+        self, thread_id: str, action: str, label: str | None = None
+    ) -> dict:
+        """Apply *action* to every message in a thread with one API call.
+
+        Gmail shows a thread in the inbox while *any* of its messages carries
+        INBOX, so per-message archiving leaves threads behind — threads.modify
+        covers the whole conversation.
+        """
+        self._check_modify(action)
+        service = self._require_service()
+        raw_id = self._strip_prefix(thread_id)
+        result = {"id": f"{self._prefix}:{raw_id}"}
+
+        if action == "trash":
+            await asyncio.to_thread(
+                lambda: service.users().threads().trash(
+                    userId="me", id=raw_id,
+                ).execute()
+            )
+            return {**result, "status": "trashed"}
+
+        if action in ("label", "unlabel"):
+            if not label:
+                raise ValueError(f"{action} requires a label")
+            label_id = await self._resolve_label_id(label, create=action == "label")
+            key = "addLabelIds" if action == "label" else "removeLabelIds"
+            status = "labeled" if action == "label" else "unlabeled"
+            result["label"] = label
+        elif action in _THREAD_LABEL_OPS:
+            key, label_id, status = _THREAD_LABEL_OPS[action]
+        else:
+            raise ValueError(f"Action {action!r} is not supported at thread level")
+
+        await asyncio.to_thread(
+            lambda: service.users().threads().modify(
+                userId="me", id=raw_id, body={key: [label_id]},
+            ).execute()
+        )
+        return {**result, "status": status}
 
     async def list_labels(self) -> list[dict]:
         self._check_modify("list_labels")

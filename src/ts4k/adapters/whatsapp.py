@@ -1,12 +1,22 @@
-"""WhatsApp adapter — MCP client bridge to whatsapp-mcp.
+"""WhatsApp adapter — MCP client for the whatsapp-mcp archive.
 
-Connects to the whatsapp-mcp-server (Python FastMCP over stdio) which
-reads from a local SQLite database populated by the Go WhatsApp bridge.
+Two transports, same tool surface:
+
+``http`` (default)
+    Streamable HTTP MCP served directly by the Go bridge, behind the
+    challenge-response auth in :mod:`ts4k.adapters.wa_bridge_auth`.  No
+    subprocess.
+
+``stdio``
+    Spawns the Python FastMCP server (``whatsapp-mcp-server``) as a
+    subprocess.  Retained as the documented rollback while that server still
+    exists (whatsapp-mcp#85 retires it).
 
 Usage::
 
     adapter = WhatsAppAdapter(WhatsAppAdapterConfig(
-        server_cwd="~/whatsapp-mcp/server",
+        bridge_url="http://127.0.0.1:18741/mcp",
+        bridge_token_file="~/whatsapp-mcp/whatsapp-bridge/store/api_token",
     ))
     async with adapter:
         msgs = await adapter.list_messages(count=20)
@@ -14,6 +24,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import AsyncExitStack
@@ -23,7 +34,9 @@ from typing import Any
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 
+from ts4k.adapters import wa_bridge_auth
 from ts4k.adapters.base import BaseAdapter
 
 logger = logging.getLogger(__name__)
@@ -38,6 +51,18 @@ logger = logging.getLogger(__name__)
 class WhatsAppAdapterConfig:
     """All knobs for the WhatsApp adapter."""
 
+    # "http" talks to the Go bridge directly; "stdio" spawns the Python server.
+    transport: str = "http"
+
+    # -- http transport ------------------------------------------------------
+    bridge_url: str = wa_bridge_auth.DEFAULT_BRIDGE_URL
+    # The HMAC key the bridge mints at store/api_token on first run.  Either
+    # the value or a path to it; both are optional here because the key also
+    # resolves from WHATSAPP_API_TOKEN / WHATSAPP_API_TOKEN_FILE.
+    bridge_token: str | None = None
+    bridge_token_file: str | None = None
+
+    # -- stdio transport (rollback) -----------------------------------------
     server_command: list[str] = field(default_factory=lambda: ["uv", "run", "main.py"])
     server_cwd: str | None = None
     server_env: dict[str, str] | None = None
@@ -175,6 +200,15 @@ def parse_message_context_response(text: str, prefix: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _flatten(exc: BaseException):
+    """Yield the leaf exceptions of a (possibly nested) ExceptionGroup."""
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            yield from _flatten(sub)
+    else:
+        yield exc
+
+
 class WhatsAppAdapter(BaseAdapter):
     """WhatsApp adapter that bridges to whatsapp-mcp via stdio MCP client."""
 
@@ -194,22 +228,82 @@ class WhatsAppAdapter(BaseAdapter):
 
         stack = AsyncExitStack()
         self._exit_stack = stack
+        try:
+            if self._config.transport == "stdio":
+                streams = await self._connect_stdio(stack)
+            else:
+                streams = await self._connect_http(stack)
+            session = await stack.enter_async_context(ClientSession(*streams))
+            await session.initialize()
+        except BaseException as exc:
+            # The HTTP transport runs inside an anyio task group: a failed
+            # request cancels initialize(), and the error that explains why
+            # only surfaces when the group unwinds — here.  Both halves have
+            # to be considered or the operator is told "Cancelled via cancel
+            # scope", which names nothing.
+            teardown: BaseException | None = None
+            try:
+                await stack.aclose()
+            except BaseException as close_exc:
+                teardown = close_exc
+            self._exit_stack = None
+            raise self._connect_error(exc, teardown) from exc
+        self._session = session
+        logger.info("WhatsAppAdapter connected via %s", self._config.transport)
 
+    def _connect_error(
+        self, exc: BaseException, teardown: BaseException | None
+    ) -> BaseException:
+        """Pick the failure an operator can act on out of a task group's rubble."""
+        leaves = [leaf for group in (exc, teardown) if group is not None
+                  for leaf in _flatten(group)]
+        cause = next(
+            (leaf for leaf in leaves if not isinstance(leaf, asyncio.CancelledError)),
+            leaves[0] if leaves else exc,
+        )
+        if getattr(getattr(cause, "response", None), "status_code", None) == 401:
+            # The one failure that is all but guaranteed during rollout, and
+            # the one httpx describes least usefully.
+            return RuntimeError(
+                f"WhatsApp bridge at {self._config.bridge_url} rejected our key "
+                "(HTTP 401). Set bridge_token or bridge_token_file on the source "
+                "to the contents of the bridge's store/api_token."
+            )
+        return cause
+
+    async def _connect_stdio(self, stack: AsyncExitStack) -> tuple[Any, Any]:
         params = StdioServerParameters(
             command=self._config.server_command[0],
             args=self._config.server_command[1:],
             cwd=self._config.server_cwd,
             env=self._config.server_env,
         )
-        read_stream, write_stream = await stack.enter_async_context(
-            stdio_client(params)
+        return await stack.enter_async_context(stdio_client(params))
+
+    async def _connect_http(self, stack: AsyncExitStack) -> tuple[Any, Any]:
+        url = wa_bridge_auth.pin_loopback(self._config.bridge_url)
+        token = wa_bridge_auth.resolve_bridge_token(
+            self._config.bridge_token, self._config.bridge_token_file
         )
-        session = await stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
+        if not token:
+            # Not fatal — the bridge answers 401, which names the problem more
+            # precisely than a guess here could — but silence would leave the
+            # operator staring at an auth error with no hint where the key
+            # comes from.
+            logger.warning(
+                "No WhatsApp bridge token configured; requests to %s will be "
+                "rejected. Set bridge_token / bridge_token_file on the source, "
+                "or WHATSAPP_API_TOKEN. The bridge mints it at store/api_token "
+                "on first run.",
+                url,
+            )
+        read_stream, write_stream, _get_session_id = await stack.enter_async_context(
+            streamablehttp_client(
+                url,
+                httpx_client_factory=wa_bridge_auth.bridge_client_factory(token),
+            )
         )
-        await session.initialize()
-        self._session = session
-        logger.info("WhatsAppAdapter connected via stdio")
+        return read_stream, write_stream
 
     async def disconnect(self) -> None:
         if self._exit_stack is not None:

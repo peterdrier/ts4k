@@ -18,10 +18,7 @@ import argparse
 import asyncio
 import contextlib
 import io
-import os
 import shlex
-import sys
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -54,6 +51,7 @@ async def whatsnew(
     count: int = 20,
     fmt: str = "pipe",
     filter: bool = False,
+    threads: bool = False,
 ) -> str:
     """Check for new messages using keyed watermarks.
 
@@ -67,10 +65,11 @@ async def whatsnew(
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default, most compact), "json", or "xml".
         filter: Apply configured skip filters (default off).
+        threads: Collapse to one row per thread; refs then resolve to threads.
     """
     result = await commands.whatsnew(
         key=key, source=source, count=count, fmt=fmt,
-        filter=filter, ref_table=_refs,
+        filter=filter, ref_table=_refs, threads=threads,
     )
     if result.error:
         return result.error
@@ -115,6 +114,7 @@ async def list_tool(
     count: int = 20,
     fmt: str = "pipe",
     filter: bool = False,
+    threads: bool = False,
 ) -> str:
     """Search and list messages. All filters stack.
 
@@ -129,6 +129,7 @@ async def list_tool(
         count: Maximum messages to return (default 20).
         fmt: Output format — "pipe" (default, most compact), "json", or "xml".
         filter: Apply configured skip filters (default off).
+        threads: Collapse to one row per thread; refs then resolve to threads.
     """
     result = await commands.list_messages(
         source=source,
@@ -140,6 +141,7 @@ async def list_tool(
         fmt=fmt,
         filter=filter,
         ref_table=_refs,
+        threads=threads,
     )
     if result.error:
         return result.error
@@ -219,6 +221,7 @@ async def manage(
     label: str | None = None,
     folder: str | None = None,
     dry_run: bool = False,
+    thread: bool = False,
 ) -> str:
     """Manage mailbox: archive, label, mark read/unread, trash.
 
@@ -231,6 +234,7 @@ async def manage(
         label: Label/category name (required for label/unlabel).
         folder: Folder name (required for move, O365 only).
         dry_run: Preview actions without executing (default false).
+        thread: Apply to every message in the thread, one call (Gmail only).
     """
     return await commands.manage_message(
         action=action,
@@ -239,6 +243,7 @@ async def manage(
         folder=folder,
         dry_run=dry_run,
         ref_table=_refs,
+        thread=thread,
     )
 
 

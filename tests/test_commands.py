@@ -130,11 +130,6 @@ class TestGetStatus:
     def test_status_no_data(self, tmp_path, monkeypatch):
         """Status with no sources or stats should not crash."""
         from ts4k import state
-        from ts4k.state import contacts as c
-        from ts4k.state import filters as f
-        from ts4k.state import sources as src
-        from ts4k.state import stats as st
-        from ts4k.state import watermarks as wm
 
         state.set_config_dir(tmp_path, reason="test")
 
@@ -297,3 +292,20 @@ class TestGetMessageReadableFallback:
 
         assert result.output != ""  # header line still present, just no body
         assert stub.calls == [False]  # single fetch only, no fallback retry
+class TestSkillReference:
+    """Skill text is the agent's only self-documentation — pin what it must say."""
+
+    def test_voice_notes_are_declared_transcribed(self):
+        """Agents must not ask the user to listen to audio (ts4k#48).
+
+        The bridge folds the transcript into the message body; nothing in the
+        response shape says so, so the skill text is where an agent learns it.
+        """
+        text = commands.skill_reference("basic")
+        assert "[voice" in text
+        assert "transcript" in text.lower()
+
+    def test_voice_guidance_survives_in_one_line(self):
+        """It rides in every skill call — one line is the budget."""
+        lines = [ln for ln in commands.skill_reference("basic").splitlines() if "[voice" in ln]
+        assert len(lines) == 1, lines

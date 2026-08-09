@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 
-import pytest
 
 from ts4k.state.refs import RefTable
 

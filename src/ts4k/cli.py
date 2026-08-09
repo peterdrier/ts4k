@@ -35,8 +35,24 @@ from typing import Any
 
 from ts4k import commands, state
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
-from ts4k.state import sources, watermarks
+from ts4k.state import sources
 from ts4k.state.refs import RefTable
+
+
+# Source config keys holding a secret rather than a pointer to one. `src list`
+# runs constantly in agent context and in terminal scrollback, so the value
+# itself never gets printed — `bridge_token_file` (a path) still does.
+_SECRET_SOURCE_KEYS = frozenset({"bridge_token"})
+
+
+def _shown(key: str, value: object) -> object:
+    """Value to print for a source config field — secrets never print.
+
+    Every place that echoes a source config goes through here; `src add` and
+    `src list` both display the same entries, so redacting only one of them
+    just moves where the key leaks.
+    """
+    return "<redacted>" if key in _SECRET_SOURCE_KEYS else value
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +62,6 @@ from ts4k.state.refs import RefTable
 
 def _refs_path(key: str | None = None) -> "Path":
     """Path to the CLI refs file."""
-    from pathlib import Path
 
     base = state.get_config_dir().path
     if key:
@@ -89,6 +104,7 @@ def _suggest_ref_table(ref: str, current_key: str | None, cmd: str = "get") -> s
 async def _cmd_whatsnew(args: argparse.Namespace) -> None:
     refs = RefTable()
     refs.load(_refs_path(args.key))  # load existing, accumulate
+    threads = getattr(args, "threads", False)
     result = await commands.whatsnew(
         key=args.key,
         source=getattr(args, "source", None),
@@ -96,13 +112,17 @@ async def _cmd_whatsnew(args: argparse.Namespace) -> None:
         fmt=getattr(args, "format", "pipe") or "pipe",
         filter=getattr(args, "filter", False),
         ref_table=refs,
+        threads=threads,
     )
     if result.error:
         print(result.error)
         return
     refs.save(_refs_path(args.key))  # save accumulated
     print(result.output)
-    print(f"→ ts4k get -k {args.key} N to read message N")
+    if threads:
+        print(f"→ ts4k thread -k {args.key} N to read thread N")
+    else:
+        print(f"→ ts4k get -k {args.key} N to read message N")
 
 
 async def _cmd_get(args: argparse.Namespace) -> None:
@@ -159,6 +179,7 @@ async def _cmd_list(args: argparse.Namespace) -> None:
     key = getattr(args, "key", None)
     refs = RefTable()
     refs.load(_refs_path(key))
+    threads = getattr(args, "threads", False)
     result = await commands.list_messages(
         source=getattr(args, "source", None),
         query=getattr(args, "query", None),
@@ -169,16 +190,18 @@ async def _cmd_list(args: argparse.Namespace) -> None:
         sender=getattr(args, "sender", None),
         domain=getattr(args, "domain", None),
         since=getattr(args, "since", None),
+        threads=threads,
     )
     if result.error:
         print(result.error)
         return
     refs.save(_refs_path(key))
     print(result.output)
+    cmd, noun = ("thread", "thread") if threads else ("get", "message")
     if key:
-        print(f"→ ts4k get -k {key} N to read message N")
+        print(f"→ ts4k {cmd} -k {key} N to read {noun} N")
     else:
-        print("→ ts4k get N to read message N")
+        print(f"→ ts4k {cmd} N to read {noun} N")
     if result._continuation_hint:
         print(f"→ {result._continuation_hint}  (older messages)")
 
@@ -195,7 +218,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print()
     print("Commands:")
     print("  whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)  [wn]")
-    print("  list [--since T] [-q Q] [--source S] [-n N] [--from/--domain]  Search [l]")
+    print("  list [--since T] [-q Q] [--source S] [-n N] [--from/--domain] [--threads]  Search [l]")
     print("  get [-k KEY] ID                             Read a message               [g]")
     print("  thread [-k KEY] TID                         Read a thread/chat           [t]")
     print("  overview [--source S] [--contact C]         Cache summary (drill-down)   [o]")
@@ -222,6 +245,9 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("Refs:  listings assign numbers (1, 2, 3...) — use with get/thread/event/manage")
     print("       whatsnew refs accumulate per key; use get -k KEY N to resolve")
     print("       ts4k sources  shows configured source prefixes")
+    print()
+    print("Threads: list/whatsnew --threads  one row per thread; refs resolve to threads")
+    print("         manage ACTION REF --thread  act on every message in the thread (Gmail)")
 
     if not all_cfg:
         print()
@@ -449,7 +475,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                         print(f"Inherited {', '.join(inherited)} from source {donor_prefix!r}.")
 
             if "client_id" not in kwargs:
-                print(f"Error: client_id is required for the first O365 source.")
+                print("Error: client_id is required for the first O365 source.")
                 print(f"Usage: ts4k src add {prefix} o365 client_id=<id> tenant_id=<tid>")
                 return
 
@@ -465,7 +491,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         verb = "Updated" if existed else "Added"
         print(f"{verb} source {prefix!r}:")
         for k, v in sorted(entry.items()):
-            print(f"  {k}: {v}")
+            print(f"  {k}: {_shown(k, v)}")
 
     elif action == "rm":
         prefix = args.prefix
@@ -487,7 +513,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             print(f"  {prefix}: {provider} ({detail}) [{level}]")
             for k, v in sorted(cfg.items()):
                 if k not in ("provider", "email", "mailbox", "mcp_cwd"):
-                    print(f"    {k}: {v}")
+                    print(f"    {k}: {_shown(k, v)}")
 
     elif action == "discover":
         asyncio.run(_cmd_discover_o365(args))
@@ -651,6 +677,7 @@ async def _cmd_manage_async(args: argparse.Namespace) -> None:
         folder=getattr(args, "folder", None),
         dry_run=getattr(args, "dry_run", False),
         ref_table=rt,
+        thread=getattr(args, "thread", False),
     )
     print(result)
 
@@ -929,7 +956,7 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
     for email, (o365_prefix, client_id, tenant_id) in o365_accounts.items():
         email_display = email
         print(f"\nFound O365 account: {email_display}")
-        print(f"Fetching calendars...")
+        print("Fetching calendars...")
         try:
             cals = await commands.cal_list_o365_calendars(email, client_id, tenant_id)
         except Exception as e:
@@ -1045,7 +1072,7 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             else:
                 print(f"Error: '{target}' is not a known source prefix or provider.")
                 print(f"Sources: {', '.join(all_sources.keys()) or '(none)'}")
-                print(f"Providers: gmail, o365 (gcal/o365cal share auth with gmail/o365)")
+                print("Providers: gmail, o365 (gcal/o365cal share auth with gmail/o365)")
                 sys.exit(1)
     elif check_only:
         # --check with no target -> check all
@@ -1117,13 +1144,13 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
             elif provider in ("o365", "o365cal"):
                 _auth_o365(prefix, cfg, no_calendar)
             elif provider == "whatsapp":
-                print(f"  {prefix}: whatsapp — session-based, no auth needed")
+                _auth_whatsapp(prefix, cfg)
             elif provider == "caldav":
                 from ts4k.auth.caldav import credentials_path
                 email = cfg.get("email", "<your-apple-id>")
                 print(f"  {prefix}: caldav — no OAuth; uses an app-specific password")
-                print(f"        Generate one at https://account.apple.com "
-                      f"(Sign-In and Security → App-Specific Passwords),")
+                print("        Generate one at https://account.apple.com "
+                      "(Sign-In and Security → App-Specific Passwords),")
                 print(f"        then store it with: ts4k src add {prefix} apple email={email}")
                 # src add only prompts when no credential is stored, so a revoked
                 # password has to be removed first or the re-run is a no-op.
@@ -1139,6 +1166,27 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
 
     if any_failed:
         sys.exit(1)
+
+
+def _auth_whatsapp(prefix: str, cfg: dict) -> None:
+    """Report how a WhatsApp source authenticates — there is nothing to run.
+
+    The WhatsApp session lives in the bridge (paired by QR, once). What ts4k
+    needs is the bridge's HMAC key, which the operator pastes in rather than
+    obtains through a flow.
+    """
+    from ts4k.adapters import wa_bridge_auth
+
+    if (cfg.get("transport") or "http").lower() == "stdio":
+        print(f"  {prefix}: whatsapp (stdio) — session-based, no auth needed")
+        return
+    if wa_bridge_auth.resolve_bridge_token(cfg.get("bridge_token"), cfg.get("bridge_token_file")):
+        print(f"  {prefix}: whatsapp — bridge key configured, nothing to authorize")
+        return
+    print(f"  {prefix}: whatsapp — no bridge key configured")
+    print("        The bridge mints one at <whatsapp-bridge>/store/api_token on first run.")
+    print(f"        ts4k src add {prefix} whatsapp "
+          "bridge_token_file=/path/to/whatsapp-bridge/store/api_token")
 
 
 def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
@@ -1292,6 +1340,7 @@ def _build_parser() -> argparse.ArgumentParser:
     wn.add_argument("key", help="Watermark key (e.g. life, peter)")
     wn.add_argument("--count", "-n", type=int, default=20, help="Max messages (default: 20)")
     wn.add_argument("--source", "-s", default="all", help="Source: prefix, provider name, or all")
+    wn.add_argument("--threads", action="store_true", help="One row per thread (refs resolve to threads)")
     _add_common_args(wn)
     wn.set_defaults(func=_cmd_whatsnew)
 
@@ -1354,6 +1403,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k l --domain co.com -n 50             # by domain, up to 50\n"
             "  ts4k l -q invoice -s g -n 10             # Gmail search, 10 results\n"
             "  ts4k l --since 6h -s g -k work           # last 6h Gmail, refs under 'work'\n"
+            "  ts4k l --since 2d --threads              # one row per thread\n"
             "  ts4k l -q 'subject:urgent' -f json       # query, JSON output"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1365,6 +1415,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--from", dest="sender", help="Filter by sender email address")
     ls.add_argument("--domain", help="Filter by sender domain (e.g. example.com)")
     ls.add_argument("--key", "-k", help="Accumulate refs under a key (use with get -k KEY N)")
+    ls.add_argument("--threads", action="store_true", help="One row per thread (refs resolve to threads)")
     _add_common_args(ls)
     ls.set_defaults(func=_cmd_list)
 
@@ -1391,13 +1442,14 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "provider keys:\n"
             "  gmail:    email (required), mcp_url, transport\n"
-            "  whatsapp: mcp_cwd (required), server_command\n"
+            "  whatsapp: bridge_url, bridge_token, bridge_token_file, transport (http|stdio)\n"
+            "            transport=stdio also needs mcp_cwd, server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
             "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
             "\n"
             "examples:\n"
             '  ts4k src add g gmail email=you@gmail.com\n'
-            '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
+            '  ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-bridge/store/api_token\n'
             '  ts4k src add cc apple email=you@icloud.com\n'
             "\n"
             "List fields (server_command) are auto-split on spaces.\n"
@@ -1585,6 +1637,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k m archive 1,2,3                 # batch archive by ref\n"
             "  ts4k m label 5 --label llm-garbage    # add label by ref\n"
             "  ts4k m read 1,2,3 -k work             # use refs from key 'work'\n"
+            "  ts4k m archive 1 --thread             # archive the whole thread\n"
             "  ts4k m archive g:abc123               # by native ID\n"
             "  ts4k m list-labels g:any               # list labels for source g\n"
             "  ts4k m archive 1 --dry-run             # preview without acting"
@@ -1599,6 +1652,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mg.add_argument("--label", "-l", help="Label/category name (for label/unlabel)")
     mg.add_argument("--folder", help="Folder name (for move, O365)")
     mg.add_argument("--key", "-k", help="Ref key for resolving short refs (e.g. life)")
+    mg.add_argument("--thread", action="store_true", help="Apply to every message in the thread (Gmail only)")
     mg.add_argument("--dry-run", action="store_true", help="Preview actions without executing")
     mg.set_defaults(func=_cmd_manage_async)
 

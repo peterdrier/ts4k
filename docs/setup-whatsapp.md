@@ -14,10 +14,14 @@ Unlike Gmail and O365, WhatsApp doesn't have an official API for personal accoun
 ## Architecture
 
 ```
-ts4k --> whatsapp-mcp (Python, MCP stdio) --> SQLite DB <-- Go bridge <-- WhatsApp
+ts4k --HTTP MCP--> Go bridge --> SQLite DB
+                       ^
+                       └-- WhatsApp
 ```
 
-ts4k spawns the whatsapp-mcp server as a subprocess on demand. The Go bridge syncs messages from WhatsApp into a local SQLite database. ts4k reads from that database through the MCP server — no direct WhatsApp API access, no cloud services, everything local.
+The Go bridge syncs messages from WhatsApp into a local SQLite database and serves MCP over streamable HTTP at `http://127.0.0.1:18741/mcp`. ts4k talks to it directly — no subprocess, no direct WhatsApp API access, no cloud services, everything local.
+
+The bridge also still runs a separate Python MCP server (`whatsapp-mcp-server/`) that speaks stdio and reads the same database. ts4k no longer uses it by default, but it remains the [rollback path](#rollback-to-the-stdio-server).
 
 ## Step 1: Clone the WhatsApp MCP Server
 
@@ -46,49 +50,62 @@ On first run, it displays a QR code in the terminal. Scan it with your phone:
 
 The bridge starts syncing messages into `bridge/store/messages.db`. Keep it running (or set it up as a service) to keep the database current.
 
-## Step 3: Install the MCP Server Dependencies
+## Step 3: Verify the Database Exists
 
-```bash
-cd ../server
-pip install -r requirements.txt
-# or, if using uv:
-uv sync
-```
-
-## Step 4: Verify the Database Exists
+Step 2 left you in `whatsapp-mcp/bridge`; these paths are relative to it.
 
 Make sure the SQLite database was created by the bridge:
 
 ```bash
-ls ../bridge/store/messages.db
+ls store/messages.db
 ```
 
 If the file exists, the bridge is working. You can also check message count:
 
 ```bash
-sqlite3 ../bridge/store/messages.db "SELECT COUNT(*) FROM messages;"
+sqlite3 store/messages.db "SELECT COUNT(*) FROM messages;"
+```
+
+## Step 4: Find the Bridge Key
+
+On first run the bridge mints a shared secret at `bridge/store/api_token` and never prints it again. It is an HMAC key, not a password: ts4k signs each request with it, and the key itself never crosses the wire.
+
+```bash
+ls -l store/api_token
 ```
 
 ## Step 5: Register the Source
 
-Point ts4k at the whatsapp-mcp server directory:
-
 ```bash
-ts4k src add w whatsapp mcp_cwd=/path/to/whatsapp-mcp/server
+ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-mcp/bridge/store/api_token
 ```
 
-Replace `/path/to/whatsapp-mcp/server` with the actual path to the `server/` directory in your clone.
-
-If you need a custom command to start the server (instead of the default `uv run main.py`):
+`bridge_url` defaults to `http://127.0.0.1:18741/mcp`. Set it only if the bridge listens elsewhere:
 
 ```bash
-ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="python main.py"
+ts4k src add w whatsapp \
+  bridge_url=http://127.0.0.1:18741/mcp \
+  bridge_token_file=/path/to/bridge/store/api_token
 ```
+
+If ts4k runs on a different machine from the bridge, copy the key to a file on that machine and point `bridge_token_file` at it, or export `WHATSAPP_API_TOKEN` in that environment:
+
+```bash
+# on the ts4k host
+install -m 600 /dev/null ~/.config/ts4k/wa_api_token
+# paste the key into it, then:
+ts4k src add w whatsapp bridge_token_file=~/.config/ts4k/wa_api_token
+```
+
+Prefer either of those over `bridge_token=<key>` on the command line: an argument lands in shell history and is visible in process listings, and this key grants read access to the whole archive wherever the bridge is reachable. `bridge_token` still works for throwaway setups, and ts4k redacts it from `src add` / `src list` output, but neither of those helps once it is in `~/.bash_history`.
+
+Note that the bridge binds loopback only — reaching it from another host needs a tunnel, not a config change here.
 
 Verify it's registered:
 
 ```bash
 ts4k src list
+ts4k auth --check          # reports whether the bridge key resolves
 ```
 
 ## Step 6: Verify It Works
@@ -97,28 +114,54 @@ ts4k src list
 ts4k wn --source w
 ```
 
-You should see your recent WhatsApp messages. If you get a connection error, make sure the `mcp_cwd` path is correct and the server dependencies are installed.
+You should see your recent WhatsApp messages.
 
-## No Authentication Needed
+## Authentication
 
-WhatsApp messages come from a local SQLite database — there are no OAuth tokens, API keys, or cloud credentials to manage. The Go bridge handles the WhatsApp device linking, and everything stays on your machine.
+There is no OAuth, no cloud credential, and no login flow. Two separate things authenticate:
+
+- **WhatsApp → bridge**: the QR pairing from Step 2. Lives in the bridge, done once.
+- **ts4k → bridge**: challenge-response over the shared key. Each request goes out unsigned, the bridge answers `401` with a single-use nonce, and ts4k re-sends an HMAC over the method, path, nonce and body — over a fresh connection. Nothing replayable is ever sent, so capturing a request buys an attacker only that one request.
+
+## Rollback to the stdio server
+
+The Python MCP server (`whatsapp-mcp-server/`) still exists and still reads the same database. To point ts4k back at it:
+
+```bash
+ts4k src add w whatsapp transport=stdio \
+  mcp_cwd=/path/to/whatsapp-mcp/whatsapp-mcp-server \
+  server_command="uv run main.py"
+```
+
+This re-adds the source with `transport=stdio`, which makes ts4k spawn the Python server as a subprocess again. `bridge_url` and the key are ignored in that mode. Switch back with `ts4k src add w whatsapp bridge_token_file=...` (no `transport` key, or `transport=http`).
+
+Install its dependencies first if you have not run it before:
+
+```bash
+cd ../whatsapp-mcp-server && uv sync   # from bridge/; use the repo root otherwise
+```
 
 ## Keeping Messages Current
 
-The Go bridge needs to be running to receive new messages. Options:
+On the default HTTP transport the bridge **is** the MCP endpoint, so it has to be running for every query — not just to receive new messages. With it stopped, ts4k gets connection-refused rather than stale-but-usable results. Run it as a systemd service (Linux) or a startup task.
 
-- **Run manually** when you need fresh data: `cd bridge && ./whatsapp-bridge`
-- **Run as a systemd service** (Linux) or startup task for continuous sync
-- **Run on a schedule** — even without the bridge running, ts4k can still query whatever was last synced into the database
+```bash
+cd bridge && ./whatsapp-bridge
+```
+
+Only the [stdio rollback](#rollback-to-the-stdio-server) can read the database while the bridge is down: there the Python server opens the SQLite file itself, so queries return whatever was last synced.
 
 ## Caching Note
 
-WhatsApp messages come from a local database, so they're already fast to query. ts4k does **not** cache WhatsApp messages (caching is reserved for network-heavy sources like Gmail and O365). This means WhatsApp queries always read directly from the SQLite database through the MCP server.
+WhatsApp messages come from a local database, so they're already fast to query. ts4k does **not** cache WhatsApp messages (caching is reserved for network-heavy sources like Gmail and O365). This means WhatsApp queries always read live from the bridge, which reads the SQLite database — there is no ts4k-side copy to go stale, and equally nothing to answer from while the bridge is stopped.
 
 ## Troubleshooting
 
-**"Connection refused" or "server not found"**
-Check that `mcp_cwd` in your source config points to the `server/` directory (not the repo root). Verify deps are installed: `cd server && pip install -r requirements.txt`.
+**"Connection refused"**
+The bridge is not running, or is not listening on `bridge_url`. Start it (`cd bridge && ./whatsapp-bridge`) and check the port with `curl -i http://127.0.0.1:18741/mcp -X POST` — a healthy bridge answers `401` with a `WWW-Authenticate: HMAC-SHA256` header.
+
+**HTTP 401 from the bridge**
+ts4k has no key, or the wrong one. `ts4k auth --check` says whether one resolves at all; if it does, confirm `bridge_token_file` points at the `store/api_token` of the bridge you are actually talking to. The key is regenerated if that file is deleted, which invalidates every client holding the old one.
 
 **"No messages found"**
 Make sure the Go bridge has run at least once and the SQLite database exists at `bridge/store/messages.db`. Check that it has rows: `sqlite3 bridge/store/messages.db "SELECT COUNT(*) FROM messages;"`.

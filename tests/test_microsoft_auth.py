@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ts4k.auth.microsoft import (
-    GRAPH_MAIL_READ_SCOPES,
     _cache_path,
     build_graph_client,
     get_credentials,
