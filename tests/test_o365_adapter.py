@@ -7,8 +7,7 @@ Adapter tests mock the httpx.AsyncClient.
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest

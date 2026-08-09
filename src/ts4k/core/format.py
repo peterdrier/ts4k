@@ -12,7 +12,7 @@ Target: 60%+ byte savings vs raw JSON pretty-print for listings.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
 

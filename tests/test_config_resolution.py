@@ -6,9 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ts4k import state
 from ts4k.state import (
-    ConfigDir,
     get_config_dir,
     reset,
     resolve_config_dir,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from ts4k.core.levels import (
-    AccessLevel, check_level, parse_level, scopes_for,
+    AccessLevel, check_level, scopes_for,
 )
 
 

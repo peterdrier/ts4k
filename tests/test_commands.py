@@ -6,9 +6,7 @@ filters, and status without needing real adapters.
 
 from __future__ import annotations
 
-import json
 
-import pytest
 
 from ts4k import commands
 
@@ -130,11 +128,6 @@ class TestGetStatus:
     def test_status_no_data(self, tmp_path, monkeypatch):
         """Status with no sources or stats should not crash."""
         from ts4k import state
-        from ts4k.state import contacts as c
-        from ts4k.state import filters as f
-        from ts4k.state import sources as src
-        from ts4k.state import stats as st
-        from ts4k.state import watermarks as wm
 
         state.set_config_dir(tmp_path, reason="test")
 

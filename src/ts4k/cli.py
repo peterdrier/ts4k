@@ -35,7 +35,7 @@ from typing import Any
 
 from ts4k import commands, state
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
-from ts4k.state import sources, watermarks
+from ts4k.state import sources
 from ts4k.state.refs import RefTable
 
 
@@ -62,7 +62,6 @@ def _shown(key: str, value: object) -> object:
 
 def _refs_path(key: str | None = None) -> "Path":
     """Path to the CLI refs file."""
-    from pathlib import Path
 
     base = state.get_config_dir().path
     if key:
@@ -472,7 +471,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                         print(f"Inherited {', '.join(inherited)} from source {donor_prefix!r}.")
 
             if "client_id" not in kwargs:
-                print(f"Error: client_id is required for the first O365 source.")
+                print("Error: client_id is required for the first O365 source.")
                 print(f"Usage: ts4k src add {prefix} o365 client_id=<id> tenant_id=<tid>")
                 return
 
@@ -953,7 +952,7 @@ async def _cmd_cal_setup(args: argparse.Namespace) -> None:
     for email, (o365_prefix, client_id, tenant_id) in o365_accounts.items():
         email_display = email
         print(f"\nFound O365 account: {email_display}")
-        print(f"Fetching calendars...")
+        print("Fetching calendars...")
         try:
             cals = await commands.cal_list_o365_calendars(email, client_id, tenant_id)
         except Exception as e:
@@ -1069,7 +1068,7 @@ def _cmd_auth(args: argparse.Namespace) -> None:
             else:
                 print(f"Error: '{target}' is not a known source prefix or provider.")
                 print(f"Sources: {', '.join(all_sources.keys()) or '(none)'}")
-                print(f"Providers: gmail, o365 (gcal/o365cal share auth with gmail/o365)")
+                print("Providers: gmail, o365 (gcal/o365cal share auth with gmail/o365)")
                 sys.exit(1)
     elif check_only:
         # --check with no target -> check all
@@ -1146,8 +1145,8 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
                 from ts4k.auth.caldav import credentials_path
                 email = cfg.get("email", "<your-apple-id>")
                 print(f"  {prefix}: caldav — no OAuth; uses an app-specific password")
-                print(f"        Generate one at https://account.apple.com "
-                      f"(Sign-In and Security → App-Specific Passwords),")
+                print("        Generate one at https://account.apple.com "
+                      "(Sign-In and Security → App-Specific Passwords),")
                 print(f"        then store it with: ts4k src add {prefix} apple email={email}")
                 # src add only prompts when no credential is stored, so a revoked
                 # password has to be removed first or the re-run is a no-op.
