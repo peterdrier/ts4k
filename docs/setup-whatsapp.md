@@ -52,16 +52,18 @@ The bridge starts syncing messages into `bridge/store/messages.db`. Keep it runn
 
 ## Step 3: Verify the Database Exists
 
+Step 2 left you in `whatsapp-mcp/bridge`; these paths are relative to it.
+
 Make sure the SQLite database was created by the bridge:
 
 ```bash
-ls bridge/store/messages.db
+ls store/messages.db
 ```
 
 If the file exists, the bridge is working. You can also check message count:
 
 ```bash
-sqlite3 bridge/store/messages.db "SELECT COUNT(*) FROM messages;"
+sqlite3 store/messages.db "SELECT COUNT(*) FROM messages;"
 ```
 
 ## Step 4: Find the Bridge Key
@@ -69,7 +71,7 @@ sqlite3 bridge/store/messages.db "SELECT COUNT(*) FROM messages;"
 On first run the bridge mints a shared secret at `bridge/store/api_token` and never prints it again. It is an HMAC key, not a password: ts4k signs each request with it, and the key itself never crosses the wire.
 
 ```bash
-ls -l bridge/store/api_token
+ls -l store/api_token
 ```
 
 ## Step 5: Register the Source
