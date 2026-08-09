@@ -20,7 +20,11 @@ dependencies = [
     "google-auth-oauthlib>=1.2",
     "html2text>=2024.2",
     "httpx>=0.27",
-    "mcp>=1.0,<2",
+    # 1.9.2 is the first release whose streamablehttp_client takes
+    # httpx_client_factory — the hook the WhatsApp HTTP transport hardens the
+    # client through. whatsapp.py imports that module unconditionally, so an
+    # older mcp breaks every command, not just WhatsApp.
+    "mcp>=1.9.2,<2",
     "msal>=1.28",
 ]
 

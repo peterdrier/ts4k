@@ -37,9 +37,22 @@ class TestCheckTokenHealth:
         assert result.status == "ok"
         mock_validate.assert_called_once()
 
-    def test_whatsapp_returns_ok(self):
-        result = check_token_health("w", {"provider": "whatsapp"})
+    def test_whatsapp_stdio_returns_ok(self):
+        """The stdio server has no credential of its own — the session is the bridge's."""
+        result = check_token_health("w", {"provider": "whatsapp", "transport": "stdio"})
         assert result.status == "ok"
+
+    def test_whatsapp_http_with_a_bridge_key_returns_ok(self):
+        result = check_token_health(
+            "w", {"provider": "whatsapp", "bridge_token": "k"}
+        )
+        assert result.status == "ok"
+
+    def test_whatsapp_http_without_a_bridge_key_needs_auth(self, monkeypatch):
+        monkeypatch.delenv("WHATSAPP_API_TOKEN", raising=False)
+        monkeypatch.delenv("WHATSAPP_API_TOKEN_FILE", raising=False)
+        result = check_token_health("w", {"provider": "whatsapp"})
+        assert result.status == "auth"
 
     def test_unknown_provider_returns_na(self):
         result = check_token_health("x", {"provider": "unknown"})

@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
-from ts4k.core.levels import AccessLevel
 
 
 @pytest.fixture

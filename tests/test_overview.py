@@ -7,11 +7,7 @@ import json
 import pytest
 
 from ts4k.commands import (
-    _build_contact_view,
     _build_period_breakdown,
-    _build_source_view,
-    _build_top_view,
-    _filter_by_contact,
     _parse_period,
     _resolve_sender,
     _sibling_prefixes,

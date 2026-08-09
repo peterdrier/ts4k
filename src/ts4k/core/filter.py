@@ -43,7 +43,38 @@ def apply_filters(
 
 
 def _compile_patterns(patterns: list[str]) -> list[re.Pattern]:
-    """Compile regex patterns, silently dropping invalid ones."""
+    """Compile regex patterns, silently dropping invalid ones.
+
+    Optimized: Combines all valid patterns into a single regex using OR (|)
+    to avoid looping over multiple regexes during text search. Falls back
+    to individual regexes if backreferences or inline flags are detected.
+    """
+    valid_patterns = []
+    for p in patterns:
+        try:
+            # Test if it compiles cleanly
+            re.compile(p, re.IGNORECASE)
+
+            # Backreferences and inline flags break when concatenated inside non-capturing groups
+            if "(?" in p or re.search(r"\\[1-9]", p):
+                return _fallback_compile(patterns)
+
+            valid_patterns.append(f"(?:{p})")
+        except re.error:
+            continue
+
+    if not valid_patterns:
+        return []
+
+    try:
+        return [re.compile("|".join(valid_patterns), re.IGNORECASE)]
+    except re.error:
+        # Fallback if combined regex is too complex or throws error
+        return _fallback_compile(patterns)
+
+
+def _fallback_compile(patterns: list[str]) -> list[re.Pattern]:
+    """Fallback method for compiling regex patterns individually."""
     compiled = []
     for p in patterns:
         try:

@@ -27,7 +27,7 @@ Microsoft requires apps to register before they can access mailboxes. You do thi
 
 The Azure portal's UI for adding permissions is unreliable — permissions often don't appear in the search. The most reliable method is to edit the manifest directly:
 
-1. In your app registration, go to **Manifest** (left sidebar)
+1. In your app registration, go to **Manifest** (left sidebar of your app registration)
 2. Find `"requiredResourceAccess"` and replace it with:
 
 ```json
@@ -73,7 +73,7 @@ Verify by going to **API permissions** — all four should appear.
 
 ### Step 3: Enable Public Client Flow
 
-1. Go to **Authentication** in your app registration
+1. Go to **Authentication** (left sidebar of your app registration)
 2. Under **Settings**, set **Allow public client flows** to **Yes**
 3. Click **Save**
 

@@ -12,20 +12,20 @@ This guide walks through connecting ts4k to one or more Gmail accounts.
 
 Google requires any app that accesses Gmail to authenticate through a "project" in their Cloud Console. This is how Google controls which apps can read your email — even apps you build for yourself. The project is free, takes a few minutes to set up, and you only do it once.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Click **Select a project** (top bar) then **New Project**
-3. Name it `ts4k`, click **Create**
-4. Make sure `ts4k` is selected as the active project
+1. Go to the [Create a Project page](https://console.cloud.google.com/projectcreate)
+2. Name it `ts4k`, click **Create**
+3. Make sure `ts4k` is selected as the active project
+
+> **Note:** The direct links in the steps below open in your currently active project. If you have multiple Google Cloud projects, verify the project selector (top bar) shows `ts4k` before clicking through.
 
 ## Step 2: Enable the Gmail API
 
-1. Go to **APIs & Services > Library**
-2. Search for "Gmail API"
-3. Click **Gmail API**, then **Enable**
+1. Go to the [Gmail API library page](https://console.cloud.google.com/apis/library/gmail.googleapis.com) (or **APIs & Services > Library** and search for "Gmail API")
+2. Click **Enable**
 
 ## Step 3: Configure the OAuth Consent Screen
 
-1. Go to **APIs & Services > OAuth consent screen**
+1. Go to the [OAuth consent screen page](https://console.cloud.google.com/apis/credentials/consent) (or **APIs & Services > OAuth consent screen**)
 2. Select **External** (unless you have a Google Workspace org), click **Create**
 3. Fill in the required fields:
    - App name: `ts4k`
@@ -39,7 +39,7 @@ Google requires any app that accesses Gmail to authenticate through a "project" 
 
 ## Step 4: Create OAuth Credentials
 
-1. Go to **APIs & Services > Credentials**
+1. Go to the [Credentials page](https://console.cloud.google.com/apis/credentials) (or **APIs & Services > Credentials**)
 2. Click **Create Credentials > OAuth client ID**
 3. Application type: **Desktop app**
 4. Name: `ts4k` (or anything)

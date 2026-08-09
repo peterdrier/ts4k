@@ -1,7 +1,6 @@
 """Tests for ts4k.state.watermarks."""
 
 import json
-import os
 
 import pytest
 
