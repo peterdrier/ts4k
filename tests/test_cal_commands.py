@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from ts4k.commands import (
     cal_today,
@@ -13,7 +12,6 @@ from ts4k.commands import (
     cal_next,
     cal_range,
     cal_event,
-    cal_list_calendars,
     cal_create,
     cal_update,
     cal_rsvp,
