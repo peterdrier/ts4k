@@ -302,6 +302,151 @@ class TestDecodeBody:
         payload = {"mimeType": "multipart/mixed", "parts": []}
         assert _decode_body(payload) == ""
 
+    def test_prefer_html_selects_html_part(self):
+        """prefer_html=True flips the preference order for readable mode."""
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain text"), "size": 10},
+                },
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": _b64("<p>HTML text</p>"), "size": 16},
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "<p>HTML text</p>"
+
+    def test_prefer_html_finds_html_nested_in_multipart_related(self):
+        """Nested HTML wins over a direct plain part when prefer_html=True."""
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain text"), "size": 10},
+                },
+                {
+                    "mimeType": "multipart/related",
+                    "body": {"size": 0},
+                    "parts": [
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": _b64("<p>Rich</p>"), "size": 11},
+                        },
+                        {
+                            "mimeType": "image/png",
+                            "body": {"attachmentId": "att1", "size": 999},
+                            "filename": "logo.png",
+                        },
+                    ],
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "<p>Rich</p>"
+        assert _decode_body(payload, prefer_html=False) == "Plain text"
+
+    def test_prefer_html_falls_back_to_plain_when_no_html_part(self):
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Plain only"), "size": 10},
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "Plain only"
+
+    def test_html_attachment_not_mistaken_for_body(self):
+        """A text/html part with a filename is an attachment, not the body —
+        even in prefer_html mode, it must not be returned in place of the
+        real message body."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Real plain body"), "size": 15},
+                },
+                {
+                    "mimeType": "text/html",
+                    "filename": "notes.html",
+                    "body": {"data": _b64("<p>Attached snippet</p>"), "size": 23},
+                },
+            ],
+        }
+        assert _decode_body(payload) == "Real plain body"
+        assert _decode_body(payload, prefer_html=True) == "Real plain body"
+
+    def test_disposition_attachment_with_empty_filename_not_mistaken_for_body(self):
+        """A part with no filename but a Content-Disposition: attachment
+        header is still an attachment, not the body — even in prefer_html
+        mode, it must not be returned in place of the real message body."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "body": {"size": 0},
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": _b64("Real plain body"), "size": 15},
+                        },
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": _b64("<p>Real HTML body</p>"), "size": 21},
+                        },
+                    ],
+                },
+                {
+                    "mimeType": "text/html",
+                    "headers": [{"name": "Content-Disposition", "value": "attachment; filename=\"\""}],
+                    "body": {"data": _b64("<p>Attached snippet</p>"), "size": 23},
+                },
+            ],
+        }
+        assert _decode_body(payload) == "Real plain body"
+        assert _decode_body(payload, prefer_html=True) == "<p>Real HTML body</p>"
+
+    def test_attachment_marked_multipart_subtree_not_selected_as_body(self):
+        """A multipart/related container marked as an attachment must not
+        have its unmarked HTML child selected as the message body — the
+        attachment guard must apply to multipart containers, not just leaf
+        parts."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": _b64("Real plain body"), "size": 15},
+                },
+                {
+                    "mimeType": "multipart/related",
+                    "headers": [
+                        {
+                            "name": "Content-Disposition",
+                            "value": 'attachment; filename="doc.eml"',
+                        }
+                    ],
+                    "body": {"size": 0},
+                    "parts": [
+                        {
+                            "mimeType": "text/html",
+                            "body": {
+                                "data": _b64("<p>Attached document</p>"),
+                                "size": 24,
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+        assert _decode_body(payload, prefer_html=True) == "Real plain body"
+
 
 class TestExtractAttachments:
     """Tests for _extract_attachments()."""
@@ -668,6 +813,234 @@ class TestGmailAdapterReadMessage:
         adapter._service.users().messages().get.assert_called_with(
             userId="me", id="abc123", format="full"
         )
+
+    @pytest.mark.asyncio
+    async def test_prefer_html_selects_html_body(self):
+        """get --readable needs the HTML part to preserve emphasis/tables."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"data": _b64("<p><b>Rich</b> body</p>"), "size": 20},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+
+        msg = await adapter.read_message("g:abc123", prefer_html=True)
+
+        assert msg["body"] == "<p><b>Rich</b> body</p>"
+
+    @pytest.mark.asyncio
+    async def test_default_prefers_plain_text_body(self):
+        """Regression check: default (non-readable) reads still prefer text/plain."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"data": _b64("<p><b>Rich</b> body</p>"), "size": 20},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+
+        msg = await adapter.read_message("g:abc123")
+
+        assert msg["body"] == "Plain body"
+
+    @pytest.mark.asyncio
+    async def test_prefer_html_fetches_externalized_html_body(self):
+        """Gmail externalizes large bodies — a non-attachment text/html part
+        may have only an attachmentId (no inline data). readable mode must
+        fetch it via the attachments endpoint rather than falling back to
+        plain text."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"attachmentId": "ATT123", "size": 50000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(return_value={"data": _b64("<p>Big externalized HTML</p>")})
+        )
+
+        msg = await adapter.read_message("g:abc123", prefer_html=True)
+
+        assert msg["body"] == "<p>Big externalized HTML</p>"
+        adapter._service.users().messages().attachments().get.assert_called_with(
+            userId="me", messageId="abc123", id="ATT123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_prefer_html_fetches_externalized_root_html_body(self):
+        """A non-multipart message can BE a text/html leaf whose body was
+        externalized — the resolver must consider the root payload, not
+        just payload.parts."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc124",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "text/html",
+                "body": {"attachmentId": "ATT456", "size": 60000},
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(return_value={"data": _b64("<p>Root externalized HTML</p>")})
+        )
+
+        msg = await adapter.read_message("g:abc124", prefer_html=True)
+
+        assert msg["body"] == "<p>Root externalized HTML</p>"
+        adapter._service.users().messages().attachments().get.assert_called_with(
+            userId="me", messageId="abc124", id="ATT456"
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_read_resolves_externalized_plain_body(self):
+        """When nothing decodes inline and the text/plain part is
+        attachment-backed, the plain-mode read must resolve it too —
+        otherwise the readable empty-HTML retry returns empty again."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc125",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"attachmentId": "ATT789", "size": 40000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(return_value={"data": _b64("Externalized plain body")})
+        )
+
+        msg = await adapter.read_message("g:abc125", prefer_html=False)
+
+        assert msg["body"] == "Externalized plain body"
+        adapter._service.users().messages().attachments().get.assert_called_with(
+            userId="me", messageId="abc125", id="ATT789"
+        )
+
+    @pytest.mark.asyncio
+    async def test_compact_read_does_not_call_attachments_endpoint(self):
+        """Compact mode prefers inline plain text — it must not resolve
+        attachment-backed body parts at all."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"attachmentId": "ATT123", "size": 50000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+
+        msg = await adapter.read_message("g:abc123")
+
+        assert msg["body"] == "Plain body"
+        adapter._service.users().messages().attachments().get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prefer_html_attachment_fetch_failure_falls_back(self):
+        """If the attachments().get() call fails, readable mode must fall
+        back to the current inline-search result rather than raising."""
+        adapter = _make_adapter()
+        api_msg = {
+            "id": "abc123",
+            "threadId": "thread1",
+            "payload": {
+                "headers": [{"name": "Subject", "value": "Test"}],
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": _b64("Plain body"), "size": 10},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"attachmentId": "ATT123", "size": 50000},
+                    },
+                ],
+            },
+        }
+        adapter._service.users().messages().get.return_value.execute = MagicMock(
+            return_value=api_msg
+        )
+        adapter._service.users().messages().attachments().get.return_value.execute = (
+            MagicMock(side_effect=Exception("boom"))
+        )
+
+        msg = await adapter.read_message("g:abc123", prefer_html=True)
+
+        assert msg["body"] == "Plain body"
 
 
 class TestGmailAdapterReadThread:

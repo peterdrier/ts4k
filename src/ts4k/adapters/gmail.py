@@ -67,12 +67,13 @@ def _get_header(headers: list[dict], name: str) -> str:
     return ""
 
 
-def _decode_body(payload: dict) -> str:
+def _decode_body(payload: dict, prefer_html: bool = False) -> str:
     """Extract body text from a Gmail API payload tree.
 
-    Walks the multipart tree, preferring text/plain over text/html.
-    Returns raw HTML for text/html parts — the normalize pipeline handles
-    HTML-to-text conversion (avoiding double-processing).
+    Walks the multipart tree, preferring text/plain over text/html unless
+    *prefer_html* is set (readable mode wants the HTML part to preserve
+    emphasis/tables). Returns raw HTML for text/html parts — the normalize
+    pipeline handles HTML-to-text conversion (avoiding double-processing).
     """
     mime_type = payload.get("mimeType", "")
 
@@ -88,28 +89,73 @@ def _decode_body(payload: dict) -> str:
     if not parts:
         return ""
 
-    # Prefer text/plain.
+    preferred, fallback = ("text/html", "text/plain") if prefer_html else ("text/plain", "text/html")
+
+    # Search the whole subtree for the preferred type before accepting the
+    # fallback — the HTML alternative often nests inside multipart/related.
+    return _find_body_part(parts, preferred) or _find_body_part(parts, fallback)
+
+
+def _is_attachment_part(part: dict) -> bool:
+    """True if a payload part is marked as an attachment.
+
+    A filename, or a part-level Content-Disposition: attachment header
+    (even with an empty filename), marks the part as an attachment rather
+    than message body content. Applies to leaf parts and multipart
+    containers alike — an attachment can itself be a multipart document
+    (e.g. a forwarded .eml as multipart/related).
+    """
+    if part.get("filename"):
+        return True
+    disposition = _get_header(part.get("headers", []), "Content-Disposition")
+    return disposition.lower().startswith("attachment")
+
+
+def _find_body_part(parts: list[dict], mime: str) -> str:
+    """Depth-first search for a decodable leaf part of the given MIME type.
+
+    Skips parts marked as attachments (see _is_attachment_part) — both leaf
+    candidates and multipart containers, so an attachment that is itself a
+    multipart document doesn't have an unmarked child selected as the body.
+    """
     for part in parts:
-        if part.get("mimeType") == "text/plain":
-            text = _decode_body(part)
+        if part.get("mimeType") == mime and not _is_attachment_part(part):
+            body_data = part.get("body", {}).get("data")
+            if body_data:
+                decoded = base64.urlsafe_b64decode(body_data).decode(
+                    "utf-8", errors="replace"
+                )
+                if decoded:
+                    return decoded
+    for part in parts:
+        if "multipart" in part.get("mimeType", "") and not _is_attachment_part(part):
+            text = _find_body_part(part.get("parts", []), mime)
             if text:
                 return text
-
-    # Fall back to text/html.
-    for part in parts:
-        if part.get("mimeType") == "text/html":
-            text = _decode_body(part)
-            if text:
-                return text
-
-    # Recurse into nested multipart parts.
-    for part in parts:
-        if "multipart" in part.get("mimeType", ""):
-            text = _decode_body(part)
-            if text:
-                return text
-
     return ""
+
+
+def _find_body_part_ref(parts: list[dict], mime: str) -> dict | None:
+    """Depth-first search for an acceptable part of the given MIME type.
+
+    Like _find_body_part, but returns the raw part dict instead of decoded
+    text, and accepts a part with EITHER body.data OR body.attachmentId.
+    Gmail externalizes large bodies — a legitimate (non-attachment) part
+    can carry only an attachmentId with no inline data — so a caller with
+    API access can fetch the content separately. Same traversal order and
+    attachment-subtree skip rules as _find_body_part.
+    """
+    for part in parts:
+        if part.get("mimeType") == mime and not _is_attachment_part(part):
+            body = part.get("body", {})
+            if body.get("data") or body.get("attachmentId"):
+                return part
+    for part in parts:
+        if "multipart" in part.get("mimeType", "") and not _is_attachment_part(part):
+            found = _find_body_part_ref(part.get("parts", []), mime)
+            if found is not None:
+                return found
+    return None
 
 
 def _extract_attachments(payload: dict) -> list[dict]:
@@ -180,7 +226,7 @@ def _msg_to_headers(msg: dict, prefix: str) -> dict:
     return result
 
 
-def _msg_to_full(msg: dict, prefix: str) -> dict:
+def _msg_to_full(msg: dict, prefix: str, prefer_html: bool = False) -> dict:
     """Convert a Gmail API message (full format) to a complete message dict.
 
     Returns dict with: id, from, subject, date, body, and optional
@@ -197,7 +243,7 @@ def _msg_to_full(msg: dict, prefix: str) -> dict:
         "from": _get_header(headers, "From"),
         "subject": _get_header(headers, "Subject"),
         "date": _internal_date_to_iso(msg.get("internalDate")),
-        "body": _decode_body(payload),
+        "body": _decode_body(payload, prefer_html=prefer_html),
         "source": prefix,
     }
 
@@ -515,7 +561,7 @@ class GmailAdapter(BaseAdapter):
         header_dicts = [_msg_to_headers(msg, self._prefix) for msg in results]
         return header_dicts, failed_ids
 
-    async def read_message(self, msg_id: str) -> dict:
+    async def read_message(self, msg_id: str, prefer_html: bool = False) -> dict:
         """Fetch a single message by its ts4k prefixed ID (``g:XXXX``)."""
         service = self._require_service()
         raw_id = self._strip_prefix(msg_id)
@@ -527,7 +573,44 @@ class GmailAdapter(BaseAdapter):
                 format="full",
             ).execute()
         )
-        return _msg_to_full(msg, self._prefix)
+        full = _msg_to_full(msg, self._prefix, prefer_html=prefer_html)
+
+        # Resolve an externalized preferred body part. The preferred part's
+        # own storage decides — not whatever fallback _decode_body picked
+        # (in plain mode that fallback can be nonempty raw HTML, which
+        # would wrongly skip resolving an externalized plain part). The
+        # normal compact path stays off the attachments endpoint because
+        # an inline plain part has data and needs no fetch.
+        preferred_mime = "text/html" if prefer_html else "text/plain"
+        # Search from the root payload itself, not just its parts — a
+        # non-multipart message can BE a leaf whose body was
+        # externalized to an attachmentId.
+        preferred_part = _find_body_part_ref([msg.get("payload", {})], preferred_mime)
+        if preferred_part is not None:
+            body = preferred_part.get("body", {})
+            attachment_id = body.get("attachmentId")
+            if attachment_id and not body.get("data"):
+                # Gmail externalized this part — fetch it via the
+                # attachments endpoint instead of settling for an
+                # empty or fallback body.
+                try:
+                    attachment = await asyncio.to_thread(
+                        lambda: service.users().messages().attachments().get(
+                            userId="me", messageId=raw_id, id=attachment_id,
+                        ).execute()
+                    )
+                    data = attachment.get("data")
+                    if data:
+                        full["body"] = base64.urlsafe_b64decode(data).decode(
+                            "utf-8", errors="replace"
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to fetch externalized %s body for %s",
+                        preferred_mime, msg_id, exc_info=True,
+                    )
+
+        return full
 
     async def read_thread(self, thread_id: str) -> dict:
         """Fetch a full thread by its ts4k prefixed ID (``g:XXXX``)."""

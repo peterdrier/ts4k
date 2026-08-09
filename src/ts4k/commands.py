@@ -258,12 +258,12 @@ def _prefix_from_id(prefixed_id: str, all_cfg: dict[str, dict[str, Any]]) -> str
 # ---------------------------------------------------------------------------
 
 
-def _normalize_message(msg: dict) -> dict:
+def _normalize_message(msg: dict, mode: str = "compact") -> dict:
     """Run the normalizer on a message dict (body + headers)."""
     result = dict(msg)
 
     if result.get("body"):
-        result["body"] = normalize(result["body"])
+        result["body"] = normalize(result["body"], mode=mode)
 
     headers_to_norm = {}
     for key in ("from", "to", "cc", "date", "subject"):
@@ -683,17 +683,25 @@ async def whatsnew(
 
 
 async def get_message(
-    id: str, fmt: str = "pipe", ref_table: RefTable | None = None
+    id: str, fmt: str = "pipe", ref_table: RefTable | None = None,
+    body_mode: str = "compact",
 ) -> CommandResult:
-    """Read a single message by prefixed ID or short ref (``#3``)."""
+    """Read a single message by prefixed ID or short ref (``#3``).
+
+    ``body_mode`` selects normalization style: ``"compact"`` (default,
+    token-efficient) or ``"readable"`` (preserves paragraph breaks,
+    markdown emphasis, and real markdown tables for human display).
+    """
     id = _resolve_ref(id, ref_table)
 
-    # Read-through: check cache first
-    cached = cache.get_message(id)
-    if cached and cached.get("body"):
-        output = format_message(cached, fmt=fmt)
-        _record_stats("g", [cached], output)
-        return CommandResult(output=output, messages_processed=1)
+    # Read-through: check cache first. The cache stores the compact-mode
+    # body, so only serve it when compact mode is requested.
+    if body_mode == "compact":
+        cached = cache.get_message(id)
+        if cached and cached.get("body"):
+            output = format_message(cached, fmt=fmt)
+            _record_stats("g", [cached], output)
+            return CommandResult(output=output, messages_processed=1)
 
     all_cfg = _ensure_sources()
     try:
@@ -710,9 +718,18 @@ async def get_message(
         return CommandResult(error=f"Source {prefix!r} not available.")
 
     async with adapter:
-        msg = await adapter.read_message(id)
-        msg = _normalize_message(msg)
-        cache.store_message(id, msg)
+        msg = await adapter.read_message(id, prefer_html=(body_mode == "readable"))
+        msg = _normalize_message(msg, mode=body_mode)
+        if body_mode == "readable" and not (msg.get("body") or "").strip():
+            # The preferred HTML alternative normalized to nothing (e.g. an
+            # empty shell or tracking-only markup) — retry once with the
+            # plain-text alternative instead of returning an empty body.
+            plain_msg = await adapter.read_message(id, prefer_html=False)
+            plain_msg = _normalize_message(plain_msg, mode=body_mode)
+            if (plain_msg.get("body") or "").strip():
+                msg = plain_msg
+        if body_mode == "compact":
+            cache.store_message(id, msg)
         output = format_message(msg, fmt=fmt)
         _record_stats("g", [msg], output)
 
@@ -2397,6 +2414,7 @@ def _append_commands(lines: list[str]) -> None:
     lines.append("  Truncated results show a continuation command — copy-paste for older messages.")
     lines.append("  Output formats: -f p (pipe, default) | -f j (JSON) | -f x (XML)")
     lines.append("  Filters (off by default): add -F to apply skip filters")
+    lines.append("  get --readable: human-readable body (paragraphs, bold/italic, markdown tables) — for display, not agent use")
     lines.append("")
     lines.append("CALENDAR:")
     lines.append("  ts4k cal [today]                                  Today's events (default)")

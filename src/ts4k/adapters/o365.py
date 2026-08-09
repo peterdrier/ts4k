@@ -457,7 +457,8 @@ class O365Adapter(BaseAdapter):
 
         return results
 
-    async def read_message(self, msg_id: str) -> dict:
+    async def read_message(self, msg_id: str, prefer_html: bool = False) -> dict:
+        # Graph API's body.content is already HTML by default — nothing to switch.
         raw_id = _strip_prefix(msg_id, self.source_prefix)
 
         params = {"$select": _READ_SELECT}

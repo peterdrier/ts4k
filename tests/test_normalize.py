@@ -163,6 +163,12 @@ class TestSignatureRemoval:
         assert "Let me know your thoughts." in result
         assert "Bob Jones" not in result
 
+    def test_underscore_delimiter(self):
+        text = "Let me know your thoughts.\n\n___\nBob Jones\nSenior Developer"
+        result = normalize(text)
+        assert "Let me know your thoughts." in result
+        assert "Bob Jones" not in result
+
     def test_sent_from_iphone(self):
         text = "Sure, sounds good.\n\nSent from my iPhone"
         result = normalize(text)
@@ -385,6 +391,38 @@ class TestTableConversion:
         # Should NOT be pipe-delimited since it's single-column
         assert "|" not in result
 
+    def test_single_row_layout_table(self):
+        """Single-row multi-column tables are layout wrappers too — unwrap them."""
+        html = """
+        <table>
+            <tr><td>Logo</td><td>Spacer</td><td>Nav links</td></tr>
+        </table>
+        <p>Actual message content.</p>
+        """
+        result = normalize(html)
+        assert "Actual message content" in result
+        assert "Logo" in result
+        # Should NOT be pipe-delimited since it's a single row
+        assert "|" not in result
+
+    def test_compact_data_table_inside_layout_wrapper_survives(self):
+        """A data table nested in a single-cell layout wrapper must still
+        convert to pipe-delimited rows, not get flattened into undelimited
+        text by the wrapper's unwrap."""
+        html = """
+        <table>
+            <tr><td>
+                <table>
+                    <tr><th>Item</th><th>Price</th></tr>
+                    <tr><td>Widget</td><td>$9</td></tr>
+                </table>
+            </td></tr>
+        </table>
+        """
+        result = normalize(html)
+        assert "Item | Price" in result
+        assert "Widget | $9" in result
+
 
 # ---------------------------------------------------------------------------
 # 9. Real-world composite — byte reduction test
@@ -589,6 +627,416 @@ class TestPlainTextPassthrough:
 # ---------------------------------------------------------------------------
 # 11. Header normalization
 # ---------------------------------------------------------------------------
+
+class TestReadableMode:
+    """``mode='readable'`` preserves structure for human display."""
+
+    def test_default_mode_is_compact(self):
+        """Omitting mode= must produce identical output to mode='compact'."""
+        html = "<p>Hello world.</p><p><strong>Bold</strong> text.</p>"
+        assert normalize(html) == normalize(html, mode="compact")
+
+    def test_compact_strips_emphasis(self):
+        """Regression check: compact mode's existing emphasis-stripping is unchanged."""
+        html = "<p><strong>Bold</strong> and <em>italic</em> text.</p>"
+        result = normalize(html)
+        assert "**" not in result
+        assert "_italic_" not in result
+        assert "Bold" in result
+        assert "italic" in result
+
+    def test_compact_no_paragraph_blank_line(self):
+        """Regression check: compact mode's existing tight paragraph spacing is unchanged."""
+        html = "<p>First paragraph.</p><p>Second paragraph.</p>"
+        result = normalize(html)
+        assert "\n\n" not in result
+
+    def test_readable_preserves_paragraph_breaks(self):
+        html = "<p>First paragraph.</p><p>Second paragraph.</p>"
+        result = normalize(html, mode="readable")
+        assert "First paragraph." in result
+        assert "Second paragraph." in result
+        assert "\n\n" in result
+
+    def test_readable_preserves_emphasis(self):
+        html = "<p><strong>Bold</strong> and <em>italic</em> text.</p>"
+        result = normalize(html, mode="readable")
+        assert "**Bold**" in result
+        assert "_italic_" in result
+
+    def test_readable_layout_table_is_unwrapped(self):
+        """Single-column layout wrappers must not render as markdown tables."""
+        html = """
+        <table>
+            <tr><td><p>Welcome to our <b>newsletter</b>.</p></td></tr>
+            <tr><td><p>Second paragraph of content.</p></td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Welcome to our" in result
+        assert "Second paragraph" in result
+        # No markdown table artifacts for a layout wrapper
+        assert "|" not in result
+        assert "---" not in result
+        # Inline markup survives the unwrap
+        assert "**newsletter**" in result
+
+    def test_readable_single_row_layout_table_is_unwrapped(self):
+        """A single-row multi-column table is a layout wrapper — unwrap markup-preserving."""
+        html = """
+        <table>
+            <tr><td><b>Logo</b></td><td>Nav link</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "**Logo**" in result
+        assert "Nav link" in result
+        # No markdown table artifacts for a layout wrapper
+        assert "|" not in result
+        assert "---" not in result
+
+    def test_readable_data_table_inside_layout_wrapper_survives(self):
+        """A data table nested in a layout wrapper still renders as markdown."""
+        html = """
+        <table>
+            <tr><td>
+                <table>
+                    <tr><th>Item</th><th>Price</th></tr>
+                    <tr><td>Widget</td><td>$9</td></tr>
+                </table>
+            </td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Widget" in result
+        assert "$9" in result
+        assert "---" in result
+
+    def test_readable_table_is_markdown(self):
+        html = """
+        <table>
+            <tr><th>Name</th><th>Amount</th></tr>
+            <tr><td>Alice</td><td>$500</td></tr>
+            <tr><td>Bob</td><td>$750</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Alice" in result
+        assert "$500" in result
+        assert "Bob" in result
+        assert "$750" in result
+        # A markdown header-separator row (e.g. "---|---") must be present.
+        assert "---" in result
+        # Rows must be on separate lines, not pipe-collapsed onto one line.
+        lines = [line for line in result.split("\n") if line.strip()]
+        alice_line = next(line for line in lines if "Alice" in line)
+        bob_line = next(line for line in lines if "Bob" in line)
+        assert alice_line != bob_line
+        assert "Bob" not in alice_line
+
+    def test_readable_td_only_table_is_markdown(self):
+        """A genuine data table using only <td> cells (no <th>) still renders as markdown."""
+        html = """
+        <table>
+            <tr><td>Name</td><td>Amount</td></tr>
+            <tr><td>Alice</td><td>$500</td></tr>
+            <tr><td>Bob</td><td>$750</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        # A markdown header-separator row (e.g. "---|---") must be present.
+        assert "---" in result
+        # Rows must be on separate lines, not pipe-collapsed onto one line.
+        lines = [line for line in result.split("\n") if line.strip()]
+        alice_line = next(line for line in lines if "Alice" in line)
+        bob_line = next(line for line in lines if "Bob" in line)
+        assert alice_line != bob_line
+        assert "Bob" not in alice_line
+
+    def test_readable_td_only_table_with_empty_first_row_still_gets_separator(self):
+        """An empty spacer <tr> as the first row must not block
+        th-promotion — the first row WITH data must be promoted, not
+        rows[0] itself."""
+        html = """
+        <table>
+            <tr><td></td><td></td></tr>
+            <tr><td>Name</td><td>Amount</td></tr>
+            <tr><td>Alice</td><td>$500</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "---" in result
+        assert "Alice" in result
+        assert "$500" in result
+
+    def test_readable_td_only_table_colspan_title_row_not_promoted(self):
+        """A title row spanning the full table width via colspan must not
+        be promoted to <th> — it has only one cell element, so promoting
+        it would give html2text a one-column header against the 2-column
+        data rows below it, producing a mismatched separator."""
+        html = """
+        <table>
+            <tr><td colspan="2">Sales</td></tr>
+            <tr><td>Q1</td><td>$100</td></tr>
+            <tr><td>Q2</td><td>$200</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        # Title text is not lost, just not promoted to the header.
+        assert "Sales" in result
+        assert "Q1" in result
+        assert "$100" in result
+        assert "Q2" in result
+        assert "$200" in result
+        # The separator row must have 2 columns, not 1.
+        lines = [line for line in result.split("\n") if line.strip()]
+        sep_line = next(
+            line
+            for line in lines
+            if "-" in line and set(line.strip()) <= set("-|: ")
+        )
+        cols = [c for c in sep_line.split("|") if c.strip()]
+        assert len(cols) == 2
+
+    def test_readable_existing_th_mid_table_survives_title_row(self):
+        """A table that already has <th> cells but starts with a title row
+        must relocate the title out of the table — otherwise html2text
+        emits a bare --- that the signature stripper eats along with all
+        the data rows."""
+        html = """
+        <table>
+            <tr><td colspan="2">Quarterly Sales</td></tr>
+            <tr><th>Quarter</th><th>Total</th></tr>
+            <tr><td>Q1</td><td>$100</td></tr>
+            <tr><td>Q2</td><td>$200</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Quarterly Sales" in result
+        assert "Quarter" in result
+        assert "Q1" in result
+        assert "$200" in result
+        sep_line = next(
+            line
+            for line in result.split("\n")
+            if "-" in line and set(line.strip()) <= set("-|: ")
+        )
+        cols = [c for c in sep_line.split("|") if c.strip()]
+        assert len(cols) == 2
+
+    def test_readable_grouped_th_header_row_not_promoted(self):
+        """A grouped header row (a single <th colspan="2"> title spanning
+        the real column headers below it) must not be selected as the
+        markdown header row — it has only one cell element, so promoting
+        it would give html2text a one-column separator against the
+        2-column label/data rows below it."""
+        html = """
+        <table>
+            <tr><th colspan="2">Sales</th></tr>
+            <tr><th>Quarter</th><th>Total</th></tr>
+            <tr><td>Q1</td><td>$100</td></tr>
+            <tr><td>Q2</td><td>$200</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Sales" in result
+        assert "Quarter" in result
+        assert "Q1" in result
+        assert "$200" in result
+        sep_line = next(
+            line
+            for line in result.split("\n")
+            if "-" in line and set(line.strip()) <= set("-|: ")
+        )
+        cols = [c for c in sep_line.split("|") if c.strip()]
+        assert len(cols) == 2
+
+    def test_readable_rowspan_header_grid_degrades_to_pipe_rows(self):
+        """A rowspan/colspan header grid has no row with one cell per
+        column — rather than promote a mismatched header (malformed
+        markdown), the table degrades to compact pipe conversion."""
+        html = """
+        <table>
+            <tr><th rowspan="2">Employee</th><th colspan="2">Sales</th></tr>
+            <tr><th>Q1</th><th>Q2</th></tr>
+            <tr><td>Alice</td><td>$100</td><td>$150</td></tr>
+            <tr><td>Bob</td><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        for text in ("Employee", "Q1", "Alice", "$100", "Bob", "$120"):
+            assert text in result
+        # Data rows are pipe-delimited and no bare --- separator line
+        # exists for the signature stripper to eat
+        assert "Alice | $100 | $150" in result
+        assert not any(
+            set(line.strip()) <= set("-|: ") and "-" in line
+            for line in result.split("\n")
+        )
+
+    def test_readable_strips_emphasized_signature_with_outside_punctuation(self):
+        """Punctuation outside the emphasis — <strong>Thanks</strong>, —
+        yields "**Thanks**," whose trailing markers sit before the comma;
+        mid-line marker stripping must still match the trigger."""
+        html = (
+            "<p>See you tomorrow.</p>"
+            "<p><strong>Thanks</strong>,<br>Alice Smith<br>VP Engineering</p>"
+        )
+        result = normalize(html, mode="readable")
+        assert "See you tomorrow." in result
+        assert "VP Engineering" not in result
+
+    def test_readable_degraded_table_preserves_links(self):
+        """The no-clean-header degrade must keep link destinations —
+        table_data-based conversion would flatten a linked product name
+        to its bare label."""
+        html = """
+        <table>
+            <tr><th rowspan="2">Item</th><th colspan="2">Sales</th></tr>
+            <tr><th>Q1</th><th>Q2</th></tr>
+            <tr><td><a href="https://shop.example.com/widget">Widget</a></td>
+                <td>$100</td><td>$150</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Widget" in result
+        assert "https://shop.example.com/widget" in result
+        assert "$100" in result
+
+    def test_readable_underscore_mailto_text_not_mangled(self):
+        """A link whose visible address legitimately starts with an
+        underscore must keep it — only balanced emphasis wrappers strip."""
+        html = '<p>Page <a href="mailto:_ops@example.com">_ops@example.com</a></p>'
+        result = normalize(html, mode="readable")
+        assert "_ops@example.com" in result
+        assert "mailto:" not in result
+
+    def test_readable_layout_row_cells_are_space_separated(self):
+        """Unwrapping a layout row's cells must not merge adjacent text —
+        "<td>Logo</td><td>Nav</td>" must not collapse to "LogoNav"."""
+        html = "<table><tr><td>Logo</td><td>Nav</td></tr></table>"
+        result = normalize(html, mode="readable")
+        assert "LogoNav" not in result
+        assert "Logo Nav" in result
+
+    def test_readable_layout_rows_stay_on_separate_lines(self):
+        """Unwrapping a single-column layout table's rows must not merge
+        them onto the same line."""
+        html = "<table><tr><td>First</td></tr><tr><td>Second</td></tr></table>"
+        result = normalize(html, mode="readable")
+        lines = [line.strip() for line in result.split("\n") if line.strip()]
+        first_line = next(line for line in lines if "First" in line)
+        second_line = next(line for line in lines if "Second" in line)
+        assert first_line != second_line
+        assert "Second" not in first_line
+
+    def test_readable_still_strips_tracking_pixel(self):
+        html = """
+        <p>Content here.</p>
+        <img src="https://tracker.example.com/pixel.gif" width="1" height="1" />
+        """
+        result = normalize(html, mode="readable")
+        assert "Content here." in result
+        assert "tracker.example.com" not in result
+
+    def test_readable_still_strips_signature(self):
+        text = "Please review the attached.\n\n--\nAlice Smith\nVP Engineering"
+        result = normalize(text, mode="readable")
+        assert "Please review the attached." in result
+        assert "VP Engineering" not in result
+
+    def test_readable_strips_emphasized_signature(self):
+        """readable mode renders "Thanks," as "**Thanks,**" — must still match."""
+        html = "<p>Please review the attached.</p><p><strong>Thanks,</strong></p><p>Alice</p>"
+        result = normalize(html, mode="readable")
+        assert "Please review the attached." in result
+        assert "Alice" not in result
+        assert "Thanks" not in result
+
+    def test_readable_strips_signature_after_underscore_delimiter(self):
+        """Regression: emphasis-stripping "___" to "" must not defeat the raw match."""
+        text = "Please review the attached.\n\n___\nAlice Smith\nVP Engineering"
+        result = normalize(text, mode="readable")
+        assert "Please review the attached." in result
+        assert "VP Engineering" not in result
+
+    def test_readable_still_strips_reply_chain(self):
+        text = (
+            "Yes, I agree with that approach.\n\n"
+            "On Mon, Feb 19, 2026 at 10:00 AM Alice <alice@example.com> wrote:\n"
+            "> I think we should go with option A.\n"
+        )
+        result = normalize(text, mode="readable")
+        assert "Yes, I agree with that approach." in result
+        assert "option A" not in result
+
+    def test_readable_strips_emphasized_reply_header(self):
+        """readable mode renders "On Mon ... wrote:" as "**On Mon ... wrote:**" — must still match."""
+        html = (
+            "<p>Yes, I agree with that approach.</p>"
+            "<p><strong>On Mon, Feb 19, 2026 at 10:00 AM Alice wrote:</strong></p>"
+            "<blockquote><p>I think we should go with option A.</p></blockquote>"
+        )
+        result = normalize(html, mode="readable")
+        assert "Yes, I agree with that approach." in result
+        assert "option A" not in result
+
+    def test_readable_strips_emphasized_outlook_header(self):
+        """readable mode bolds Outlook "From:/Sent:/To:/Subject:" labels — must still match."""
+        html = (
+            "<p>Thanks, will do.</p>"
+            "<p><strong>From:</strong> Alice Smith<br>"
+            "<strong>Sent:</strong> Monday, February 19, 2026 10:00 AM<br>"
+            "<strong>To:</strong> Bob Jones<br>"
+            "<strong>Subject:</strong> Meeting Tomorrow</p>"
+            "<p>Bob, can you prepare the slides?</p>"
+        )
+        result = normalize(html, mode="readable")
+        assert "Thanks, will do." in result
+        assert "can you prepare the slides?" not in result
+
+    def test_readable_still_strips_unsubscribe(self):
+        html = """
+        <div><p>Here is your weekly digest.</p></div>
+        <div style="font-size:11px;color:#999">
+            <p><a href="https://example.com/unsubscribe?id=abc123">Unsubscribe</a></p>
+        </div>
+        """
+        result = normalize(html, mode="readable")
+        assert "weekly digest" in result
+        assert "unsubscribe" not in result.lower()
+
+    def test_readable_emphasized_url_as_text_not_duplicated(self):
+        """readable mode bolds the link text ("**https://...**"), which
+        must still be recognized as text == href — otherwise it renders
+        as "**https://example.com** (https://example.com)"."""
+        html = '<p>Visit <a href="https://example.com"><strong>https://example.com</strong></a></p>'
+        result = normalize(html, mode="readable")
+        assert "https://example.com" in result
+        count = result.count("https://example.com")
+        assert count == 1
+        # Emphasis on the display text survives.
+        assert "**https://example.com**" in result
+
+    def test_readable_emphasized_mailto_not_duplicated(self):
+        """readable mode bolds an emphasized mailto link's text — must
+        still suppress the redundant mailto: target."""
+        html = '<p>Contact <a href="mailto:alice@example.com"><strong>alice@example.com</strong></a></p>'
+        result = normalize(html, mode="readable")
+        assert "alice@example.com" in result
+        assert "mailto:" not in result
+        count = result.count("alice@example.com")
+        assert count == 1
+
+    def test_compact_url_as_text_unaffected_by_emphasis_stripping(self):
+        """Compact mode strips emphasis before the link-simplify pass runs,
+        so plain (non-emphasized) url-as-text behavior must be unchanged."""
+        html = '<p>Visit <a href="https://example.com"><strong>https://example.com</strong></a></p>'
+        result = normalize(html, mode="compact")
+        assert "https://example.com" in result
+        assert result.count("https://example.com") == 1
+        assert "*" not in result
+
 
 class TestHeaderNormalization:
     def test_basic_normalization(self):
