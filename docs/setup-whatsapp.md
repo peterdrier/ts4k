@@ -88,7 +88,18 @@ ts4k src add w whatsapp \
   bridge_token_file=/path/to/bridge/store/api_token
 ```
 
-If ts4k runs on a different machine from the bridge, paste the key in directly instead of pointing at a file (`bridge_token=<key>`), or export `WHATSAPP_API_TOKEN`. Note that the bridge binds loopback only — reaching it from another host needs a tunnel, not a config change here.
+If ts4k runs on a different machine from the bridge, copy the key to a file on that machine and point `bridge_token_file` at it, or export `WHATSAPP_API_TOKEN` in that environment:
+
+```bash
+# on the ts4k host
+install -m 600 /dev/null ~/.config/ts4k/wa_api_token
+# paste the key into it, then:
+ts4k src add w whatsapp bridge_token_file=~/.config/ts4k/wa_api_token
+```
+
+Prefer either of those over `bridge_token=<key>` on the command line: an argument lands in shell history and is visible in process listings, and this key grants read access to the whole archive wherever the bridge is reachable. `bridge_token` still works for throwaway setups, and ts4k redacts it from `src add` / `src list` output, but neither of those helps once it is in `~/.bash_history`.
+
+Note that the bridge binds loopback only — reaching it from another host needs a tunnel, not a config change here.
 
 Verify it's registered:
 
@@ -127,20 +138,22 @@ This re-adds the source with `transport=stdio`, which makes ts4k spawn the Pytho
 Install its dependencies first if you have not run it before:
 
 ```bash
-cd whatsapp-mcp-server && uv sync
+cd ../whatsapp-mcp-server && uv sync   # from bridge/; use the repo root otherwise
 ```
 
 ## Keeping Messages Current
 
-The Go bridge needs to be running to receive new messages. Options:
+On the default HTTP transport the bridge **is** the MCP endpoint, so it has to be running for every query — not just to receive new messages. With it stopped, ts4k gets connection-refused rather than stale-but-usable results. Run it as a systemd service (Linux) or a startup task.
 
-- **Run manually** when you need fresh data: `cd bridge && ./whatsapp-bridge`
-- **Run as a systemd service** (Linux) or startup task for continuous sync
-- **Run on a schedule** — even without the bridge running, ts4k can still query whatever was last synced into the database
+```bash
+cd bridge && ./whatsapp-bridge
+```
+
+Only the [stdio rollback](#rollback-to-the-stdio-server) can read the database while the bridge is down: there the Python server opens the SQLite file itself, so queries return whatever was last synced.
 
 ## Caching Note
 
-WhatsApp messages come from a local database, so they're already fast to query. ts4k does **not** cache WhatsApp messages (caching is reserved for network-heavy sources like Gmail and O365). This means WhatsApp queries always read directly from the SQLite database through the MCP server.
+WhatsApp messages come from a local database, so they're already fast to query. ts4k does **not** cache WhatsApp messages (caching is reserved for network-heavy sources like Gmail and O365). This means WhatsApp queries always read live from the bridge, which reads the SQLite database — there is no ts4k-side copy to go stale, and equally nothing to answer from while the bridge is stopped.
 
 ## Troubleshooting
 
