@@ -175,6 +175,55 @@ class TestToolRegistration:
 
 
 # ---------------------------------------------------------------------------
+# whatsnew --threads forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestWhatsnewThreadsForwarding:
+    @pytest.mark.asyncio
+    async def test_whatsnew_forwards_threads_true(self, monkeypatch):
+        """The whatsnew tool wrapper must pass threads through to
+        commands.whatsnew — it can't reach thread mode otherwise."""
+        from ts4k import server
+        from ts4k.commands import CommandResult
+
+        captured = {}
+
+        async def fake_whatsnew(**kwargs):
+            captured.update(kwargs)
+            return CommandResult(output="ok")
+
+        monkeypatch.setattr(server.commands, "whatsnew", fake_whatsnew)
+
+        await server.whatsnew(key="life", threads=True)
+
+        assert captured.get("threads") is True
+
+    @pytest.mark.asyncio
+    async def test_whatsnew_threads_defaults_false(self, monkeypatch):
+        from ts4k import server
+        from ts4k.commands import CommandResult
+
+        captured = {}
+
+        async def fake_whatsnew(**kwargs):
+            captured.update(kwargs)
+            return CommandResult(output="ok")
+
+        monkeypatch.setattr(server.commands, "whatsnew", fake_whatsnew)
+
+        await server.whatsnew(key="life")
+
+        assert captured.get("threads") is False
+
+    def test_whatsnew_schema_has_threads_param(self):
+        """CLI/MCP parity: --threads on the CLI implies a threads param here."""
+        tool = mcp._tool_manager._tools["whatsnew"]
+        props = tool.parameters.get("properties", {})
+        assert "threads" in props
+
+
+# ---------------------------------------------------------------------------
 # Admin tool routing
 # ---------------------------------------------------------------------------
 

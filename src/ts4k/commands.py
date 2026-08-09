@@ -26,6 +26,7 @@ from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
 from ts4k.core.filter import apply_filters
 from ts4k.core.format import (
+    collapse_threads,
     estimate_size,
     format_event_detail,
     format_events,
@@ -34,6 +35,7 @@ from ts4k.core.format import (
     format_message,
     format_overview,
     format_thread,
+    format_thread_listing,
 )
 from ts4k.core.normalize import normalize, normalize_headers
 from ts4k.state import batch, cache, contacts, filters, sources, stats, watermarks
@@ -427,6 +429,24 @@ async def _fetch_for_source(
         return []
 
 
+def _format_rows(
+    messages: list[dict],
+    fmt: str,
+    ref_table: RefTable | None,
+    threads: bool,
+) -> tuple[str, dict[str, int] | None]:
+    """Format a listing, collapsing to one row per thread when *threads*.
+
+    Returns ``(output, ref_map)``.  In thread mode the refs are assigned to
+    the collapsed rows, so they resolve to threads rather than messages.
+    """
+    rows = collapse_threads(messages) if threads else messages
+    ref_map = ref_table.assign(rows) if ref_table else None
+    if threads:
+        return format_thread_listing(rows, fmt=fmt, ref_map=ref_map), ref_map
+    return format_listing(rows, fmt=fmt, ref_map=ref_map), ref_map
+
+
 async def _fetch_messages(
     since: dict[str, str | None],
     count: int = 20,
@@ -437,6 +457,7 @@ async def _fetch_messages(
     stat_cmd: str = "wn",
     sender: str | None = None,
     domain: str | None = None,
+    threads: bool = False,
 ) -> CommandResult:
     """Shared fetch layer — parallel fetch, collate, format.
 
@@ -449,6 +470,7 @@ async def _fetch_messages(
         filter: Whether to apply skip filters.
         ref_table: Optional ref table for short refs.
         stat_cmd: Stats command label (``"wn"`` or ``"l"``).
+        threads: Collapse the fetched messages into one row per thread.
 
     Returns a CommandResult with ``_messages`` populated (the truncated list).
     Does NOT touch watermarks.
@@ -501,8 +523,7 @@ async def _fetch_messages(
     if not truncated:
         return CommandResult(error="No new messages.")
 
-    ref_map = ref_table.assign(truncated) if ref_table else None
-    output = format_listing(truncated, fmt=fmt, ref_map=ref_map)
+    output, ref_map = _format_rows(truncated, fmt, ref_table, threads)
 
     if has_more:
         output += f"\n--- {remaining} more messages available ---"
@@ -522,6 +543,8 @@ async def _fetch_messages(
                 parts.append(f"--from {sender}")
             if domain:
                 parts.append(f"--domain {domain}")
+            if threads:
+                parts.append("--threads")
             continuation_hint = " ".join(parts)
 
     _record_stats(stat_cmd, truncated, output)
@@ -552,6 +575,7 @@ async def updates(
     ref_table: RefTable | None = None,
     sender: str | None = None,
     domain: str | None = None,
+    threads: bool = False,
 ) -> CommandResult:
     """Deprecated — use list_messages(since=...) instead."""
     return await list_messages(
@@ -563,6 +587,7 @@ async def updates(
         ref_table=ref_table,
         sender=sender,
         domain=domain,
+        threads=threads,
     )
 
 
@@ -575,6 +600,7 @@ async def whatsnew(
     ref_table: RefTable | None = None,
     sender: str | None = None,
     domain: str | None = None,
+    threads: bool = False,
 ) -> CommandResult:
     """Fetch new messages using keyed watermarks."""
     from ts4k.state import keyed_watermarks
@@ -598,6 +624,7 @@ async def whatsnew(
         stat_cmd="wn",
         sender=sender,
         domain=domain,
+        threads=threads,
     )
 
     # Advance watermarks per source.
@@ -716,11 +743,15 @@ async def list_messages(
     sender: str | None = None,
     domain: str | None = None,
     since: str | None = None,
+    threads: bool = False,
 ) -> CommandResult:
     """List messages matching filters. All filters stack.
 
     When *since* is provided, uses the time-aware fetch path (adapter.whatsnew
     for O365, after: query for Gmail).  Otherwise uses adapter.list_messages.
+
+    When *threads* is set the result collapses to one row per thread, and the
+    assigned refs resolve to threads.
     """
     if since is not None:
         # Time-aware path — delegate to _fetch_messages which handles
@@ -738,6 +769,7 @@ async def list_messages(
             stat_cmd="l",
             sender=sender,
             domain=domain,
+            threads=threads,
         )
 
     # Query-only path — no time filter.
@@ -778,8 +810,7 @@ async def list_messages(
     if not all_messages:
         return CommandResult(error="No messages found.")
 
-    ref_map = ref_table.assign(all_messages) if ref_table else None
-    output = format_listing(all_messages, fmt=fmt, ref_map=ref_map)
+    output, ref_map = _format_rows(all_messages, fmt, ref_table, threads)
     _record_stats("l", all_messages, output)
 
     return CommandResult(
@@ -1746,6 +1777,23 @@ def manage_cache(
 # ---------------------------------------------------------------------------
 
 
+async def _thread_id_for(adapter: Any, mid: str) -> str:
+    """Map a message ID to its thread ID.
+
+    Cache first; one read as fallback.  A ref from a ``--threads`` listing is
+    already a thread ID — the read fails there, so *mid* passes through.
+    """
+    cached = cache.get_message(mid)
+    tid = (cached or {}).get("thread_id")
+    if tid:
+        return tid
+    try:
+        msg = await adapter.read_message(mid)
+    except Exception:
+        return mid
+    return msg.get("thread_id") or mid
+
+
 async def manage_message(
     action: str,
     msg_id: str,
@@ -1753,11 +1801,15 @@ async def manage_message(
     folder: str | None = None,
     dry_run: bool = False,
     ref_table: RefTable | None = None,
+    thread: bool = False,
 ) -> str:
     """Execute a management action on one or more messages.
 
     msg_id can be comma-separated for batch operations.
     Actions: archive, unarchive, label, unlabel, read, unread, trash, list-labels.
+
+    When *thread* is set the action covers every message in each thread
+    (Gmail only) — one API call per thread.
     """
     # Resolve refs to full IDs
     ids = [_resolve_ref(mid.strip(), ref_table) for mid in msg_id.split(",")]
@@ -1785,6 +1837,7 @@ async def manage_message(
             return f"Error listing labels: {e}"
 
     results = []
+    thread_calls: dict[tuple[str, str], tuple[str, dict]] = {}
     for mid in ids:
         prefix = mid.split(":")[0] if ":" in mid else None
         if not prefix:
@@ -1797,7 +1850,8 @@ async def manage_message(
                 detail += f" label={label}"
             if folder:
                 detail += f" folder={folder}"
-            results.append(f"{mid}: would {action}{detail}")
+            scope = " (whole thread)" if thread else ""
+            results.append(f"{mid}: would {action}{scope}{detail}")
             continue
 
         cfg = sources.get(prefix)
@@ -1812,7 +1866,22 @@ async def manage_message(
 
         try:
             async with adapter:
-                if action == "archive":
+                if thread:
+                    if action in ("label", "unlabel") and not label:
+                        results.append(f"{mid}: error — --label required")
+                        continue
+                    tid = await _thread_id_for(adapter, mid)
+                    key = (prefix, tid)
+                    if key in thread_calls:
+                        first_mid, prev_r = thread_calls[key]
+                        results.append(
+                            f"{mid}: {prev_r.get('status', 'ok')} "
+                            f"(same thread as {first_mid}, already {action}ed)"
+                        )
+                        continue
+                    r = await adapter.modify_thread(tid, action, label)
+                    thread_calls[key] = (mid, r)
+                elif action == "archive":
                     r = await adapter.archive_message(mid)
                 elif action == "unarchive":
                     r = await adapter.unarchive_message(mid)
@@ -1843,6 +1912,14 @@ async def manage_message(
                 results.append(f"{mid}: {r.get('status', 'ok')}")
         except PermissionError as e:
             results.append(f"{mid}: {e}")
+        except NotImplementedError as e:
+            if thread:
+                results.append(
+                    f"{mid}: error — thread operations not supported for "
+                    f"source {prefix!r} (Gmail only)"
+                )
+            else:
+                results.append(f"{mid}: error — {e}")
         except Exception as e:
             results.append(f"{mid}: error — {e}")
 
@@ -2014,16 +2091,17 @@ def _sources_needing_auth(all_cfg: dict[str, dict[str, Any]]) -> list[str]:
 def _append_commands(lines: list[str]) -> None:
     """Append command reference to lines."""
     lines.append("COMMANDS:")
-    lines.append("  ts4k list [--since T] [-q Q] [--source S] [-n N] [-k K] [--from ADDR] [--domain D]  Search messages (all filters stack)")
+    lines.append("  ts4k list [--since T] [-q Q] [--source S] [-n N] [-k K] [--from ADDR] [--domain D] [--threads]  Search messages (all filters stack)")
     lines.append("  ts4k whatsnew KEY [--source S] [-n N]            Check new (keyed watermarks)")
     lines.append("  ts4k get [-k KEY] ID                            Read single message body")
     lines.append("  ts4k thread [-k KEY] TID                        Read thread/conversation")
     lines.append("  ts4k overview [--source S] [--contact C]        Cache summary drill-down")
-    lines.append("  ts4k manage ACTION ID [-k KEY] [--label L] [--folder F] [--dry-run]  Manage mailbox (archive, label, read/unread, trash)")
+    lines.append("  ts4k manage ACTION ID [-k KEY] [--label L] [--folder F] [--thread] [--dry-run]  Manage mailbox (archive, label, read/unread, trash)")
     lines.append("  ts4k draft create -s S --to ADDR --subject SUBJ --body TEXT  Create draft (never sends)")
     lines.append("  ts4k status                                     Health, stats, efficiency")
     lines.append("  Access levels: readonly (default), modify (manage), draft (create drafts). Set via: ts4k src add PREFIX PROVIDER level=modify")
     lines.append("  Refs: listings assign numbers (1, 2, ...) — use with get/thread/manage. Refs accumulate across calls.")
+    lines.append("  --threads: one row per thread (refs resolve to threads). --thread on manage acts on the whole thread (Gmail).")
     lines.append("  list refs are global: get N. list/whatsnew -k refs are keyed: get -k KEY N")
     lines.append("  IDs use prefix:id format: g:abc123, o:AAM..., w:3EB...")
     lines.append("  --since: 2d, 6h, 1w, ISO date, or 'all'. --from: sender address. --domain: sender domain.")
@@ -2112,6 +2190,7 @@ def skill_reference(level: str = "basic") -> str:
             "manage actions: archive, unarchive, label, unlabel, read, unread, trash, move, list-labels\n"
             "  manage archive 1,2,3|Batch archive by ref\n"
             "  manage label 5 --label llm-garbage|Add label by ref\n"
+            "  manage archive 1 --thread|Archive every message in the thread\n"
             "  manage read 1,2 -k work --dry-run|Preview with keyed refs\n"
             "draft create -s g --to alice@x.com --subject Hi --body Hello|New draft\n"
             "  draft create -s g --reply-to g:abc --body 'Sounds good!'|Reply draft with threading\n"
@@ -2123,12 +2202,12 @@ def skill_reference(level: str = "basic") -> str:
         )
     return (
         "ts4k \u2014 token-efficient messaging gateway\n"
-        "list [--since T] [-q Q] [--source S] [-n N] [-k KEY] [--from ADDR] [--domain D]|Search messages (all filters stack)\n"
+        "list [--since T] [-q Q] [--source S] [-n N] [-k KEY] [--from ADDR] [--domain D] [--threads]|Search messages (all filters stack; --threads collapses to one row per thread)\n"
         "whatsnew KEY [-n N] [--source S]|New msgs since last check (all sources unless --source)\n"
         "get REF [-k KEY]|Read message. get 3 (list ref) | get 7 -k life (whatsnew/list -k ref) | get g:abc123 (native ID, no -k). No --source on get.\n"
         "thread [-k KEY] REF|Read thread (e.g. thread 5)\n"
         "overview [--source S] [--contact C] [--period P]|Cache summary\n"
-        "manage ACTION ID [-k KEY] [--label L] [--folder F] [--dry-run]|Manage mailbox (requires level=modify)\n"
+        "manage ACTION ID [-k KEY] [--label L] [--folder F] [--thread] [--dry-run]|Manage mailbox (requires level=modify; --thread acts on the whole Gmail thread)\n"
         "draft create -s S --to ADDR --subject SUBJ --body TEXT [--reply-to ID]|Create draft (requires level=draft)\n"
         "cal [today|tomorrow|week] [-s SOURCE]|Calendar events (default: today)\n"
         "cal next [N] [-s SOURCE]|Next N events (default 10)\n"

@@ -47,6 +47,94 @@ def format_listing(
         raise ValueError(f"Unknown format: {fmt!r}")
 
 
+def collapse_threads(messages: list[dict]) -> list[dict]:
+    """Collapse message headers into one row per thread.
+
+    Each row carries ``participants`` (unique senders, newest first),
+    ``message_count``, ``first_date``/``date`` (the span) and the latest
+    ``snippet``.  Counts and dates describe the messages in *messages*,
+    not the whole upstream thread — collapsing never costs an API call.
+
+    Row ``id`` is the thread ID, so refs assigned to these rows resolve to
+    threads.  WhatsApp messages carry no ``thread_id``, so a chat-derived key
+    (``source:chat_jid``, matching the adapter's own thread ID format) is used
+    instead when ``chat_jid`` is present.  Messages with neither stand alone.
+    """
+    rows: dict[str, dict] = {}
+    order: list[str] = []
+
+    for msg in messages:
+        tid = msg.get("thread_id")
+        if not tid and msg.get("chat_jid"):
+            tid = f"{_source(msg)}:{msg['chat_jid']}"
+        if not tid:
+            tid = msg.get("id", "")
+        if not tid:
+            continue
+
+        row = rows.get(tid)
+        if row is None:
+            row = {
+                "id": tid,
+                "thread_id": tid,
+                "source": _source(msg),
+                "subject": msg.get("subject", ""),
+                "participants": [],
+                "message_count": 0,
+                "first_date": "",
+                "date": "",
+                "snippet": "",
+                "unread": False,
+            }
+            rows[tid] = row
+            order.append(tid)
+
+        row["message_count"] += 1
+        sender = msg.get("from", "")
+        if sender and sender not in row["participants"]:
+            row["participants"].append(sender)
+        if msg.get("unread"):
+            row["unread"] = True
+
+        date = msg.get("date", "")
+        if date:
+            # Oldest message owns the subject (no "Re:" pile-up), newest
+            # owns the snippet.
+            if not row["first_date"] or date < row["first_date"]:
+                row["first_date"] = date
+                if msg.get("subject"):
+                    row["subject"] = msg["subject"]
+            if date > row["date"]:
+                row["date"] = date
+                # WhatsApp rows carry content in "body", not "snippet"
+                row["snippet"] = msg.get("snippet") or msg.get("body", "")
+
+    return [rows[tid] for tid in order]
+
+
+def format_thread_listing(
+    threads: list[dict],
+    fmt: str = "pipe",
+    ref_map: dict[str, int] | None = None,
+) -> str:
+    """Format collapsed thread rows as produced by :func:`collapse_threads`.
+
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    *ref_map*: ``{thread_id: ref_num}`` — when provided, pipe format uses
+    ``N`` short refs instead of full thread IDs.
+    """
+    fmt = _resolve_fmt(fmt)
+
+    if fmt == "pipe":
+        return _thread_listing_pipe(threads, ref_map=ref_map)
+    elif fmt == "json":
+        return _thread_listing_json(threads)
+    elif fmt == "xml":
+        return _thread_listing_xml(threads)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
 def format_message(message: dict, fmt: str = "pipe") -> str:
     """Format a single message with body.
 
@@ -542,6 +630,70 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
+# Senders listed in full on a thread row before falling back to "+N".
+_MAX_PARTICIPANTS = 3
+
+
+def _participants(thread: dict) -> str:
+    """Senders, truncated to ``_MAX_PARTICIPANTS`` with a ``+N`` tail."""
+    names = thread.get("participants", [])
+    shown = names[:_MAX_PARTICIPANTS]
+    extra = len(names) - len(shown)
+    joined = ",".join(shown)
+    return f"{joined}+{extra}" if extra else joined
+
+
+def _date_range(thread: dict, precision: str) -> str:
+    """``18Feb-20Feb`` for a multi-day thread, one timestamp for a single day."""
+    last = thread.get("date", "")
+    first = thread.get("first_date", "") or last
+    if first[:10] == last[:10]:
+        return _compact_ts(last, precision)
+    first_dt, last_dt = _parse_iso(first), _parse_iso(last)
+    if first_dt is None or last_dt is None:
+        return _compact_ts(last, precision)
+    return f"{_date_label(first_dt, precision)}-{_date_label(last_dt, precision)}"
+
+
+def _thread_listing_pipe(
+    threads: list[dict],
+    ref_map: dict[str, int] | None = None,
+) -> str:
+    """Pipe-delimited thread listing — one row per thread."""
+    # Precision has to see both ends of every span, not just the latest.
+    precision = _detect_precision(
+        [
+            {"date": d}
+            for t in threads
+            for d in (t.get("first_date", ""), t.get("date", ""))
+            if d
+        ]
+    )
+    has_snippets = any(t.get("snippet") for t in threads)
+
+    header = f" |{'N' if ref_map is not None else 'ID'}|SOURCE|WHO|SUBJECT|DATES|MSGS"
+    if has_snippets:
+        header += "|SNIPPET"
+    lines = [header]
+
+    for thread in threads:
+        tid = thread.get("id", "")
+        ident = str(ref_map.get(tid, 0)) if ref_map is not None else tid
+        row = (
+            f"{_unread_marker(thread)}|{ident}|{_source(thread)}|{_participants(thread)}"
+            f"|{thread.get('subject', '')}|{_date_range(thread, precision)}"
+            f"|{thread.get('message_count', 0)}"
+        )
+        if has_snippets:
+            snippet = thread.get("snippet", "").strip()
+            if len(snippet) > 80:
+                snippet = snippet[:77].rstrip() + "..."
+            row += f"|{snippet}"
+        lines.append(row)
+
+    return "\n".join(lines)
+
+
 def _message_pipe(message: dict) -> str:
     """Pipe-delimited single message with body.
 
@@ -707,6 +859,27 @@ def _listing_json(messages: list[dict]) -> str:
     return json.dumps(items, separators=(",", ":"))
 
 
+def _thread_listing_json(threads: list[dict]) -> str:
+    """Compact JSON array of collapsed thread rows."""
+    items = []
+    for thread in threads:
+        item: dict = {
+            "source": _source(thread),
+            "subject": thread.get("subject", ""),
+            "participants": thread.get("participants", []),
+            "message_count": thread.get("message_count", 0),
+            "first_date": thread.get("first_date", ""),
+            "date": thread.get("date", ""),
+            "id": thread.get("id", ""),
+        }
+        if thread.get("snippet"):
+            item["snippet"] = thread["snippet"]
+        if "unread" in thread:
+            item["unread"] = thread["unread"]
+        items.append(item)
+    return json.dumps(items, separators=(",", ":"))
+
+
 def _message_json(message: dict) -> str:
     """Compact JSON for a single message with body."""
     obj: dict = {
@@ -772,6 +945,35 @@ def _listing_xml(messages: list[dict]) -> str:
         )
         lines.append(f"<m{attrs}/>")
     lines.append("</msgs>")
+    return "\n".join(lines)
+
+
+def _thread_listing_xml(threads: list[dict]) -> str:
+    """XML thread listing — one self-closing tag per thread.
+
+    ::
+
+        <threads>
+        <t id="g:abc" subject="Meeting" who="a@x.com,b@y.com" n="3" from="..." to="..."
+           snip="Latest message text"/>
+        </threads>
+    """
+    lines = ["<threads>"]
+    for thread in threads:
+        attrs = (
+            f' id={xml_quoteattr(thread.get("id", ""))}'
+            f' subject={xml_quoteattr(thread.get("subject", ""))}'
+            f' who={xml_quoteattr(",".join(thread.get("participants", [])))}'
+            f' n={xml_quoteattr(str(thread.get("message_count", 0)))}'
+            f' from={xml_quoteattr(thread.get("first_date", ""))}'
+            f' to={xml_quoteattr(thread.get("date", ""))}'
+        )
+        # Emitted only when there is one, matching the JSON listing — an empty
+        # attribute on every row is pure token cost.
+        if thread.get("snippet"):
+            attrs += f' snip={xml_quoteattr(thread["snippet"])}'
+        lines.append(f"<t{attrs}/>")
+    lines.append("</threads>")
     return "\n".join(lines)
 
 
