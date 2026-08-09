@@ -39,6 +39,22 @@ from ts4k.state import sources, watermarks
 from ts4k.state.refs import RefTable
 
 
+# Source config keys holding a secret rather than a pointer to one. `src list`
+# runs constantly in agent context and in terminal scrollback, so the value
+# itself never gets printed — `bridge_token_file` (a path) still does.
+_SECRET_SOURCE_KEYS = frozenset({"bridge_token"})
+
+
+def _shown(key: str, value: object) -> object:
+    """Value to print for a source config field — secrets never print.
+
+    Every place that echoes a source config goes through here; `src add` and
+    `src list` both display the same entries, so redacting only one of them
+    just moves where the key leaks.
+    """
+    return "<redacted>" if key in _SECRET_SOURCE_KEYS else value
+
+
 # ---------------------------------------------------------------------------
 # Ref table helpers
 # ---------------------------------------------------------------------------
@@ -472,7 +488,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         verb = "Updated" if existed else "Added"
         print(f"{verb} source {prefix!r}:")
         for k, v in sorted(entry.items()):
-            print(f"  {k}: {v}")
+            print(f"  {k}: {_shown(k, v)}")
 
     elif action == "rm":
         prefix = args.prefix
@@ -494,7 +510,7 @@ def _cmd_sources(args: argparse.Namespace) -> None:
             print(f"  {prefix}: {provider} ({detail}) [{level}]")
             for k, v in sorted(cfg.items()):
                 if k not in ("provider", "email", "mailbox", "mcp_cwd"):
-                    print(f"    {k}: {v}")
+                    print(f"    {k}: {_shown(k, v)}")
 
     elif action == "discover":
         asyncio.run(_cmd_discover_o365(args))
@@ -1125,7 +1141,7 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
             elif provider in ("o365", "o365cal"):
                 _auth_o365(prefix, cfg, no_calendar)
             elif provider == "whatsapp":
-                print(f"  {prefix}: whatsapp — session-based, no auth needed")
+                _auth_whatsapp(prefix, cfg)
             elif provider == "caldav":
                 from ts4k.auth.caldav import credentials_path
                 email = cfg.get("email", "<your-apple-id>")
@@ -1147,6 +1163,27 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
 
     if any_failed:
         sys.exit(1)
+
+
+def _auth_whatsapp(prefix: str, cfg: dict) -> None:
+    """Report how a WhatsApp source authenticates — there is nothing to run.
+
+    The WhatsApp session lives in the bridge (paired by QR, once). What ts4k
+    needs is the bridge's HMAC key, which the operator pastes in rather than
+    obtains through a flow.
+    """
+    from ts4k.adapters import wa_bridge_auth
+
+    if (cfg.get("transport") or "http").lower() == "stdio":
+        print(f"  {prefix}: whatsapp (stdio) — session-based, no auth needed")
+        return
+    if wa_bridge_auth.resolve_bridge_token(cfg.get("bridge_token"), cfg.get("bridge_token_file")):
+        print(f"  {prefix}: whatsapp — bridge key configured, nothing to authorize")
+        return
+    print(f"  {prefix}: whatsapp — no bridge key configured")
+    print("        The bridge mints one at <whatsapp-bridge>/store/api_token on first run.")
+    print(f"        ts4k src add {prefix} whatsapp "
+          "bridge_token_file=/path/to/whatsapp-bridge/store/api_token")
 
 
 def _auth_google(prefix: str, cfg: dict, no_calendar: bool) -> None:
@@ -1392,13 +1429,14 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "provider keys:\n"
             "  gmail:    email (required), mcp_url, transport\n"
-            "  whatsapp: mcp_cwd (required), server_command\n"
+            "  whatsapp: bridge_url, bridge_token, bridge_token_file, transport (http|stdio)\n"
+            "            transport=stdio also needs mcp_cwd, server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
             "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
             "\n"
             "examples:\n"
             '  ts4k src add g gmail email=you@gmail.com\n'
-            '  ts4k src add w whatsapp mcp_cwd=/path/to/server server_command="uv run python main.py"\n'
+            '  ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-bridge/store/api_token\n'
             '  ts4k src add cc apple email=you@icloud.com\n'
             "\n"
             "List fields (server_command) are auto-split on spaces.\n"

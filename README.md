@@ -24,7 +24,7 @@ Each messaging platform needs a one-time setup. One provider is enough to get st
 |----------|-------|-------------|
 | Gmail | [docs/setup-gmail.md](docs/setup-gmail.md) | Google OAuth (browser) |
 | O365 | [docs/setup-o365.md](docs/setup-o365.md) | Azure device code flow |
-| WhatsApp | [docs/setup-whatsapp.md](docs/setup-whatsapp.md) | Local SQLite (no auth) |
+| WhatsApp | [docs/setup-whatsapp.md](docs/setup-whatsapp.md) | Local bridge, HMAC key |
 
 ### 2. Check it works
 
@@ -182,7 +182,7 @@ Agent (Claude, etc.)
 ts4k (normalize → filter → format)
   |── Gmail Adapter     → Google Gmail API (direct)
   |── O365 Adapter      → Microsoft Graph API (direct, httpx)
-  |── WhatsApp Adapter  → whatsapp-mcp (local SQLite)
+  |── WhatsApp Adapter  → whatsapp-mcp bridge (local HTTP MCP)
   |── GCal Adapter      → Google Calendar API (direct)
   |── O365 Cal Adapter  → Microsoft Graph Calendar API (direct, httpx)
   '── Future adapters   → Slack, Teams, Telegram, ...

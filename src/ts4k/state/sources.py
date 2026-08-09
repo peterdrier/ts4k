@@ -21,14 +21,17 @@ File format::
         },
         "w": {
             "provider": "whatsapp",
-            "mcp_cwd": "C:/path/to/whatsapp-mcp-server"
+            "bridge_url": "http://127.0.0.1:18741/mcp",
+            "bridge_token_file": "/path/to/whatsapp-bridge/store/api_token"
         }
     }
 
 Provider-specific fields:
 
 * **gmail**: ``email`` (required), ``mcp_url``, ``transport``
-* **whatsapp**: ``mcp_cwd`` (required), ``server_command``
+* **whatsapp**: ``transport`` (``http`` default, or ``stdio``).
+  ``http`` takes ``bridge_url``, ``bridge_token``, ``bridge_token_file``;
+  ``stdio`` takes ``mcp_cwd`` (required) and ``server_command``.
 
 Usage::
 
