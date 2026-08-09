@@ -206,3 +206,22 @@ class TestResolveRef:
         assert commands._resolve_ref("#1", None) == "#1"
         assert commands._resolve_ref("1", None) == "1"
         assert commands._resolve_ref("g:abc", None) == "g:abc"
+
+
+class TestSkillReference:
+    """Skill text is the agent's only self-documentation — pin what it must say."""
+
+    def test_voice_notes_are_declared_transcribed(self):
+        """Agents must not ask the user to listen to audio (ts4k#48).
+
+        The bridge folds the transcript into the message body; nothing in the
+        response shape says so, so the skill text is where an agent learns it.
+        """
+        text = commands.skill_reference("basic")
+        assert "[voice" in text
+        assert "transcript" in text.lower()
+
+    def test_voice_guidance_survives_in_one_line(self):
+        """It rides in every skill call — one line is the budget."""
+        lines = [ln for ln in commands.skill_reference("basic").splitlines() if "[voice" in ln]
+        assert len(lines) == 1, lines

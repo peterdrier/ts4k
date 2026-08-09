@@ -2150,6 +2150,8 @@ def skill_reference(level: str = "basic") -> str:
         "Sender/domain/time: --from alice@co.com, --domain co.com, --since 1w. All stack.\n"
         "  Find all from a domain: list --domain co.com --since 2023-01-01 -n 200\n"
         "  Truncated results show a continuation command \u2014 copy-paste to get older messages.\n"
+        "WhatsApp voice notes are auto-transcribed: body IS the transcript, prefixed [voice 2:11]. "
+        "Never ask the user to listen. [voice — transcript unavailable] means no text exists.\n"
         "Do NOT pipe through head/grep/awk. Use built-in flags instead:\n"
         "  Limit results: -n 20 (not | head). Search: list -q \"name\" (not | grep).\n"
         "  One call: whatsnew KEY -n 50 (not per-source calls).\n"
