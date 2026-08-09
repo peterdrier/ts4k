@@ -202,6 +202,36 @@ ts4k l --contact alice           # Messages from alice on all sources
 ts4k o --contact alice           # Overview for alice
 ```
 
+### Seeding the map from an address book (CardDAV)
+
+Rather than linking everyone by hand, import an iCloud address book over
+CardDAV. Setup — including the Apple app-specific password — is in the
+[README](../README.md#apple--icloud-contacts-carddav).
+
+```bash
+ts4k src add ic apple-contacts email=you@icloud.com   # one-time
+ts4k c sync                      # preview: proposed links, conflicts, skips
+ts4k c sync --apply              # commit the proposed links
+ts4k c sync --source ic --apply  # pick a source when several are configured
+```
+
+`ts4k c sync` writes nothing without `--apply`. Each vCard becomes one alias
+(the display name, lowercased) holding `g:<email>` for every email address and
+`w:<E164>@s.whatsapp.net` for every phone number in international format.
+
+Two things are reported and left alone rather than merged:
+
+- **an alias that already exists** — your hand-made version wins
+- **an identifier another alias already owns** — importing it would give one
+  person two aliases
+
+Skipped records are counted by reason: no name, no phone or email, already up
+to date, and phone numbers with no country code (ts4k does not guess one).
+
+The import is read-only and one-way: nothing is written back to iCloud, and a
+CardDAV source never appears in `whatsnew`, `list`, the message cache, or
+watermarks.
+
 ---
 
 ## Filters

@@ -102,12 +102,17 @@ class BaseAdapter(ABC):
         """
 
     @abstractmethod
-    async def read_message(self, msg_id: str) -> dict:
+    async def read_message(self, msg_id: str, prefer_html: bool = False) -> dict:
         """Return the full content of a single message.
 
         The returned dict must contain at least: ``id``, ``from``,
         ``subject``, ``date``, ``body``.  Optional keys: ``to``, ``cc``,
         ``message_id`` (RFC-822), ``attachments``.
+
+        *prefer_html* requests the HTML body part when the platform offers
+        a choice (e.g. Gmail multipart/alternative), so readable-mode
+        normalization has markup to preserve. Adapters that don't offer a
+        choice (already HTML-only, or no HTML at all) may ignore it.
         """
 
     @abstractmethod

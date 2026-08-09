@@ -13,18 +13,26 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import html2text
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def normalize(html: str) -> str:
+def normalize(html: str, mode: str = "compact") -> str:
     """Full normalization pipeline.
 
-    Takes raw HTML (or plain text), returns clean text optimized for LLM
-    consumption. Applies the full ts4k preprocessing pipeline in order.
+    Takes raw HTML (or plain text), returns clean text. ``mode`` selects the
+    output style:
+
+    - ``"compact"`` (default): token-efficient text for LLM consumption —
+      no emphasis markup, tight whitespace, pipe-delimited tables.
+    - ``"readable"``: preserves paragraph breaks and **bold**/_italic_
+      markdown, and renders tables as real markdown tables — for
+      human-facing display.
+
+    Applies the full ts4k preprocessing pipeline in order.
     """
     if not html or not html.strip():
         return ""
@@ -52,11 +60,13 @@ def normalize(html: str) -> str:
         # Remove unsubscribe blocks and footer boilerplate (before html2text)
         _remove_unsubscribe_blocks_html(soup)
 
-        # Convert tables to pipe-delimited format before html2text gets them
-        _convert_tables(soup)
+        # Compact: data tables become pipe-delimited text. Readable: data
+        # tables stay HTML so html2text renders real markdown tables.
+        # Layout tables are unwrapped in both modes.
+        _convert_tables(soup, mode=mode)
 
         # Convert the cleaned HTML to text using html2text
-        text = _html_to_text(str(soup))
+        text = _html_to_text(str(soup), mode=mode)
     else:
         # Plain text input — still run text-level cleanups
         pass
@@ -244,14 +254,42 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
             el.decompose()
 
 
-def _convert_tables(soup: BeautifulSoup) -> None:
+def _cell_colspan(cell) -> int:
+    """Return a cell's colspan as an int, defaulting to 1 on malformed HTML."""
+    try:
+        return int(cell.get("colspan", 1))
+    except (ValueError, TypeError):
+        return 1
+
+
+def _cell_rowspan(cell) -> int:
+    """Return a cell's rowspan as an int, defaulting to 1 on malformed HTML."""
+    try:
+        return int(cell.get("rowspan", 1))
+    except (ValueError, TypeError):
+        return 1
+
+
+def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     """Convert HTML tables to pipe-delimited text.
 
     Only converts tables that look like data tables (not layout tables).
     Layout tables (single column, single row, or deeply nested) are unwrapped.
+    In readable mode data tables are left intact for html2text's markdown
+    table renderer, and layout-table unwrapping preserves inline markup and
+    nested tables instead of collapsing to bare text.
     """
-    for table in soup.find_all("table"):
-        rows = table.find_all("tr")
+    # Innermost-first: find_all returns tables in document order (a wrapper
+    # appears before the table nested inside it), so reversing means a
+    # nested data table is already converted to pipe text by the time an
+    # outer layout wrapper is unwrapped — otherwise the wrapper's unwrap
+    # would flatten the still-raw nested table into undelimited text.
+    for table in reversed(soup.find_all("table")):
+        # Scope to this table's own rows/cells — find_all is recursive, so a
+        # nested table's rows/cells would otherwise be double-counted and
+        # skew classification (e.g. a single-column wrapper around a
+        # multi-cell nested table would wrongly look like a data table).
+        rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
         if not rows:
             # Empty table, remove
             table.decompose()
@@ -262,7 +300,9 @@ def _convert_tables(soup: BeautifulSoup) -> None:
         max_cols = 0
 
         for row in rows:
-            cells = row.find_all(["th", "td"])
+            cells = [
+                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
+            ]
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
                 table_data.append(cell_texts)
@@ -274,11 +314,144 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 
         # Heuristic: if it's a single-column table or a single-row table,
         # it's probably a layout table — just unwrap the text
-        if max_cols <= 1:
-            text_content = "\n".join(
-                " ".join(row) for row in table_data if any(row)
-            )
+        if max_cols <= 1 or len(table_data) <= 1:
+            if mode == "readable":
+                # Unwrap only this table's own structure so nested tables
+                # and inline markup survive for html2text
+                own = [
+                    t
+                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
+                    if t.find_parent("table") is table
+                ]
+                # Unwrapping td/tr drops the tag boundaries that kept
+                # adjacent cells/rows apart — "<td>Logo</td><td>Nav</td>"
+                # would collapse to "LogoNav". Insert a space after each
+                # own cell, and turn each own row into a <div> (a bare
+                # "\n" text node would be collapsed by html2text; a block
+                # element forces the line break).
+                for t in own:
+                    if t.name in ("th", "td"):
+                        t.insert_after(NavigableString(" "))
+                        t.unwrap()
+                    elif t.name == "tr":
+                        t.name = "div"
+                    else:
+                        t.unwrap()
+                table.unwrap()
+                continue
+            # Re-extract cell text with a newline-preserving separator
+            # instead of reusing table_data (which used get_text(strip=True)
+            # — fine for plain single-node cells, but it collapses a cell
+            # containing a just-converted nested table's multi-line pipe
+            # text into one undelimited line). Single-node cells are
+            # unaffected since the separator only matters when a cell has
+            # more than one text descendant.
+            lines = []
+            for row in rows:
+                cells = [
+                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
+                ]
+                cell_texts = [c.get_text("\n", strip=True) for c in cells]
+                if any(cell_texts):
+                    lines.append(" ".join(cell_texts))
+            text_content = "\n".join(lines)
             table.replace_with(text_content)
+            continue
+
+        if mode == "readable":
+            # Genuine data table — leave for html2text's markdown renderer.
+            # html2text only emits the markdown header-separator row when
+            # it sees <th> cells, so an all-<td> data table would otherwise
+            # render as plain pipe-y text. Promote the first row's <td>
+            # cells to <th> so html2text treats it as a proper table.
+            def _own_cells(row):
+                return [
+                    c
+                    for c in row.find_all(["th", "td"])
+                    if c.find_parent("table") is table
+                ]
+
+            # Find a clean header row: scan rows in order while tracking
+            # columns occupied by rowspans carried down from earlier rows.
+            # A row qualifies only when no carried rowspan covers it and it
+            # has exactly one single-span cell per table column — anything
+            # else (grouped colspan titles, rowspan grids, spacer rows)
+            # would make html2text emit a separator narrower than the data
+            # rows, i.e. malformed markdown. Prefer a qualifying row that
+            # already has <th> cells; otherwise promote the first
+            # qualifying nonempty row. If NO row qualifies, fall through
+            # to the compact pipe conversion for this table — consistent
+            # pipe rows beat a malformed markdown table.
+            header_row = None
+            promoted_candidate = None
+            has_any_th = False
+            active_spans: list[list[int]] = []  # [remaining_rows, colspan]
+            for row in rows:
+                carried = sum(cs for _, cs in active_spans)
+                r_cells = _own_cells(row)
+                has_any_th = has_any_th or any(c.name == "th" for c in r_cells)
+                clean = all(
+                    _cell_colspan(c) == 1 and _cell_rowspan(c) == 1
+                    for c in r_cells
+                )
+                nonempty = any(c.get_text(strip=True) for c in r_cells)
+                if carried == 0 and clean and nonempty and len(r_cells) == max_cols:
+                    if any(c.name == "th" for c in r_cells):
+                        header_row = row
+                        break
+                    if promoted_candidate is None:
+                        promoted_candidate = row
+                for span in active_spans:
+                    span[0] -= 1
+                active_spans = [s for s in active_spans if s[0] > 0]
+                for c in r_cells:
+                    if _cell_rowspan(c) > 1:
+                        active_spans.append([_cell_rowspan(c) - 1, _cell_colspan(c)])
+            if header_row is None and promoted_candidate is not None and not has_any_th:
+                # Promotion is only right when the table has no real header
+                # anywhere — if <th> labels exist but none qualifies (e.g.
+                # a rowspan/colspan header grid), promoting a data row
+                # would misrepresent it as the header; degrade instead.
+                for cell in _own_cells(promoted_candidate):
+                    cell.name = "th"
+                header_row = promoted_candidate
+            if header_row is not None:
+                # html2text only emits the two-sided "---|---" separator
+                # when the <th> row is the table's FIRST row; a title or
+                # spacer row before it yields a bare "---" line, which
+                # the later signature stripper mistakes for a sig
+                # delimiter. Move any rows preceding the header out of
+                # the table (as block divs, cells space-separated) so the
+                # header row leads the table — this applies equally to
+                # tables that already had <th> cells mid-table.
+                for row in rows:
+                    if row is header_row:
+                        break
+                    for c in _own_cells(row):
+                        c.insert_after(NavigableString(" "))
+                        c.unwrap()
+                    row.name = "div"
+                    table.insert_before(row.extract())
+                continue
+            # No clean header exists (e.g. a rowspan/colspan header grid)
+            # — degrade to pipe-separated rows, but in-place on the soup
+            # so inline markup (links, emphasis) survives for html2text;
+            # the compact table_data conversion would flatten it to bare
+            # text and drop link destinations entirely.
+            for row in rows:
+                r_cells = _own_cells(row)
+                for c in r_cells[:-1]:
+                    c.insert_after(NavigableString(" | "))
+                for c in r_cells:
+                    c.unwrap()
+                row.name = "div"
+            for t in [
+                t
+                for t in table.find_all(["thead", "tbody"])
+                if t.find_parent("table") is table
+            ]:
+                t.unwrap()
+            table.unwrap()
             continue
 
         # Build pipe-delimited output
@@ -297,15 +470,21 @@ def _convert_tables(soup: BeautifulSoup) -> None:
 # HTML → Text conversion
 # ---------------------------------------------------------------------------
 
-def _html_to_text(html: str) -> str:
-    """Convert HTML to plain text using html2text with LLM-friendly settings."""
+def _html_to_text(html: str, mode: str = "compact") -> str:
+    """Convert HTML to plain text using html2text.
+
+    ``mode="compact"`` (default) uses LLM-friendly settings: no emphasis
+    markup, single newline between paragraphs. ``mode="readable"`` keeps
+    emphasis markup and paragraph spacing for human-facing display.
+    """
+    readable = mode == "readable"
     h = html2text.HTML2Text()
     h.body_width = 0  # No line wrapping (LLMs don't need it)
     h.ignore_images = True  # Already handled tracking pixels, skip remainder
-    h.ignore_emphasis = True  # *bold*, _italic_ waste tokens
+    h.ignore_emphasis = not readable  # *bold*, _italic_ waste tokens in compact mode
     h.ignore_links = False  # We want to keep meaningful links
     h.protect_links = True  # Don't wrap links
-    h.single_line_break = True  # More compact output
+    h.single_line_break = not readable  # Compact: no blank line between paragraphs
     h.unicode_snob = True  # Use unicode instead of ASCII approximations
     h.skip_internal_links = True  # Skip anchor links
     h.inline_links = True  # [text](url) format
@@ -319,13 +498,26 @@ def _html_to_text(html: str) -> str:
     def _simplify_link(m: re.Match) -> str:
         link_text = m.group(1).strip()
         url = m.group(2).strip()
+        # html2text's protect_links wraps targets in angle brackets —
+        # strip them so equality checks against the visible text work
+        if url.startswith("<") and url.endswith(">"):
+            url = url[1:-1]
+
+        # Readable mode may wrap link text in emphasis markup (e.g.
+        # "**https://example.com**"), which defeats a plain equality check
+        # against the href. Compare the raw text first, then a copy with
+        # only BALANCED emphasis wrappers removed — an address that
+        # legitimately starts with "_" must not lose it. Keep returning
+        # link_text so the emphasized display form survives.
+        wrap = re.fullmatch(r"(\*{1,3}|_{1,3})(.+)\1", link_text, re.DOTALL)
+        texts = (link_text, wrap.group(2)) if wrap else (link_text,)
 
         # Skip if link text IS the URL (html2text sometimes does this)
-        if link_text == url or link_text == url.rstrip("/"):
-            return url
+        if any(t == url or t == url.rstrip("/") for t in texts):
+            return link_text
 
         # Skip mailto: links where the text is the email address
-        if url.startswith("mailto:") and url[7:] == link_text:
+        if url.startswith("mailto:") and url[7:] in texts:
             return link_text
 
         # Skip tracking/click-through URLs
@@ -378,11 +570,19 @@ def _strip_reply_chains(text: str) -> str:
     - "--- Original Message ---" blocks
     - Outlook-style "From: ... Sent: ... To: ... Subject: ..." blocks
     """
-    # First, remove "On ... wrote:" headers and everything after them that's quoted
-    match = _REPLY_HEADER_PATTERN.search(text)
+    # First, remove "On ... wrote:" headers and everything after them that's
+    # quoted. Match against emphasis-stripped lines — readable mode renders
+    # these as "**On Mon ... wrote:**" or bolds the Outlook "From:/Sent:/
+    # To:/Subject:" labels, which the anchored header patterns don't match.
+    # Line boundaries are unchanged by stripping, so the match's line offset
+    # maps directly onto the original (unstripped) lines that get kept.
+    orig_lines = text.split("\n")
+    stripped_text = "\n".join(re.sub(r"[*_]{1,3}", "", line) for line in orig_lines)
+    match = _REPLY_HEADER_PATTERN.search(stripped_text)
     if match:
-        # Truncate at the reply header
-        text = text[:match.start()].rstrip()
+        # Truncate at the start line of the matched header.
+        start_line = stripped_text.count("\n", 0, match.start())
+        text = "\n".join(orig_lines[:start_line]).rstrip()
 
     # Remove any remaining "> " quoted lines
     lines = text.split("\n")
@@ -445,8 +645,22 @@ def _strip_signatures(text: str) -> str:
         line = lines[i]
         stripped = line.strip()
 
-        # Check explicit signature triggers
+        # Check explicit signature triggers against the raw line first.
+        # Only fall back to stripping markdown emphasis wrappers — readable
+        # mode renders "Thanks," as "**Thanks,**", which otherwise wouldn't
+        # match the anchored trigger patterns — if the raw line doesn't
+        # already match. Stripping a plain "___" delimiter line down to
+        # nothing must not be treated as a match.
         if _SIGNATURE_TRIGGER_PATTERN.match(stripped):
+            sig_start = i
+            break
+        # Remove short emphasis-marker runs anywhere in the line (same
+        # pattern the reply-header pass uses) — "**Thanks**," keeps its
+        # trailing markers before the comma, so edge-only stripping
+        # misses them. The raw line was already tested above, so a "___"
+        # delimiter can't be destroyed by this.
+        emphasis_stripped = re.sub(r"[*_]{1,3}", "", stripped)
+        if emphasis_stripped and _SIGNATURE_TRIGGER_PATTERN.match(emphasis_stripped):
             sig_start = i
             break
 

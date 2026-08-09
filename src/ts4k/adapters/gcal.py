@@ -138,7 +138,7 @@ class GcalAdapter(BaseAdapter):
                             domain: str | None = None) -> list[dict]:
         return []
 
-    async def read_message(self, msg_id: str) -> dict:
+    async def read_message(self, msg_id: str, prefer_html: bool = False) -> dict:
         raise NotImplementedError("GcalAdapter does not support read_message")
 
     async def read_thread(self, thread_id: str) -> dict:

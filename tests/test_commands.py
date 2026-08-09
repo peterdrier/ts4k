@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 
 from ts4k import commands
 from ts4k.state import cache
@@ -298,6 +299,94 @@ class TestSourceActivity:
         via_group_o = commands.source_activity("o", provider="o365", headers=groups.get("o", []))
         via_lookup_o = commands.source_activity("o", provider="o365")
         assert via_group_o == via_lookup_o
+# get_message — readable-mode empty-body fallback (PR #60 round 4 fix)
+# ---------------------------------------------------------------------------
+
+
+class _MsgStubAdapter:
+    """Stub adapter for get_message tests — returns a canned body keyed by
+    the ``prefer_html`` flag, and records every call it receives."""
+
+    def __init__(self, html_body: str, plain_body: str):
+        self._html_body = html_body
+        self._plain_body = plain_body
+        self.calls: list[bool] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def read_message(self, msg_id, prefer_html=False):
+        self.calls.append(prefer_html)
+        body = self._html_body if prefer_html else self._plain_body
+        return {
+            "id": msg_id,
+            "source": "g",
+            "from": "alice@test.com",
+            "subject": "Test",
+            "date": "2026-03-08T10:00:00Z",
+            "body": body,
+        }
+
+
+class TestGetMessageReadableFallback:
+    """Preferred HTML that normalizes to nothing (empty shell/tracking-only
+    markup) must fall back to the plain-text alternative in readable mode,
+    without affecting compact mode or non-empty readable results."""
+
+    @pytest.fixture(autouse=True)
+    def _sources(self, tmp_path):
+        from ts4k import state
+        state.set_config_dir(tmp_path, reason="test")
+        (tmp_path / "sources.json").write_text(
+            json.dumps({"g": {"provider": "gmail", "email": "t@t.com"}})
+        )
+        yield
+        state.reset()
+
+    @pytest.mark.asyncio
+    async def test_empty_html_body_falls_back_to_plain(self, monkeypatch):
+        stub = _MsgStubAdapter(
+            html_body='<div style="display:none">tracking only</div>',
+            plain_body="Real plain-text content.",
+        )
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.get_message("g:msg1", body_mode="readable")
+
+        assert "Real plain-text content." in result.output
+        # HTML tried first, then a single plain-text fallback fetch.
+        assert stub.calls == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_nonempty_readable_body_skips_fallback(self, monkeypatch):
+        stub = _MsgStubAdapter(
+            html_body="<p>Real HTML content.</p>",
+            plain_body="Should never be fetched.",
+        )
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.get_message("g:msg1", body_mode="readable")
+
+        assert "Real HTML content." in result.output
+        assert stub.calls == [True]  # no fallback fetch when the body isn't empty
+
+    @pytest.mark.asyncio
+    async def test_compact_mode_unaffected(self, monkeypatch):
+        """Guard: the readable-only fallback must never fire for compact
+        mode, even when that body also normalizes to nothing."""
+        stub = _MsgStubAdapter(
+            html_body="<p>Unused HTML.</p>",
+            plain_body='<div style="display:none">tracking only</div>',
+        )
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.get_message("g:msg1", body_mode="compact")
+
+        assert result.output != ""  # header line still present, just no body
+        assert stub.calls == [False]  # single fetch only, no fallback retry
 class TestSkillReference:
     """Skill text is the agent's only self-documentation — pin what it must say."""
 
