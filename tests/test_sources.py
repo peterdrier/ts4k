@@ -108,6 +108,37 @@ class TestClear:
         assert sources.list_all() == {}
 
 
+class TestSetNote:
+    def test_sets_note_on_existing_source(self):
+        sources.add("oh", provider="o365", email="help@burn.camp")
+        updated = sources.set_note("oh", "mostly DMARC reports")
+        assert updated["note"] == "mostly DMARC reports"
+        assert sources.get("oh")["note"] == "mostly DMARC reports"
+
+    def test_preserves_other_fields(self):
+        sources.add("oh", provider="o365", email="help@burn.camp", level="modify")
+        sources.set_note("oh", "mostly DMARC reports")
+        cfg = sources.get("oh")
+        assert cfg["provider"] == "o365"
+        assert cfg["email"] == "help@burn.camp"
+        assert cfg["level"] == "modify"
+
+    def test_empty_note_clears_field(self):
+        sources.add("oh", provider="o365", email="help@burn.camp")
+        sources.set_note("oh", "mostly DMARC reports")
+        sources.set_note("oh", "")
+        assert "note" not in sources.get("oh")
+
+    def test_returns_none_for_missing_source(self):
+        assert sources.set_note("nope", "text") is None
+
+    def test_updating_note_does_not_touch_other_sources(self):
+        sources.add("oh", provider="o365", email="help@burn.camp")
+        sources.add("oy", provider="o365", email="peter@oldyard.com")
+        sources.set_note("oh", "mostly DMARC reports")
+        assert "note" not in sources.get("oy")
+
+
 class TestCorruptFile:
     def test_handles_invalid_json(self, tmp_config_dir):
         (tmp_config_dir / "sources.json").write_text("not json")

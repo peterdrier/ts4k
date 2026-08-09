@@ -237,6 +237,71 @@ def _resolve_prefixes(source: str | None) -> list[str]:
     return [source]
 
 
+# Providers whose messages land in the local cache (see cache.CACHEABLE_SOURCES).
+# WhatsApp reads from its own SQLite DB; calendar providers aren't cached at all —
+# for those, activity can't be derived locally, so we report "n/a" rather than
+# a misleading "empty".
+_ACTIVITY_TRACKED_PROVIDERS = {"gmail", "o365"}
+_ACTIVITY_ACTIVE_DAYS = 30
+
+
+def source_activity(
+    prefix: str, provider: str = "", headers: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Cache-derived activity metadata for a source. Local cache only, no network calls.
+
+    Returns a dict with ``count`` (cached message count), ``newest`` (ISO date
+    of the newest cached message, or ``None``), and ``tag``:
+
+    - ``"active"``: newest cached message within the last 30 days
+    - ``"low"``: cached messages exist, but the newest is older than 30 days
+    - ``"empty"``: no cached messages (nothing fetched yet, or genuinely idle)
+    - ``"n/a"``: provider isn't cached locally (WhatsApp, calendars), or the
+      source uses a custom prefix that ``cache.CACHEABLE_SOURCES`` doesn't
+      recognize (caching is keyed by prefix today; see issue #64)
+
+    *headers*, if given, is a pre-loaded list of this source's cached headers
+    (see ``cached_headers_by_source``) — pass it to avoid reloading the whole
+    cache index per call. ``None`` (default) loads just this source's headers.
+
+    Note: this reflects what ts4k has *cached* so far, not a live mailbox
+    count — a source that's never been queried also reports "empty".
+    """
+    if provider and provider.lower() not in _ACTIVITY_TRACKED_PROVIDERS:
+        return {"count": 0, "newest": None, "tag": "n/a"}
+
+    if prefix not in cache.CACHEABLE_SOURCES:
+        return {"count": 0, "newest": None, "tag": "n/a"}
+
+    if headers is None:
+        headers = cache.list_headers(source=prefix)
+    if not headers:
+        return {"count": 0, "newest": None, "tag": "empty"}
+
+    dates = [h.get("date", "") for h in headers if h.get("date")]
+    newest = max(dates) if dates else None
+    if newest:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=_ACTIVITY_ACTIVE_DAYS)) \
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        tag = "active" if newest >= cutoff else "low"
+    else:
+        tag = "low"
+    return {"count": len(headers), "newest": newest, "tag": tag}
+
+
+def cached_headers_by_source() -> dict[str, list[dict[str, Any]]]:
+    """Load the entire cache index once and group headers by source prefix.
+
+    Pass the result's per-prefix lists to ``source_activity(..., headers=...)``
+    when computing activity for every configured source, so callers don't
+    reload and rescan the full cache index once per source.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for h in cache.list_headers():
+        groups.setdefault(h.get("source", ""), []).append(h)
+    return groups
+
+
 def _prefix_from_id(prefixed_id: str, all_cfg: dict[str, dict[str, Any]]) -> str:
     """Extract source prefix from a prefixed ID like ``'g:xxx'``."""
     for prefix in sorted(all_cfg.keys(), key=len, reverse=True):
@@ -2536,6 +2601,7 @@ def skill_reference(level: str = "basic") -> str:
         "Refs: listings assign numbers (1, 2, ...). Use with get/thread/manage/event. Refs accumulate across calls.\n"
         "  list refs are global: get N. whatsnew -k refs are keyed: get N -k KEY.\n"
         "Source prefixes are user-chosen (ts4k sources to list). --since: 2d, 6h, 1w, ISO. -f p|j|x. -F filters.\n"
+        "Check ts4k sources for per-source activity/notes before widening --since.\n"
         "Source is a FLAG (--source g), not a subcommand.\n"
         "Sender/domain/time: --from alice@co.com, --domain co.com, --since 1w. All stack.\n"
         "  Find all from a domain: list --domain co.com --since 2023-01-01 -n 200\n"

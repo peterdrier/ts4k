@@ -608,19 +608,45 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         else:
             print(f"Source {prefix!r} not found.")
 
+    elif action == "note":
+        prefix = args.prefix
+        text = " ".join(args.text or []).strip()
+        updated = sources.set_note(prefix, text)
+        if updated is None:
+            print(f"Source {prefix!r} not found.")
+        elif text:
+            print(f"Set note for {prefix!r}: {text}")
+        else:
+            print(f"Cleared note for {prefix!r}.")
+
     elif action == "list":
         all_cfg = sources.list_all()
         if not all_cfg:
             print("No sources configured.")
             print("Add one:  ts4k src add g gmail email=you@gmail.com")
             return
+        headers_by_source = commands.cached_headers_by_source()
         for prefix, cfg in sorted(all_cfg.items()):
             provider = cfg.get("provider", "?")
             detail = cfg.get("email") or cfg.get("mailbox") or cfg.get("mcp_cwd") or ""
             level = cfg.get("level", "readonly")
             print(f"  {prefix}: {provider} ({detail}) [{level}]")
+            act = commands.source_activity(
+                prefix, provider, headers=headers_by_source.get(prefix, [])
+            )
+            if act["tag"] == "n/a":
+                print("    activity: n/a (not cached locally)")
+            elif act["tag"] == "empty":
+                print("    activity: empty (no cached messages yet)")
+            else:
+                newest = act["newest"][:10] if act["newest"] else "unknown"
+                print(f"    activity: {act['tag']} — {act['count']} cached, newest {newest}")
+            note = cfg.get("note")
+            if note:
+                print(f"    note: {note}")
             for k, v in sorted(cfg.items()):
-                if k not in ("provider", "email", "mailbox", "mcp_cwd"):
+                # "note" is rendered above as its own line; secrets never print.
+                if k not in ("provider", "email", "mailbox", "mcp_cwd", "note"):
                     print(f"    {k}: {_shown(k, v)}")
 
     elif action == "discover":
@@ -1549,8 +1575,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Manage messaging sources. Each source has a short prefix (g, w, o) used as a namespace for message IDs.",
         epilog=(
             "examples:\n"
-            "  ts4k src list                    # show configured sources\n"
+            "  ts4k src list                    # show configured sources + activity\n"
             "  ts4k src add g gmail you@gmail.com\n"
+            "  ts4k src note oh \"mostly DMARC reports\"\n"
             "  ts4k src rm g                    # remove a source\n"
             "  ts4k src discover                # find O365 mailboxes"
         ),
@@ -1590,8 +1617,24 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Remove a configured source by its prefix.")
     sr_rm.add_argument("prefix", help="Source prefix to remove")
 
+    sr_note = sr_sub.add_parser(
+        "note", help="Set a noise/activity note on a source",
+        description="Attach a free-text note to a source (e.g. a known noise pattern). "
+                    "Surfaced in `ts4k sources`. Only the note is changed — all other "
+                    "fields on the source are preserved.",
+        epilog=(
+            "examples:\n"
+            '  ts4k src note oh "mostly DMARC reports"\n'
+            "  ts4k src note oh              # clears the note"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sr_note.add_argument("prefix", help="Source prefix")
+    sr_note.add_argument("text", nargs="*", help="Note text (omit to clear)")
+
     sr_sub.add_parser("list", help="List all configured sources",
-        description="Show all configured sources with their prefixes, providers, and parameters.")
+        description="Show all configured sources with their prefixes, providers, parameters, "
+                    "and cache-derived activity (message count, newest cached date, active/low/empty).")
 
     sr_sub.add_parser("discover", help="Discover O365 mailboxes for authenticated user",
         description="Query Microsoft Graph to find available mailboxes for the authenticated O365 user.")
