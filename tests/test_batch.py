@@ -176,7 +176,8 @@ class TestKillJob:
 
     def test_live_subprocess(self):
         """Kill a real subprocess and verify it dies."""
-        import subprocess, sys, time
+        import subprocess
+        import sys
 
         # Start a long-running subprocess
         proc = subprocess.Popen(

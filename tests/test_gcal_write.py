@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
-from ts4k.core.levels import AccessLevel
 
 
 def _make_adapter(level: str = "send", prefix: str = "gc") -> GcalAdapter:

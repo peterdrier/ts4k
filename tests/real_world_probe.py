@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 
@@ -13,7 +12,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.core.format import format_listing, format_message, estimate_size
+from ts4k.core.format import format_listing, format_message
 from ts4k.adapters.gmail import parse_search_response, parse_message_response
 
 
@@ -157,7 +156,7 @@ async def run(email: str, server_url: str, count: int, use_tokens: bool):
 
             savings = [s["saving"] for s in per_msg_stats]
             if savings:
-                print(f"\nPer-message byte savings:")
+                print("\nPer-message byte savings:")
                 print(f"  Min:     {min(savings):.1%}")
                 print(f"  Max:     {max(savings):.1%}")
                 print(f"  Median:  {sorted(savings)[len(savings)//2]:.1%}")
@@ -165,7 +164,7 @@ async def run(email: str, server_url: str, count: int, use_tokens: bool):
             if token_counted > 0:
                 tok_savings = [s["tok_saving"] for s in per_msg_stats if "tok_saving" in s]
                 if tok_savings:
-                    print(f"Per-message token savings:")
+                    print("Per-message token savings:")
                     print(f"  Min:     {min(tok_savings):.1%}")
                     print(f"  Max:     {max(tok_savings):.1%}")
                     print(f"  Median:  {sorted(tok_savings)[len(tok_savings)//2]:.1%}")

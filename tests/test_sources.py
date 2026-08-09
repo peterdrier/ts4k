@@ -1,6 +1,5 @@
 """Tests for ts4k.state.sources."""
 
-import json
 
 import pytest
 

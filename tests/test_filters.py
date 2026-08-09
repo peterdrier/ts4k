@@ -1,6 +1,5 @@
 """Tests for ts4k filter config (state.filters) and engine (core.filter)."""
 
-import json
 
 import pytest
 

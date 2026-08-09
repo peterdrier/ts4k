@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
-from ts4k.core.levels import AccessLevel
 
 
 def _b64(text: str) -> str:

@@ -108,7 +108,7 @@ async def run(
             listing_bytes = len(listing_out.encode())
             listing_saving = 1.0 - (listing_bytes / search_bytes_total) if search_bytes_total else 0
 
-            print(f"\n--- Search complete ---")
+            print("\n--- Search complete ---")
             print(f"Pages:      {page_num}")
             print(f"Messages:   {len(all_entries)}")
             print(f"Raw search:   {search_bytes_total:>10,} bytes ({estimate_size(search_bytes_total)})")
@@ -194,7 +194,7 @@ async def run(
             total_elapsed = t_fetch - t_start
 
             print(f"\n{'=' * 60}")
-            print(f"BULK PROBE RESULTS")
+            print("BULK PROBE RESULTS")
             print(f"{'=' * 60}")
             print(f"Query:           {query}")
             print(f"Messages found:  {len(all_entries)}")
@@ -223,7 +223,7 @@ async def run(
                     # Use real token counts for cost estimate
                     raw_tok_per_msg = raw_tokens_total / token_counted
                     norm_tok_per_msg = norm_tokens_total / token_counted
-                    print(f"\nCost estimate (real tokens):")
+                    print("\nCost estimate (real tokens):")
                     print(f"  Avg raw tok/msg:   {raw_tok_per_msg:,.0f}")
                     print(f"  Avg norm tok/msg:  {norm_tok_per_msg:,.0f}")
                     print(f"  At $3/MTok:        ~{1_000_000 / raw_tok_per_msg:,.0f} msgs/$1 (raw)")
