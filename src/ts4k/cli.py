@@ -221,7 +221,7 @@ def _cmd_help(args: argparse.Namespace) -> None:
     print("  status                                      Health, stats, efficiency    [st]")
     print()
     print("  src list|add|rm                             Manage sources")
-    print("  contacts link|unlink|find|list              Manage contacts              [c]")
+    print("  contacts link|unlink|find|list|sync         Manage contacts              [c]")
     print("  filter show|add-*|rm-*|reset                Manage filters               [f]")
     print("  preload --source S [--query Q] [--bg]       Paginate history into cache")
     print("  cache stats|clear [--source S] [--stale]    Manage message cache")
@@ -259,6 +259,14 @@ def _cmd_contacts(args: argparse.Namespace) -> None:
         alias=getattr(args, "alias", None),
         identifiers=getattr(args, "identifiers", None),
         term=getattr(args, "term", None),
+    )
+    print(output)
+
+
+async def _cmd_contacts_sync(args: argparse.Namespace) -> None:
+    output = await commands.sync_contacts(
+        source=getattr(args, "source", None),
+        apply=getattr(args, "apply", False),
     )
     print(output)
 
@@ -334,6 +342,86 @@ def _prompt_password(prompt: str) -> str:
     return "".join(chars)
 
 
+def _ensure_apple_password(
+    email: str, *, is_icloud: bool, server_url: str, username: str | None = None,
+    store_server_url: bool = True, config_dir: Path | None = None,
+    credential_key: str | None = None,
+) -> str | None:
+    """Make sure an app-specific password is stored for *email*.
+
+    Returns ``"existing"`` when one was already on disk, ``"saved"`` when
+    the user entered a new one, or ``None`` if the prompt was aborted.
+
+    CalDAV and CardDAV share one credential file because Apple issues one
+    app-specific password per Apple ID, not per service.  Its
+    ``server_url`` is read back by the CalDAV adapter, so an iCloud
+    contacts setup stores the CalDAV sibling endpoint, not the contacts
+    host — the CardDAV adapter takes its base URL from the source config.
+    Generic (non-iCloud) CardDAV setups pass ``store_server_url=False`` for
+    the same reason: the CardDAV adapter never reads the shared file's
+    ``server_url``, so writing the CardDAV endpoint there would only risk
+    poisoning a CalDAV source that later reuses the same email.
+
+    ``credential_key`` overrides the credential file's directory name
+    (default: *email*).  Generic CardDAV setups pass a host-scoped key
+    (``<email>#carddav#<host>``) so they neither silently reuse a CalDAV
+    credential for the same email — which may be a different password for
+    a different service — nor collide with another generic CardDAV server
+    that happens to share the same email.
+    """
+    from ts4k.auth.caldav import ICLOUD_CALDAV_URL, load_credentials, save_credentials
+
+    key = credential_key or email
+    if load_credentials(key, config_dir) is not None:
+        return "existing"
+
+    print("An app-specific password is required "
+          "(https://account.apple.com → Sign-In and Security → "
+          "App-Specific Passwords; needs 2FA).")
+    pw = None
+    for _attempt in range(3):
+        raw = _prompt_password(f"App-specific password for {email}: ")
+        # Apple's app-specific passwords are pasted as "xxxx xxxx xxxx xxxx"
+        # and stripped to "xxxx-xxxx-xxxx-xxxx"; a generic server's password
+        # has no such format and must be stored exactly as entered.
+        stripped = "".join(raw.split())
+        looks_apple = bool(re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", stripped))
+        if is_icloud and not looks_apple and re.fullmatch(r"[a-z]{16}", stripped):
+            # Apple's account page also renders the password space-grouped
+            # ("xxxx xxxx xxxx xxxx"); stripping whitespace above collapses
+            # that to 16 contiguous letters instead of the hyphenated form
+            # — re-hyphenate so it passes the format check below and is
+            # stored the same way as a hyphenated paste.
+            stripped = "-".join(stripped[i:i + 4] for i in range(0, 16, 4))
+            looks_apple = True
+        # Apple-format normalization applies ONLY to iCloud — a generic
+        # server's password may legitimately be 16 lowercase letters (or
+        # Apple-shaped) and must be stored byte-for-byte as entered
+        candidate = stripped if is_icloud else raw
+        if not candidate.strip():
+            print("No password entered — aborting.")
+            return None
+        if is_icloud and not looks_apple:
+            print("That doesn't look like an Apple app-specific password "
+                  f"(expected xxxx-xxxx-xxxx-xxxx, got {len(stripped)} characters) "
+                  "— try again.")
+            continue
+        pw = candidate
+        break
+    if pw is None:
+        print("Too many failed attempts — aborting.")
+        return None
+
+    save_credentials(
+        key, username=username or email, app_password=pw,
+        server_url=ICLOUD_CALDAV_URL if is_icloud
+        else (server_url if store_server_url else ""),
+        config_dir=config_dir,
+    )
+    print(f"Saved credentials for {email}.")
+    return "saved"
+
+
 def _cmd_sources(args: argparse.Namespace) -> None:
     """Handle the src command — manage source config."""
     action = getattr(args, "action", None)
@@ -371,47 +459,32 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 print(f"Usage: ts4k src add {prefix} apple email=you@icloud.com")
                 return
             kwargs.setdefault("server_url", ICLOUD_CALDAV_URL)
+            config_dir_path = Path(kwargs["config_dir"]) if kwargs.get("config_dir") else None
 
-            from ts4k.auth.caldav import load_credentials, save_credentials
-            fresh = False
-            if load_credentials(email) is None:
-                is_icloud = kwargs["server_url"] == ICLOUD_CALDAV_URL
-                print("An app-specific password is required "
-                      "(https://account.apple.com → Sign-In and Security → "
-                      "App-Specific Passwords; needs 2FA).")
-                pw = None
-                for _attempt in range(3):
-                    raw = _prompt_password(f"App-specific password for {email}: ")
-                    candidate = "".join(raw.split())
-                    if not candidate:
-                        print("No password entered — aborting.")
-                        return
-                    if is_icloud and not re.fullmatch(r"[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}", candidate):
-                        print("That doesn't look like an Apple app-specific password "
-                              f"(expected xxxx-xxxx-xxxx-xxxx, got {len(candidate)} characters) "
-                              "— try again.")
-                        continue
-                    pw = candidate
-                    break
-                if pw is None:
-                    print("Too many failed attempts — aborting.")
-                    return
-                save_credentials(email, username=kwargs.get("username") or email,
-                                 app_password=pw, server_url=kwargs["server_url"])
-                print(f"Saved credentials for {email}.")
-                fresh = True
+            stored = _ensure_apple_password(
+                email,
+                is_icloud=kwargs["server_url"] == ICLOUD_CALDAV_URL,
+                server_url=kwargs["server_url"],
+                username=kwargs.get("username"),
+                config_dir=config_dir_path,
+            )
+            if stored is None:
+                return
+            fresh = stored == "saved"
 
             tz_default = kwargs.get("timezone") or _local_timezone()
 
             if "calendar_id" not in kwargs:
                 print(f"Fetching calendars for {email}...")
                 try:
-                    cals = asyncio.run(commands.cal_list_caldav_calendars(email))
+                    cals = asyncio.run(
+                        commands.cal_list_caldav_calendars(email, config_dir_path)
+                    )
                 except Exception as e:
                     print(f"Error: could not list calendars — {e}")
                     if fresh:
                         from ts4k.auth.caldav import credentials_path
-                        credentials_path(email).unlink(missing_ok=True)
+                        credentials_path(email, config_dir_path).unlink(missing_ok=True)
                         print("Could not connect with that password — discarded the "
                               "saved credentials; run the command again to retry.")
                     return
@@ -441,17 +514,52 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                     if pfx in all_sources:
                         print(f"  Prefix '{pfx}' already in use — skipping.")
                         continue
-                    sources.add(
-                        pfx, provider="caldav", email=email,
+                    add_kwargs: dict[str, Any] = dict(
+                        provider="caldav", email=email,
                         server_url=kwargs["server_url"],
                         calendar_id=cal["id"], calendar_name=cal["summary"],
                         timezone=tz_default, level="readonly",
                     )
+                    if kwargs.get("config_dir"):
+                        add_kwargs["config_dir"] = kwargs["config_dir"]
+                    sources.add(pfx, **add_kwargs)
                     all_sources[pfx] = {}
                     print(f"  Added '{cal['summary']}' as '{pfx}' (readonly)")
                 return
             # calendar_id given explicitly → fall through to generic sources.add
             kwargs.setdefault("timezone", tz_default)
+
+        # Apple/iCloud contacts preset → generic carddav provider
+        from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, is_icloud_carddav_url
+        if provider in ("apple-contacts", "icloud-contacts"):
+            kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
+            provider = "carddav"
+
+        if provider == "carddav":
+            email = kwargs.get("email")
+            if not email:
+                print("Error: email is required for CardDAV sources.")
+                print(f"Usage: ts4k src add {prefix} apple-contacts email=you@icloud.com")
+                return
+            kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
+
+            from ts4k.adapters.carddav import carddav_credential_key
+            is_icloud_contacts = is_icloud_carddav_url(kwargs["server_url"])
+            stored = _ensure_apple_password(
+                email,
+                is_icloud=is_icloud_contacts,
+                server_url=kwargs["server_url"],
+                username=kwargs.get("username"),
+                store_server_url=False,
+                config_dir=Path(kwargs["config_dir"]) if kwargs.get("config_dir") else None,
+                credential_key=carddav_credential_key(email, kwargs["server_url"]),
+            )
+            if stored is None:
+                return
+            if stored == "existing":
+                print(f"Reusing the app-specific password already stored for {email}.")
+            # Falls through to generic sources.add — contacts are imported by
+            # `ts4k contacts sync`, not by any message command.
 
         # For O365: inherit client_id/tenant_id from existing O365 source
         # if not explicitly provided (same app registration for all mailboxes).
@@ -1141,17 +1249,32 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
                 _auth_o365(prefix, cfg, no_calendar)
             elif provider == "whatsapp":
                 _auth_whatsapp(prefix, cfg)
-            elif provider == "caldav":
-                from ts4k.auth.caldav import credentials_path
+            elif provider in ("caldav", "carddav"):
+                from ts4k.auth.caldav import (
+                    ICLOUD_CARDDAV_URL,
+                    credentials_path,
+                    is_icloud_carddav_url,
+                )
                 email = cfg.get("email", "<your-apple-id>")
-                print(f"  {prefix}: caldav — no OAuth; uses an app-specific password")
-                print("        Generate one at https://account.apple.com "
-                      "(Sign-In and Security → App-Specific Passwords),")
-                print(f"        then store it with: ts4k src add {prefix} apple email={email}")
+                server_url = cfg.get("server_url", ICLOUD_CARDDAV_URL)
+                is_generic_carddav = provider == "carddav" and not is_icloud_carddav_url(server_url)
+                print(f"  {prefix}: {provider} — no OAuth; uses an app-specific password")
+                print(f"        Generate one at https://account.apple.com "
+                      f"(Sign-In and Security → App-Specific Passwords),")
+                if is_generic_carddav:
+                    from ts4k.adapters.carddav import carddav_credential_key
+                    key = carddav_credential_key(email, server_url)
+                    print(f"        then store it with: ts4k src add {prefix} carddav "
+                          f"email={email} server_url={server_url}")
+                else:
+                    alias = "apple-contacts" if provider == "carddav" else "apple"
+                    key = email
+                    print(f"        then store it with: ts4k src add {prefix} {alias} email={email}")
                 # src add only prompts when no credential is stored, so a revoked
                 # password has to be removed first or the re-run is a no-op.
+                config_dir = Path(cfg["config_dir"]) if cfg.get("config_dir") else None
                 print(f"        Replacing a revoked password? delete "
-                      f"{credentials_path(email)} first.")
+                      f"{credentials_path(key, config_dir)} first.")
             else:
                 print(f"  {prefix}: unknown provider '{provider}' — skipping")
         except SystemExit:
@@ -1432,11 +1555,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "            transport=stdio also needs mcp_cwd, server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
             "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
+            "  apple-contacts: email (required)  → generic carddav provider (ts4k c sync)\n"
             "\n"
             "examples:\n"
             '  ts4k src add g gmail email=you@gmail.com\n'
             '  ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-bridge/store/api_token\n'
             '  ts4k src add cc apple email=you@icloud.com\n'
+            '  ts4k src add ic apple-contacts email=you@icloud.com\n'
             "\n"
             "List fields (server_command) are auto-split on spaces.\n"
             "A bare email (user@example.com) is treated as email=user@example.com."
@@ -1444,7 +1569,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp, apple/icloud/caldav")
+    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp, apple/icloud/caldav, apple-contacts/carddav")
     sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
     sr_rm = sr_sub.add_parser("rm", help="Remove a source",
@@ -1470,7 +1595,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k c unlink sarah w:123@wa     # remove one identifier\n"
             "  ts4k c unlink sarah               # delete alias entirely\n"
             "  ts4k c find sarah                 # search by alias or ID\n"
-            "  ts4k c list                       # show all contacts"
+            "  ts4k c list                       # show all contacts\n"
+            "  ts4k c sync                       # preview an iCloud address book import\n"
+            "  ts4k c sync --apply               # commit the proposed links"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1492,6 +1619,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ct_find = ct_sub.add_parser("find", help="Search contacts",
         description="Search contacts by alias name or platform identifier substring.")
     ct_find.add_argument("term", help="Search term (matches alias or identifier)")
+
+    ct_sync = ct_sub.add_parser("sync", help="Import an address book from CardDAV",
+        description="Fetch an iCloud/CardDAV address book and propose alias links. "
+                    "Prints proposed links, conflicts, and skipped records; writes "
+                    "nothing unless --apply is given. Existing links are never "
+                    "overwritten — conflicts are reported and left alone.")
+    ct_sync.add_argument("--source", "-s",
+                         help="CardDAV source prefix (default: the only one configured)")
+    ct_sync.add_argument("--apply", action="store_true",
+                         help="Commit the proposed links to the contact map")
+    ct_sync.set_defaults(func=_cmd_contacts_sync)
 
     ct.set_defaults(func=_cmd_contacts)
 

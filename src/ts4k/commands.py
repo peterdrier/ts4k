@@ -77,6 +77,9 @@ def _ensure_sources() -> dict[str, dict[str, Any]]:
 
 _CAL_PROVIDERS = ("gcal", "o365cal", "caldav")
 
+# Providers that carry no messages — excluded from message stats.
+_NON_MESSAGE_PROVIDERS = (*_CAL_PROVIDERS, "carddav")
+
 
 def _make_adapter(
     prefix: str, cfg: dict[str, Any]
@@ -189,6 +192,11 @@ def _make_adapter(
             level=cfg.get("level", "readonly"),
         )
         return CaldavAdapter(config, prefix=prefix)
+
+    if provider == "carddav":
+        # Contacts are not messages: CardDAV sources are reached only by
+        # `ts4k contacts sync`, never by the message fan-out.
+        return None
 
     logger.warning("Unknown provider %r for source %r", provider, prefix)
     return None
@@ -981,7 +989,7 @@ def get_status(
     total_msgs = st.get("total_messages", 0)
     pct = stats.savings_pct()
 
-    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV"}
+    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV", "carddav": "CardDAV"}
 
     lines.append("")
     lines.append("Stats:")
@@ -997,8 +1005,8 @@ def get_status(
         lines.append("  By source:")
         for src in sorted(all_cfg.keys()):
             provider = all_cfg[src].get("provider", "")
-            if provider in _CAL_PROVIDERS:
-                continue  # Calendar events tracked separately
+            if provider in _NON_MESSAGE_PROVIDERS:
+                continue  # Calendars and contacts carry no messages
             base_label = _provider_labels.get(provider, provider)
             label = base_label if src == provider[0:1] else f"{base_label}({src})"
             data = by_source.get(src, {})
@@ -1093,6 +1101,189 @@ def manage_contacts(
         for a, idents in sorted(all_contacts.items()):
             lines.append(f"{a}: {' | '.join(idents)}")
         return "\n".join(lines)
+
+
+def _plan_contact_import(
+    records: list[dict], existing: dict[str, list[str]]
+) -> dict:
+    """Turn CardDAV records into proposed identity-map links.
+
+    Returns ``{"links": [(alias, [identifier, ...])], "conflicts": [str],
+    "skipped": {reason: count}}``.  Nothing is written — an existing alias
+    or an identifier already owned by another alias is reported as a
+    conflict and left alone, so hand-made links survive an import.
+    """
+    from ts4k.adapters.carddav import normalize_phone
+
+    links: list[tuple[str, list[str]]] = []
+    conflicts: list[str] = []
+    skipped: dict[str, int] = {}
+
+    def skip(reason: str) -> None:
+        skipped[reason] = skipped.get(reason, 0) + 1
+
+    # Emit identifiers under every configured source of the matching
+    # provider, so filtering by source prefix (e.g. _contact_to_query)
+    # finds them regardless of what the user named their sources. Fall
+    # back to the canonical letter if no such source is configured, so
+    # import still works standalone.
+    email_prefixes = list(sources.by_provider("gmail")) + list(sources.by_provider("o365"))
+    if not email_prefixes:
+        email_prefixes = ["g"]
+    phone_prefixes = list(sources.by_provider("whatsapp"))
+    if not phone_prefixes:
+        phone_prefixes = ["w"]
+
+    # identifier -> alias that already owns it (stored links first, then
+    # links proposed earlier in this run)
+    owner = {ident: alias for alias, idents in existing.items() for ident in idents}
+    # aliases already proposed earlier in this run (not yet in `existing`)
+    proposed: set[str] = set()
+
+    for record in records:
+        alias = " ".join(record.get("display_name", "").lower().split())
+        if not alias:
+            skip("no name")
+            continue
+
+        idents: list[str] = []
+        seen: set[str] = set()
+
+        def add_ident(ident: str) -> None:
+            if ident not in seen:
+                seen.add(ident)
+                idents.append(ident)
+
+        for email in record.get("emails", []):
+            for p in email_prefixes:
+                add_ident(f"{p}:{email}")
+        for phone in record.get("phones", []):
+            jid = normalize_phone(phone)
+            if jid is None:
+                skip("phone number without a country code (+ or 00)")
+            else:
+                for p in phone_prefixes:
+                    add_ident(f"{p}:{jid}")
+
+        if not idents:
+            skip("no phone or email")
+            continue
+
+        if alias in existing:
+            if set(idents) <= set(existing[alias]):
+                skip("already up to date")
+            else:
+                conflicts.append(f"{alias}|alias already exists")
+            continue
+
+        if alias in proposed:
+            conflicts.append(f"{alias}|duplicate in import")
+            continue
+
+        taken = [(i, owner[i]) for i in idents if i in owner]
+        if taken:
+            ident, other = taken[0]
+            conflicts.append(f"{alias}|{ident} already linked to '{other}'")
+            continue
+
+        links.append((alias, idents))
+        proposed.add(alias)
+        for ident in idents:
+            owner[ident] = alias
+
+    return {"links": links, "conflicts": conflicts, "skipped": skipped}
+
+
+def _format_contact_plan(
+    prefix: str, email: str, records: list[dict], plan: dict, applied: bool
+) -> str:
+    """Render an import plan as the preview (or the applied summary)."""
+    lines = [f"CardDAV {prefix} ({email}): {len(records)} records"]
+
+    if plan["links"]:
+        header = "LINKED" if applied else "LINKS"
+        lines.append("")
+        lines.append(f"{header} ({len(plan['links'])}):")
+        for alias, idents in plan["links"]:
+            lines.append("|".join([alias, *idents]))
+
+    if plan["conflicts"]:
+        lines.append("")
+        lines.append(
+            f"CONFLICTS ({len(plan['conflicts'])} — stored values left unchanged):"
+        )
+        lines.extend(plan["conflicts"])
+
+    if plan["skipped"]:
+        lines.append("")
+        lines.append("SKIPPED:")
+        for reason, count in sorted(plan["skipped"].items()):
+            lines.append(f"{count}|{reason}")
+
+    lines.append("")
+    if applied:
+        lines.append(f"Applied {len(plan['links'])} links to the contact map.")
+    else:
+        lines.append("Preview only — nothing written. Re-run with --apply to commit.")
+    return "\n".join(lines)
+
+
+async def sync_contacts(source: str | None = None, apply: bool = False) -> str:
+    """Import an address book from a CardDAV source into the identity map.
+
+    Preview-first: without *apply* this fetches, plans, and prints — the
+    contact map is not touched.
+    """
+    from ts4k.adapters.carddav import CarddavAdapter, CarddavAdapterConfig
+    from ts4k.auth.caldav import ICLOUD_CARDDAV_URL
+
+    all_cfg = _ensure_sources()
+    books = {
+        p: c for p, c in all_cfg.items()
+        if c.get("provider", "").lower() == "carddav"
+    }
+
+    if source:
+        cfg = books.get(source)
+        if cfg is None:
+            configured = ", ".join(sorted(books)) or "none"
+            return (
+                f"Error: {source!r} is not a CardDAV source "
+                f"(configured: {configured})."
+            )
+        prefix = source
+    elif not books:
+        return (
+            "Error: no CardDAV source configured. Add one with:\n"
+            "  ts4k src add ic apple-contacts email=you@icloud.com"
+        )
+    elif len(books) > 1:
+        return (
+            f"Error: multiple CardDAV sources ({', '.join(sorted(books))}) — "
+            f"pick one with --source."
+        )
+    else:
+        prefix, cfg = next(iter(books.items()))
+
+    email = cfg.get("email", "")
+    if not email:
+        return f"Error: CardDAV source {prefix!r} has no email configured."
+
+    adapter = CarddavAdapter(CarddavAdapterConfig(
+        email=email,
+        server_url=cfg.get("server_url", ICLOUD_CARDDAV_URL),
+        config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
+    ))
+    async with adapter:
+        records = await adapter.list_contacts()
+
+    plan = _plan_contact_import(records, contacts.list_all())
+
+    if apply:
+        for alias, idents in plan["links"]:
+            contacts.link(alias, *idents)
+
+    return _format_contact_plan(prefix, email, records, plan, applied=apply)
 
 
 def manage_filters(action: str | None = None, value: str | None = None) -> str:
@@ -1527,8 +1718,38 @@ def _next_month(ym: str) -> str:
     return f"{year}-{month:02d}"
 
 
-def _resolve_sender(from_field: str) -> str:
-    """Collapse a from-field to a contact alias if linked, otherwise raw."""
+def _sibling_prefixes(sources_cfg: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """Map each configured source prefix to every prefix sharing its provider.
+
+    Built once per overview/list call (not per message) so a contact
+    imported under one configured source of a provider (e.g. a custom
+    prefix like "gw" for Gmail) still resolves for messages arriving
+    under a sibling source of the same provider type.
+    """
+    by_provider: dict[str, list[str]] = {}
+    for prefix, cfg in sources_cfg.items():
+        by_provider.setdefault(cfg.get("provider", "").lower(), []).append(prefix)
+    return {
+        prefix: by_provider.get(cfg.get("provider", "").lower(), [prefix])
+        for prefix, cfg in sources_cfg.items()
+    }
+
+
+def _resolve_sender(
+    from_field: str,
+    source: str = "",
+    sibling_prefixes: dict[str, list[str]] | None = None,
+) -> str:
+    """Collapse a from-field to a contact alias if linked, otherwise raw.
+
+    *source* is the message's own configured source prefix (e.g. "gw" for
+    a custom-prefixed Gmail source) — tried first, since imported
+    identifiers are stored under whatever prefix the source actually uses,
+    not necessarily the canonical letter. *sibling_prefixes* (see
+    ``_sibling_prefixes``) extends the search to every other configured
+    source of the same provider type before falling back to the static
+    canonical letters, which still cover an unconfigured/standalone lookup.
+    """
     # Direct match (e.g. from_field is already "g:alice@x.com")
     alias = contacts.resolve(from_field)
     if alias:
@@ -1539,12 +1760,31 @@ def _resolve_sender(from_field: str) -> str:
         alias = contacts.resolve(raw)
         if alias:
             return alias
-    else:
-        # Try adding common prefixes (from field is "alice@x.com", contacts store "g:alice@x.com")
-        for prefix in _SOURCE_LABELS:
-            alias = contacts.resolve(f"{prefix}:{from_field}")
+        return from_field
+
+    tried: set[str] = set()
+
+    def try_prefix(prefix: str) -> str | None:
+        if prefix in tried:
+            return None
+        tried.add(prefix)
+        return contacts.resolve(f"{prefix}:{from_field}")
+
+    if source:
+        alias = try_prefix(source)
+        if alias:
+            return alias
+        for prefix in (sibling_prefixes or {}).get(source, []):
+            alias = try_prefix(prefix)
             if alias:
                 return alias
+
+    # Fall back to the canonical letters, for callers that don't have
+    # (or don't need) a sources config — e.g. direct tests.
+    for prefix in _SOURCE_LABELS:
+        alias = try_prefix(prefix)
+        if alias:
+            return alias
     return from_field
 
 
@@ -1584,13 +1824,15 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
         src = h.get("source", "?")
         by_source.setdefault(src, []).append(h)
 
+    sibling_prefixes = _sibling_prefixes(_ensure_sources())
+
     sources_list = []
     for src in sorted(by_source.keys()):
         msgs = by_source[src]
         dates = [m.get("date", "") for m in msgs if m.get("date")]
         sender_counts: dict[str, int] = {}
         for m in msgs:
-            sender = _resolve_sender(m.get("from", ""))
+            sender = _resolve_sender(m.get("from", ""), m.get("source", ""), sibling_prefixes)
             sender_counts[sender] = sender_counts.get(sender, 0) + 1
         top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
         sources_list.append({
@@ -1617,10 +1859,12 @@ def _build_source_view(
     filtered = [h for h in headers if h.get("source") == source]
     dates = [m.get("date", "") for m in filtered if m.get("date")]
 
+    sibling_prefixes = _sibling_prefixes(_ensure_sources())
+
     # Top senders
     sender_counts: dict[str, int] = {}
     for m in filtered:
-        sender = _resolve_sender(m.get("from", ""))
+        sender = _resolve_sender(m.get("from", ""), source, sibling_prefixes)
         sender_counts[sender] = sender_counts.get(sender, 0) + 1
     top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
 
@@ -2093,14 +2337,31 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         required = scopes_for(provider, parse_level(cfg.get("level")))
         return validate_token(client_id, tenant_id=tenant_id, scopes=required or None, username=username)
 
-    if provider == "caldav":
-        from ts4k.auth.caldav import load_credentials
+    if provider in ("caldav", "carddav"):
+        # Both share one app-specific password per Apple ID — except a
+        # generic (non-iCloud) CardDAV source, which is keyed separately.
+        from ts4k.auth.caldav import ICLOUD_CARDDAV_URL, load_credentials
         email = cfg.get("email", "")
         if not email:
             return TokenHealth(status="na", expiry=None, scopes=[], detail="no email configured")
-        if load_credentials(email, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
+        if provider == "carddav":
+            from ts4k.adapters.carddav import carddav_credential_key
+            key = carddav_credential_key(email, cfg.get("server_url", ICLOUD_CARDDAV_URL))
+        else:
+            key = email
+        if load_credentials(key, Path(cfg["config_dir"]) if cfg.get("config_dir") else None) is None:
+            from ts4k.auth.caldav import is_icloud_carddav_url
+            server_url = cfg.get("server_url", ICLOUD_CARDDAV_URL)
+            if provider == "carddav" and not is_icloud_carddav_url(server_url):
+                # Suggesting the apple-contacts preset here would store an
+                # iCloud credential under a different key and clobber the
+                # generic source's endpoint
+                repair = f"ts4k src add <prefix> carddav email={email} server_url={server_url}"
+            else:
+                alias = "apple-contacts" if provider == "carddav" else "apple"
+                repair = f"ts4k src add <prefix> {alias} email={email}"
             return TokenHealth(status="na", expiry=None, scopes=[],
-                               detail="no credentials — run: ts4k src add <prefix> apple email=" + email)
+                               detail=f"no credentials — run: {repair}")
         return TokenHealth(status="ok", expiry=None, scopes=[], detail="app-specific password")
 
     return TokenHealth(status="na", expiry=None, scopes=[], detail=f"unknown provider: {provider}")
@@ -2216,6 +2477,7 @@ def skill_reference(level: str = "basic") -> str:
             "preload --status|Show preload jobs\n"
             "contacts link ALIAS ID [ID...]|Link identifiers to alias\n"
             "contacts unlink|find|list|Manage contacts\n"
+            "contacts sync [--apply]|Import iCloud address book (preview by default)\n"
             "filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|skip-groups|reset\n"
             "cache stats|clear [--source S] [--stale]|Manage cache\n"
             "manage actions: archive, unarchive, label, unlabel, read, unread, trash, move, list-labels\n"

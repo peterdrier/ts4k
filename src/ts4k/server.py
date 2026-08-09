@@ -173,6 +173,7 @@ async def admin(cmd: str) -> str:
 
     Commands:
       contacts list|link|unlink|find    Cross-platform identity map
+      contacts sync [--apply]           Import a CardDAV address book (preview by default)
       filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|reset
       cache stats|clear [--source S]    Manage message cache
       preload -s SOURCE [--query Q] [--since 30d] [--bg]

@@ -107,6 +107,42 @@ Notes:
 - RSVP is best-effort: iCloud often blocks programmatic replies to external
   invites — ts4k reports this cleanly and you respond in the Calendar app.
 
+### Apple / iCloud Contacts (CardDAV)
+
+Your address book already knows that a phone number and an email address belong
+to the same person — exactly what the
+[contact identity map](docs/usage.md#contacts) wants.
+A CardDAV source imports it. **Read-only: ts4k never writes back to iCloud.**
+
+1. Generate an app-specific password at https://account.apple.com
+   (Sign-In and Security → App-Specific Passwords; requires 2FA).
+   Already set up an iCloud *calendar*? Skip this — Apple issues one password
+   per Apple ID, and ts4k reuses the stored credential.
+2. Add the source:
+
+    ts4k src add ic apple-contacts email=you@icloud.com
+
+3. Preview the import, then commit it:
+
+    ts4k c sync              # proposed links, conflicts, skips — writes nothing
+    ts4k c sync --apply      # commit the proposed links
+
+The preview is the point: an address book is large enough that an unreviewed
+bulk import into a hand-edited map is hard to unwind. `--apply` never
+overwrites an existing alias or steals an identifier another alias already
+owns — both are reported as conflicts and left alone.
+
+Notes:
+- Emails are stored as `g:<address>`, phone numbers as `w:<E164>@s.whatsapp.net`
+  so they match the identifiers WhatsApp messages already carry.
+- Numbers without a country code are skipped and counted, not guessed — a
+  guessed country code would point at a stranger. Store numbers in
+  international format (`+1 555…`) if you want them imported.
+- The same provider works for any CardDAV server: pass
+  `server_url=https://your-server/` instead of the `apple-contacts` preset.
+- Contacts are not messages — a CardDAV source never appears in `whatsnew`,
+  `list`, the message cache, or watermarks.
+
 ### Managing messages
 
 Requires `modify` [access level](#access-levels) or higher. All actions are non-destructive and reversible.

@@ -1,0 +1,519 @@
+"""CardDAV contacts adapter — read-only, RFC 6352, Apple/iCloud preset.
+
+Fetches vCards over CardDAV and parses them into contact records that
+seed the cross-platform identity map (``ts4k contacts sync``).  Auth is
+HTTP Basic with the same app-specific password the CalDAV adapter uses
+(``~/.config/ts4k/caldav/<email>/credentials.json``) — Apple issues one
+password per Apple ID, not per service, so an already-configured
+calendar account needs no new credential.
+
+Deliberately **not** a ``BaseAdapter``: contacts are not messages, so
+this adapter is unreachable from ``whatsnew``, ``list``, and the message
+cache.  ``ts4k contacts sync`` is its only caller.
+
+Read-only by construction — every request is a PROPFIND or a REPORT.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+
+import httpx
+
+from ts4k.auth.caldav import (
+    ICLOUD_CARDDAV_URL,
+    credentials_path,
+    is_icloud_carddav_url,
+    load_credentials,
+)
+from ts4k.core.normalize import _normalize_address
+
+logger = logging.getLogger(__name__)
+
+_DAV = "DAV:"
+_CARD = "urn:ietf:params:xml:ns:carddav"
+
+WHATSAPP_SUFFIX = "@s.whatsapp.net"
+
+_PROPFIND_PRINCIPAL = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>"""
+
+_PROPFIND_HOME_SET = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav">
+<d:prop><c:addressbook-home-set/></d:prop></d:propfind>"""
+
+_PROPFIND_COLLECTIONS = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>"""
+
+# An empty filter matches every card in the collection (RFC 6352 §8.6).
+_ADDRESSBOOK_QUERY = """<?xml version="1.0" encoding="utf-8"?>
+<c:addressbook-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav">
+<d:prop><c:address-data/></d:prop><c:filter/></c:addressbook-query>"""
+
+# iCloud redirects the well-known host to a per-account shard on a
+# different origin; bounded to stay well clear of any redirect loop.
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
+
+
+# ---------------------------------------------------------------------------
+# vCard parsing
+# ---------------------------------------------------------------------------
+
+
+_EXTENSION_RE = re.compile(r"\bext\.?\b|\bextension\b|x\d+\s*$", re.IGNORECASE)
+_TEL_EXT_PARAM_RE = re.compile(r";\s*(?:ext|extension)\s*=", re.IGNORECASE)
+
+
+def normalize_phone(raw: str) -> str | None:
+    """Convert an address-book phone number to a WhatsApp JID.
+
+    Returns ``<E164 digits>@s.whatsapp.net``, or ``None`` when the number
+    carries no country code — a guessed country code would fabricate a
+    JID pointing at a stranger — or when it doesn't cleanly resolve to a
+    single E.164 number (an extension, or a digit count outside 7-15).
+    """
+    value = raw.strip()
+    is_tel_uri = value.lower().startswith("tel:")
+    if is_tel_uri:
+        value = value[4:]
+        if _TEL_EXT_PARAM_RE.search(value):
+            # A tel: URI's ;ext= parameter (RFC 3966) is stripped below
+            # along with the rest of the params — check for it first, or
+            # a number with an extension would be linked as if it had none.
+            return None
+    value = value.split(";", 1)[0].strip()
+
+    if _EXTENSION_RE.search(value):
+        # Concatenating the extension's digits would fabricate a JID
+        # pointing at an unrelated number — skip rather than guess.
+        return None
+
+    international = value.startswith("+")
+    digits = "".join(c for c in value if c.isdigit())
+    if not international and digits.startswith("00"):
+        digits = digits[2:]
+        international = True
+
+    if not international or len(digits) < 7 or len(digits) > 15:
+        return None
+    return f"{digits}{WHATSAPP_SUFFIX}"
+
+
+def _unfold(text: str) -> list[str]:
+    """Join RFC 6350 folded continuation lines (leading space or tab)."""
+    lines: list[str] = []
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if lines and raw[:1] in (" ", "\t"):
+            lines[-1] += raw[1:]
+        else:
+            lines.append(raw)
+    return lines
+
+
+def _split_unescaped(value: str, sep: str = ";") -> list[str]:
+    """Split a vCard structured value on *sep*, skipping backslash-escaped ones.
+
+    ``N:Doe\\;Smith;John;;;`` has an escaped literal ``;`` in the family
+    name component — splitting on every ``;`` before unescaping would treat
+    it as a component boundary instead.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for ch in value:
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\":
+            current.append(ch)
+            escaped = True
+        elif ch == sep:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
+def _unescape(value: str) -> str:
+    """Resolve vCard backslash escapes (``\\,`` ``\\;`` ``\\n``)."""
+    out: list[str] = []
+    chars = iter(value)
+    for ch in chars:
+        if ch == "\\":
+            nxt = next(chars, "")
+            out.append("\n" if nxt in ("n", "N") else nxt)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _host_and_port(url: str) -> tuple[str, int]:
+    """Lowercased hostname plus effective port, for comparing two URLs.
+
+    Raw ``netloc`` comparison treats ``host`` and ``host:443`` as different
+    destinations even over https, which is how an ordinary iCloud shard ends
+    up rejected as untrusted.
+    """
+    parts = urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    default = 443 if parts.scheme.lower() == "https" else 80
+    return (parts.hostname or "").lower(), port or default
+
+
+def _name_from_n(value: str) -> str:
+    """Build a display name from a structured ``N`` value.
+
+    vCard orders ``N`` as family;given;additional;prefix;suffix. All five are
+    used: dropping the middle name and suffix collapses `Smith;John;Paul;;Jr.`
+    and `Smith;John;;;` onto the same alias, and the second card imported then
+    looks like a duplicate of a different person.
+    """
+    parts = [_unescape(p).strip() for p in _split_unescaped(value)]
+    parts += [""] * (5 - len(parts))
+    family, given, additional, prefix, suffix = parts[:5]
+    ordered = (prefix, given, additional, family, suffix)
+    return " ".join(p for p in ordered if p)
+
+
+def parse_vcards(text: str) -> list[dict]:
+    """Parse a vCard stream into ``{display_name, phones, emails}`` records.
+
+    Phone values are returned as written in the card; ``normalize_phone``
+    turns them into WhatsApp JIDs.  Records with no usable name come back
+    with an empty ``display_name`` — the caller decides what to skip.
+    """
+    records: list[dict] = []
+    fn = ""
+    n_name = ""
+    phones: list[str] = []
+    emails: list[str] = []
+    open_card = False
+
+    for line in _unfold(text):
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if upper == "BEGIN:VCARD":
+            fn, n_name, phones, emails, open_card = "", "", [], [], True
+            continue
+        if not open_card:
+            continue
+        if upper == "END:VCARD":
+            records.append({
+                "display_name": fn or n_name,
+                "phones": phones,
+                "emails": emails,
+            })
+            open_card = False
+            continue
+
+        name, sep, value = stripped.partition(":")
+        if not sep or not value.strip():
+            continue
+        # Strip the group prefix and parameters: "item1.TEL;type=CELL" -> "TEL"
+        prop = name.split(";", 1)[0].split(".")[-1].upper()
+
+        if prop == "FN":
+            fn = _unescape(value).strip()
+        elif prop == "N" and not n_name:
+            n_name = _name_from_n(value)
+        elif prop == "TEL":
+            phone = value.strip()
+            if phone not in phones:
+                phones.append(phone)
+        elif prop == "EMAIL":
+            # Lowercase only the domain, matching core.normalize's address
+            # handling — fully lowercasing would diverge from how message
+            # headers are normalized, breaking exact-equality identifier
+            # matching against a local part that legitimately carries case.
+            email = _normalize_address(_unescape(value).strip())
+            # Exact-string dedup: local-part case is preserved by design
+            # (identifier lookup is exact), so case variants are distinct
+            # identifiers worth keeping — cached headers may use either
+            if email and email not in emails:
+                emails.append(email)
+
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Adapter
+# ---------------------------------------------------------------------------
+
+
+def carddav_credential_key(email: str, server_url: str) -> str:
+    """Credential file key for a CardDAV source.
+
+    iCloud shares one app-specific password across CalDAV and CardDAV
+    (Apple issues it per Apple ID, not per service), so it reads the
+    plain-email credential file. A generic CardDAV server has no such
+    guarantee — it may need different credentials than a CalDAV source
+    for the same email — so it gets its own service-scoped key, further
+    scoped by host: two generic sources sharing an email but pointed at
+    different servers must not collide on the same credential file.
+
+    The key is used as a directory name by ``credentials_path()``, so it
+    must stay filesystem-safe — ``:`` is illegal in a Windows path, which
+    rules out both the ``#carddav:`` separator and a netloc carrying a
+    non-standard port (``host:port``), and ``/`` from the endpoint path.
+    ``#`` is used throughout instead, deterministically:
+    ``<email>#carddav#<netloc>[#<path segments>]``. The path is included
+    so two services under different paths on one origin (e.g. separate
+    Nextcloud instances) don't share a credential file.
+    """
+    if is_icloud_carddav_url(server_url):
+        return email
+    parts = urlsplit(server_url)
+    netloc = parts.netloc.replace(":", "#")
+    path = parts.path.strip("/").replace(":", "#").replace("/", "#")
+    key = f"{email}#carddav#{netloc}"
+    if path:
+        key = f"{key}#{path}"
+    return key
+
+
+@dataclass
+class CarddavAdapterConfig:
+    """Configuration for a CardDAV contacts source."""
+
+    email: str                            # account identity (Apple ID)
+    server_url: str = ICLOUD_CARDDAV_URL  # e.g. https://contacts.icloud.com
+    config_dir: Path | None = None
+
+
+class CarddavAdapter:
+    """Read-only CardDAV client (iCloud, Fastmail, Nextcloud, ...)."""
+
+    def __init__(self, config: CarddavAdapterConfig) -> None:
+        self._config = config
+        self._client: httpx.AsyncClient | None = None
+        self._credential_key: str | None = None
+
+    # -- Connection ------------------------------------------------------------
+
+    async def connect(self) -> None:
+        email = self._config.email
+        if urlsplit(self._config.server_url).scheme != "https":
+            raise RuntimeError(
+                f"Refusing to connect to {self._config.server_url} — CardDAV "
+                f"requires HTTPS; a plain http:// endpoint would send the "
+                f"credentials in cleartext on the very first request."
+            )
+        self._credential_key = carddav_credential_key(email, self._config.server_url)
+        creds = load_credentials(self._credential_key, self._config.config_dir)
+        if creds is None:
+            if is_icloud_carddav_url(self._config.server_url):
+                raise RuntimeError(
+                    f"No CardDAV credentials for {email} — an app-specific password is "
+                    f"required (generate at https://account.apple.com, then run: "
+                    f"ts4k src add <prefix> apple-contacts email={email})"
+                )
+            # A generic server's credential is scoped by email *and* host
+            # (see carddav_credential_key) — pointing the user at the
+            # apple-contacts preset would store an iCloud credential under
+            # the wrong key and never satisfy this source.
+            raise RuntimeError(
+                f"No CardDAV credentials for {email} at {self._config.server_url} — "
+                f"a password is required, then run: "
+                f"ts4k src add <prefix> carddav email={email} "
+                f"server_url={self._config.server_url} "
+                f"(stored at {credentials_path(self._credential_key, self._config.config_dir)})"
+            )
+        # The stored server_url is the CalDAV endpoint; CardDAV lives on its
+        # own host, so the adapter config wins.
+        # follow_redirects=False: `_dav` handles redirects itself so the
+        # per-account shard redirect stays authenticated (see its docstring).
+        self._client = httpx.AsyncClient(
+            auth=(creds["username"], creds["app_password"]),
+            follow_redirects=False,
+            timeout=30.0,
+        )
+
+    async def disconnect(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> CarddavAdapter:
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.disconnect()
+
+    def _require_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise RuntimeError(
+                "CarddavAdapter is not connected. Call connect() or use "
+                "'async with adapter:' first."
+            )
+        return self._client
+
+    def _check_trusted_target(self, base_url: str, target_url: str) -> None:
+        """Raise unless *target_url* is safe to send credentials to.
+
+        Trusted targets are HTTPS and either same-host as *base_url* or —
+        for an iCloud account — any ``*.icloud.com`` shard host. Used both
+        by the redirect loop in ``_dav`` and by every href resolved out of
+        a discovery/query XML response before it becomes the URL of the
+        next authenticated request: an absolute cross-origin href in a
+        response body can steer credentials at an untrusted server just as
+        easily as an HTTP redirect can.
+        """
+        if urlsplit(target_url).scheme != "https":
+            raise RuntimeError(
+                f"Refusing to send CardDAV credentials to {target_url} — it "
+                f"is not HTTPS, and sending them over a non-HTTPS URL would "
+                f"expose them in cleartext."
+            )
+        # Compare hostname + effective port rather than raw netloc, matching
+        # is_icloud_carddav_url: a shard that spells out the default port
+        # (https://p01-contacts.icloud.com:443/…) is the same destination, and
+        # rejecting it aborts an otherwise ordinary sync.
+        current_host, current_port = _host_and_port(base_url)
+        new_host, new_port = _host_and_port(target_url)
+        is_icloud_account = is_icloud_carddav_url(self._config.server_url)
+        same_host = (new_host, new_port) == (current_host, current_port)
+        trusted_icloud_shard = (
+            is_icloud_account
+            and (new_host == "icloud.com" or new_host.endswith(".icloud.com"))
+            and new_port == 443
+        )
+        if not same_host and not trusted_icloud_shard:
+            raise RuntimeError(
+                f"Refusing to send CardDAV credentials to {target_url} — the "
+                f"destination host is not trusted (expected {current_host} "
+                f"or, for an iCloud account, an *.icloud.com shard)."
+            )
+
+    # -- DAV plumbing ----------------------------------------------------------
+
+    async def _dav(
+        self, method: str, url: str, body: str, depth: str
+    ) -> tuple[ET.Element, str]:
+        """Issue a PROPFIND/REPORT and return ``(xml root, final url)``.
+
+        The final URL is the base for resolving relative hrefs — iCloud
+        redirects the well-known host to a per-account shard.
+
+        Redirects are followed by hand, re-issuing the same authenticated
+        request against the new URL, rather than via httpx's
+        ``follow_redirects`` — httpx strips the Authorization header on a
+        cross-origin redirect, and the shard is a different origin.
+        """
+        client = self._require_client()
+        content = body.encode("utf-8")
+        headers = {
+            "Content-Type": "application/xml; charset=utf-8",
+            "Depth": depth,
+        }
+        for _ in range(_MAX_REDIRECTS):
+            resp = await client.request(method, url, content=content, headers=headers)
+            if resp.status_code in _REDIRECT_STATUS_CODES:
+                location = resp.headers.get("Location")
+                if not location:
+                    break
+                new_url = urljoin(str(resp.url), location)
+                self._check_trusted_target(str(resp.url), new_url)
+                url = new_url
+                continue
+            if resp.status_code in (401, 403):
+                # self._credential_key is only set by connect() — fall back to
+                # recomputing it so this message stays accurate even when a
+                # caller (e.g. a test) sets up _client without calling connect().
+                key = self._credential_key or carddav_credential_key(
+                    self._config.email, self._config.server_url
+                )
+                raise RuntimeError(
+                    f"CardDAV auth failed for {self._config.email} — the app-specific "
+                    f"password may be revoked (they expire when the Apple ID password "
+                    f"changes). Generate a new one at https://account.apple.com, delete "
+                    f"{credentials_path(key, self._config.config_dir)}, and "
+                    f"re-run ts4k src add."
+                )
+            resp.raise_for_status()
+            return ET.fromstring(resp.content), str(resp.url)
+        raise RuntimeError(
+            f"Too many redirects ({_MAX_REDIRECTS}) fetching {url} for "
+            f"{self._config.email} — the CardDAV server may be misconfigured"
+        )
+
+    async def _principal_url(self) -> str:
+        root, base = await self._dav(
+            "PROPFIND", self._config.server_url, _PROPFIND_PRINCIPAL, "0"
+        )
+        href = root.find(f".//{{{_DAV}}}current-user-principal/{{{_DAV}}}href")
+        if href is None or not href.text:
+            raise RuntimeError(
+                f"{self._config.server_url} returned no principal URL — "
+                f"is it a CardDAV server?"
+            )
+        url = urljoin(base, href.text)
+        self._check_trusted_target(base, url)
+        return url
+
+    async def _home_set_url(self, principal_url: str) -> str:
+        root, base = await self._dav(
+            "PROPFIND", principal_url, _PROPFIND_HOME_SET, "0"
+        )
+        href = root.find(f".//{{{_CARD}}}addressbook-home-set/{{{_DAV}}}href")
+        if href is None or not href.text:
+            raise RuntimeError(
+                f"No address book home set for {self._config.email} — the account "
+                f"may not have contacts enabled."
+            )
+        url = urljoin(base, href.text)
+        self._check_trusted_target(base, url)
+        return url
+
+    async def _addressbook_urls(self, home_set_url: str) -> list[str]:
+        root, base = await self._dav(
+            "PROPFIND", home_set_url, _PROPFIND_COLLECTIONS, "1"
+        )
+        urls: list[str] = []
+        for response in root.iter(f"{{{_DAV}}}response"):
+            if response.find(f".//{{{_CARD}}}addressbook") is None:
+                continue
+            href = response.find(f"{{{_DAV}}}href")
+            if href is not None and href.text:
+                url = urljoin(base, href.text)
+                self._check_trusted_target(base, url)
+                urls.append(url)
+        return urls
+
+    async def _fetch_cards(self, addressbook_url: str) -> list[str]:
+        root, _ = await self._dav(
+            "REPORT", addressbook_url, _ADDRESSBOOK_QUERY, "1"
+        )
+        return [
+            data.text
+            for data in root.iter(f"{{{_CARD}}}address-data")
+            if data.text
+        ]
+
+    # -- Contacts --------------------------------------------------------------
+
+    async def list_contacts(self) -> list[dict]:
+        """Fetch every vCard in the account as a parsed contact record."""
+        principal = await self._principal_url()
+        home_set = await self._home_set_url(principal)
+        books = await self._addressbook_urls(home_set)
+        if not books:
+            logger.warning("No address books found for %s", self._config.email)
+
+        records: list[dict] = []
+        for url in books:
+            for card in await self._fetch_cards(url):
+                records.extend(parse_vcards(card))
+        return records

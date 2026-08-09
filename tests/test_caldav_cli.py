@@ -61,6 +61,22 @@ class TestSrcAddApple:
         assert "email" in capsys.readouterr().out
         assert "cc" not in sources.list_all()
 
+    def test_discovered_source_carries_config_dir(self, ts4k_config, monkeypatch, tmp_path):
+        """With config_dir=<custom>, credentials are saved there, so the
+        discovered source entries must carry it too — otherwise later
+        commands fall back to the default dir and fail auth."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd-efgh-ijkl-mnop")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        custom_dir = tmp_path / "custom"
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", [
+                "email=a@icloud.com", f"config_dir={custom_dir}",
+            ]))
+
+        cfg = sources.list_all()["cc"]
+        assert cfg["config_dir"] == str(custom_dir)
+
 
 class TestAuthCaldav:
     """`ts4k auth cc` should explain the app-specific password, not call caldav unknown."""
@@ -187,6 +203,23 @@ class TestSrcAddPasswordFormat:
 
     def test_whitespace_is_stripped(self, ts4k_config, monkeypatch):
         monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": " abcd-efgh-ijkl-mnop\n")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+        with patch.object(cli.commands, "cal_list_caldav_calendars",
+                          new=AsyncMock(return_value=CALS)):
+            cli._cmd_sources(_args("apple", ["email=a@icloud.com"]))
+
+        from ts4k.auth.caldav import load_credentials
+        creds = load_credentials("a@icloud.com")
+        assert creds is not None and creds["app_password"] == "abcd-efgh-ijkl-mnop"
+
+    def test_space_grouped_password_is_accepted_and_stored_hyphenated(
+        self, ts4k_config, monkeypatch
+    ):
+        """Apple's account page also renders app-specific passwords
+        space-grouped ("xxxx xxxx xxxx xxxx"); stripping whitespace alone
+        would collapse that to 16 contiguous letters and fail the
+        hyphenated-format check on every attempt."""
+        monkeypatch.setattr(cli, "_prompt_password", lambda prompt="": "abcd efgh ijkl mnop")
         monkeypatch.setattr("builtins.input", lambda prompt="": "1")
         with patch.object(cli.commands, "cal_list_caldav_calendars",
                           new=AsyncMock(return_value=CALS)):
