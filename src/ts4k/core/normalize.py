@@ -417,6 +417,27 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     cell.name = "th"
                 header_row = promoted_candidate
             if header_row is not None:
+                # The search above stops the moment it finds a qualifying
+                # header row, so rowspans carried by rows AFTER the header
+                # are never inspected. A clean header followed by a data
+                # row that spans multiple rows would otherwise reach
+                # html2text unexpanded, shifting cells under the wrong
+                # headers. Degrade instead of expanding — same outcome as
+                # the no-clean-header case below.
+                after_header = False
+                has_data_rowspan = False
+                for row in rows:
+                    if row is header_row:
+                        after_header = True
+                        continue
+                    if after_header and any(
+                        _cell_rowspan(c) > 1 for c in _own_cells(row)
+                    ):
+                        has_data_rowspan = True
+                        break
+                if has_data_rowspan:
+                    header_row = None
+            if header_row is not None:
                 # html2text only emits the two-sided "---|---" separator
                 # when the <th> row is the table's FIRST row; a title or
                 # spacer row before it yields a bare "---" line, which
@@ -557,7 +578,11 @@ _REPLY_HEADER_PATTERN = re.compile(
     r"On\s+\d.*\bwrote:\s*|"
     r"On\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*\bwrote:\s*|"
     r"-{2,}\s*(?:Original|Forwarded)\s+[Mm]essage\s*-{2,}\s*|"
-    r"From:\s+.+\nSent:\s+.+\nTo:\s+.+\nSubject:\s+.+)$",
+    # \s* (not a bare \n) between fields tolerates the blank lines readable
+    # mode's paragraph spacing inserts when Outlook renders each field as
+    # its own <p> — otherwise the header goes undetected and the unquoted
+    # prior message leaks into the readable body.
+    r"From:\s+.+\n\s*Sent:\s+.+\n\s*To:\s+.+\n\s*Subject:\s+.+)$",
     re.MULTILINE | re.IGNORECASE,
 )
 

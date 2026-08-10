@@ -874,6 +874,28 @@ class TestReadableMode:
             for line in result.split("\n")
         )
 
+    def test_readable_rowspan_in_data_row_degrades_to_pipe_rows(self):
+        """A clean header row followed by a rowspan cell in the DATA rows
+        must not reach html2text unexpanded — the rowspan cell would span
+        two data rows and shift the second row's cells under the wrong
+        headers. Degrade to pipe rows instead, same as the
+        rowspan-in-header case above."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="2">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        for text in ("Item", "Q1", "Widget", "$100", "$90"):
+            assert text in result
+        assert "Widget | $100 | $150" in result
+        assert not any(
+            set(line.strip()) <= set("-|: ") and "-" in line
+            for line in result.split("\n")
+        )
+
     def test_readable_strips_emphasized_signature_with_outside_punctuation(self):
         """Punctuation outside the emphasis — <strong>Thanks</strong>, —
         yields "**Thanks**," whose trailing markers sit before the comma;
@@ -989,6 +1011,23 @@ class TestReadableMode:
             "<strong>Sent:</strong> Monday, February 19, 2026 10:00 AM<br>"
             "<strong>To:</strong> Bob Jones<br>"
             "<strong>Subject:</strong> Meeting Tomorrow</p>"
+            "<p>Bob, can you prepare the slides?</p>"
+        )
+        result = normalize(html, mode="readable")
+        assert "Thanks, will do." in result
+        assert "can you prepare the slides?" not in result
+
+    def test_readable_outlook_header_split_across_paragraphs(self):
+        """Outlook sometimes renders each header field as its own <p> —
+        readable mode's own paragraph spacing then inserts blank lines
+        between them, which the reply-header pattern must still detect
+        (a regression introduced by readable mode's spacing itself)."""
+        html = (
+            "<p>Thanks, will do.</p>"
+            "<p><strong>From:</strong> Alice Smith</p>"
+            "<p><strong>Sent:</strong> Monday, February 19, 2026 10:00 AM</p>"
+            "<p><strong>To:</strong> Bob Jones</p>"
+            "<p><strong>Subject:</strong> Meeting Tomorrow</p>"
             "<p>Bob, can you prepare the slides?</p>"
         )
         result = normalize(html, mode="readable")
