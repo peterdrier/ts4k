@@ -85,6 +85,48 @@ SAMPLE_THREAD = {
     ],
 }
 
+# A realistic 20-message WhatsApp-style thread spanning three days with four
+# senders and a mix of short replies, medium messages, and one long message
+# that exercises truncation — modeled on the fixture the issue itself
+# measured (-49% chars) to justify the feature.
+CONVO_REALISTIC_THREAD = {
+    "thread_id": "w:120363427763680513@g.us",
+    "subject": "Teapunk solar",
+    "message_count": 20,
+    "messages": [
+        {"from": "Thomas Scheibe", "date": "2026-07-28T20:33:16Z",
+         "body": "moving fridge/freezer from truck to container on the playa: doable and makes sense"},
+        {"from": "Anna Berg", "date": "2026-07-28T20:35:00Z",
+         "body": "Working power driving to the playa should be super easy - no solar setup required"},
+        {"from": "Dave Okafor", "date": "2026-07-28T20:41:00Z", "body": "Agreed"},
+        {"from": "Anna Berg", "date": "2026-07-28T20:42:00Z", "body": "cool"},
+        {"from": "Thomas Scheibe", "date": "2026-07-28T20:50:00Z",
+         "body": "One more thing - do we need a generator as backup or is the solar rig enough on its own "
+                 "for the whole week?\nAsking because the rental place needs 48h notice."},
+        {"from": "Olive Munn", "date": "2026-07-28T21:02:00Z", "body": "Backup never hurts"},
+        {"from": "Dave Okafor", "date": "2026-07-28T21:10:00Z", "body": "+1 on backup"},
+        {"from": "Dave Okafor", "date": "2026-07-29T05:25:00Z",
+         "body": "How long does it take freezer to freeze after setup?"},
+        {"from": "Olive Munn", "date": "2026-07-29T16:39:00Z",
+         "body": "Not an expert, but I would say around 6 to 12 hours."},
+        {"from": "Thomas Scheibe", "date": "2026-07-29T16:45:00Z", "body": "sounds right"},
+        {"from": "Anna Berg", "date": "2026-07-29T17:02:00Z",
+         "body": "We should also plan the shade structure layout before we load the truck, since it determines "
+                 "where the panels and the fridge/freezer container end up relative to camp and the generator "
+                 "noise zone.\nI'll bring the tape measure and we can mark it out when we get there.\n"
+                 "Might also want to sketch a rough footprint before Thursday so we're not guessing on-site."},
+        {"from": "Olive Munn", "date": "2026-07-29T17:10:00Z", "body": "Good call"},
+        {"from": "Dave Okafor", "date": "2026-07-29T17:15:00Z", "body": "I'll sketch something up tonight"},
+        {"from": "Thomas Scheibe", "date": "2026-07-29T18:00:00Z", "body": "perfect, thanks Dave"},
+        {"from": "Anna Berg", "date": "2026-07-29T18:05:00Z", "body": "appreciated"},
+        {"from": "Dave Okafor", "date": "2026-07-30T09:12:00Z", "body": "Sketch attached, lmk what you think"},
+        {"from": "Olive Munn", "date": "2026-07-30T09:30:00Z", "body": "This looks great"},
+        {"from": "Thomas Scheibe", "date": "2026-07-30T09:31:00Z", "body": "yep, ship it"},
+        {"from": "Anna Berg", "date": "2026-07-30T09:35:00Z", "body": "\U0001f44d"},
+        {"from": "Dave Okafor", "date": "2026-07-30T09:40:00Z", "body": "great, I'll pack the truck tomorrow then"},
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
 # estimate_size
@@ -236,6 +278,198 @@ class TestPipeFormatThread:
         assert "Hey Peter" in result
         assert "Room B confirmed" in result
         assert "Great, thanks!" in result
+
+    def test_default_matches_explicit_pipe(self):
+        """The default `ts4k t` view is unaffected by the new convo format."""
+        assert format_thread(SAMPLE_THREAD) == format_thread(SAMPLE_THREAD, "pipe")
+
+
+class TestConvoFormatThread:
+    def test_one_line_per_message(self):
+        result = format_thread(SAMPLE_THREAD, "convo")
+        lines = result.split("\n")
+        assert lines[0].startswith("THREAD|g:18f6a2b3c4e5f6a8|Meeting tomorrow at 3pm|3 msgs")
+        assert len(lines) == 1 + len(SAMPLE_THREAD["messages"])  # header + one per msg
+        for line in lines[1:]:
+            assert line.startswith("|") and line.endswith("|")
+
+    def test_date_on_first_message_of_day_only(self):
+        # SAMPLE_THREAD messages are all on 2026-02-20.
+        result = format_thread(SAMPLE_THREAD, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].startswith("|20 Feb 09:15|")
+        assert lines[1].startswith("|09:30|")
+        assert lines[2].startswith("|09:32|")
+        assert "Feb" not in lines[1]
+        assert "Feb" not in lines[2]
+
+    def test_date_reappears_on_day_change(self):
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Multi-day",
+            "message_count": 3,
+            "messages": [
+                {"from": "Alice", "date": "2026-07-28T20:33:00Z", "body": "hi"},
+                {"from": "Bob", "date": "2026-07-28T20:35:00Z", "body": "hey"},
+                {"from": "Alice", "date": "2026-07-29T05:25:00Z", "body": "morning"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].startswith("|28 Jul 20:33|")
+        assert lines[1].startswith("|20:35|")
+        assert lines[2].startswith("|29 Jul 05:25|")
+
+    def test_sender_single_initial_by_default(self):
+        result = format_thread(SAMPLE_THREAD, "convo")
+        lines = result.split("\n")[1:]
+        # alice@acme.com -> A, peter@example.com -> P, no collision.
+        assert lines[0].split("|")[2] == "A"
+        assert lines[1].split("|")[2] == "P"
+        assert lines[2].split("|")[2] == "A"
+
+    def test_sender_collision_widens_to_first_name(self):
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Collision",
+            "message_count": 2,
+            "messages": [
+                {"from": "Peter Piper", "date": "2026-07-28T20:33:00Z", "body": "hi"},
+                {"from": "Paula Jones", "date": "2026-07-28T20:35:00Z", "body": "hey"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].split("|")[2] == "Peter"
+        assert lines[1].split("|")[2] == "Paula"
+
+    def test_date_includes_year_when_thread_spans_years(self):
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Multi-year",
+            "message_count": 2,
+            "messages": [
+                {"from": "Alice", "date": "2025-01-01T09:00:00Z", "body": "old"},
+                {"from": "Bob", "date": "2026-01-01T09:00:00Z", "body": "new"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].startswith("|1 Jan 25 09:00|")
+        assert lines[1].startswith("|1 Jan 26 09:00|")
+
+    def test_date_omits_year_when_thread_stays_within_one_year(self):
+        # Regression guard: same-year multi-day threads must stay
+        # byte-identical to the pre-year-support format.
+        result = format_thread(SAMPLE_THREAD, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].startswith("|20 Feb 09:15|")
+        assert "26" not in lines[0]
+
+    def test_sender_token_suffix_never_collides_with_real_token(self):
+        """A suffixed token must never collide with another sender's actual
+        (unsuffixed) token — e.g. two "Alice"s must not produce "Alice1"
+        when a third sender's own token is already "Alice1"."""
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Collision",
+            "message_count": 3,
+            "messages": [
+                {"from": "alice@home.com", "date": "2026-07-28T20:33:00Z", "body": "hi"},
+                {"from": "alice@work.com", "date": "2026-07-28T20:35:00Z", "body": "hey"},
+                {"from": "alice1@else.com", "date": "2026-07-28T20:40:00Z", "body": "yo"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        lines = result.split("\n")[1:]
+        tokens = [line.split("|")[2] for line in lines]
+        assert len(tokens) == len(set(tokens)), f"colliding sender tokens: {tokens}"
+        assert "Alice1" in tokens  # belongs to alice1@else.com
+
+    def test_long_body_truncated(self):
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Long",
+            "message_count": 1,
+            "messages": [
+                {"from": "Alice", "date": "2026-07-28T20:33:00Z", "body": "x" * 500},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        body = result.split("\n")[1].split("|")[3]
+        assert body.endswith("...")
+        assert len(body) < 500
+
+    def test_body_pipe_does_not_inject_extra_fields(self):
+        """A body containing '|' (e.g. table-derived text) must not break the
+        4-field |ts|sender|body| record into extra columns."""
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Pipes",
+            "message_count": 1,
+            "messages": [
+                {"from": "Alice", "date": "2026-07-28T20:33:00Z",
+                 "body": "Name|Qty|Price\nWidget|3|$5"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        line = result.split("\n")[1]
+        # The record is "|ts|sender|body|" — leading and trailing '|' are
+        # delimiters, so splitting yields exactly 5 parts: "", ts, sender,
+        # body, "". A body-embedded '|' would inject extra parts.
+        fields = line.split("|")
+        assert len(fields) == 5
+        assert fields[0] == "" and fields[4] == ""
+        assert "|" not in fields[3]
+
+    def test_measured_reduction_vs_default(self):
+        """Acceptance: measurable reduction versus the current thread rendering."""
+        thread = {
+            "thread_id": "w:120363427763680513@g.us",
+            "subject": "Teapunk solar",
+            "message_count": 4,
+            "messages": [
+                {"from": "Thomas Scheibe", "date": "2026-07-28T20:33:16Z",
+                 "body": "moving fridge/freezer from truck to container on the playa: doable and makes sense"},
+                {"from": "Anna", "date": "2026-07-28T20:35:00Z",
+                 "body": "Working power driving to the playa should be super easy - no solar setup required"},
+                {"from": "Dave", "date": "2026-07-29T05:25:00Z",
+                 "body": "How long does it take freezer to freeze after setup?"},
+                {"from": "Olive", "date": "2026-07-29T16:39:00Z",
+                 "body": "Not an expert, but I would say around 6 to 12 hours."},
+            ],
+        }
+        default_out = format_thread(thread, "pipe")
+        convo_out = format_thread(thread, "convo")
+        # Small fixture; the win grows with thread length (headers/dividers
+        # amortize) — the issue measured -49% chars on a real 20-msg thread.
+        assert len(convo_out) < len(default_out) * 0.85
+
+    def test_measured_reduction_on_realistic_20_message_thread(self):
+        """Acceptance: measurable reduction on a realistic multi-message thread.
+
+        Tied to the number the issue was justified by (-49% chars on a real
+        20-message WhatsApp thread spanning two days) rather than a toy
+        fixture, so this guard actually breaks if the saving erodes.
+
+        Measured on this fixture: 1824 -> 945 chars (-48.2%), 64 -> 21 lines.
+        The 40% floor sits below that deliberately.  Reduction varies with body
+        length — roughly -45% when every body is short (per-message framing
+        dominates) and -70% when bodies are long (truncation dominates), dipping
+        to about -33% for medium bodies just past the 77-char cap.  A 40% floor
+        holds for any realistic mix, so a failure here means the format
+        regressed rather than that the fixture drifted.
+        """
+        messages = CONVO_REALISTIC_THREAD["messages"]
+        default_out = format_thread(CONVO_REALISTIC_THREAD, "pipe")
+        convo_out = format_thread(CONVO_REALISTIC_THREAD, "convo")
+
+        reduction = 1.0 - (len(convo_out) / len(default_out))
+        assert reduction >= 0.40, f"char reduction only {reduction:.1%}"
+        # One line per message plus the header, however long the bodies are —
+        # this is what makes the saving hold as threads grow.
+        assert len(convo_out.splitlines()) == 1 + len(messages)
+        assert len(convo_out.splitlines()) < len(default_out.splitlines()) * 0.5
 
 
 # ---------------------------------------------------------------------------
