@@ -812,8 +812,14 @@ def _sender_tokens(messages: list[dict]) -> dict[str, str]:
 
 
 def _flatten_body(body: str, limit: int = _CONVO_BODY_LIMIT) -> str:
-    """Collapse a body to one line and truncate it to *limit* chars."""
-    flat = " ".join(body.split())
+    """Collapse a body to one line and truncate it to *limit* chars.
+
+    Embedded ``|`` characters are replaced with ``/`` before truncation so a
+    body can never inject extra fields into the pipe-delimited convo record
+    (common for table-derived text — see normalize.py's table conversion —
+    but ordinary prose can contain a pipe too).
+    """
+    flat = " ".join(body.split()).replace("|", "/")
     if len(flat) > limit:
         flat = flat[:limit].rstrip() + "..."
     return flat

@@ -400,6 +400,28 @@ class TestConvoFormatThread:
         assert body.endswith("...")
         assert len(body) < 500
 
+    def test_body_pipe_does_not_inject_extra_fields(self):
+        """A body containing '|' (e.g. table-derived text) must not break the
+        4-field |ts|sender|body| record into extra columns."""
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Pipes",
+            "message_count": 1,
+            "messages": [
+                {"from": "Alice", "date": "2026-07-28T20:33:00Z",
+                 "body": "Name|Qty|Price\nWidget|3|$5"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        line = result.split("\n")[1]
+        # The record is "|ts|sender|body|" — leading and trailing '|' are
+        # delimiters, so splitting yields exactly 5 parts: "", ts, sender,
+        # body, "". A body-embedded '|' would inject extra parts.
+        fields = line.split("|")
+        assert len(fields) == 5
+        assert fields[0] == "" and fields[4] == ""
+        assert "|" not in fields[3]
+
     def test_measured_reduction_vs_default(self):
         """Acceptance: measurable reduction versus the current thread rendering."""
         thread = {
