@@ -39,7 +39,7 @@ from ts4k.core.format import (
     format_thread_listing,
 )
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import batch, cache, contacts, filters, sources, stats
+from ts4k.state import batch, cache, contacts, filters, media, sources, stats
 from ts4k.state.refs import RefTable
 
 if TYPE_CHECKING:
@@ -503,6 +503,11 @@ async def _fetch_for_source(
             for entry in listing:
                 msg = _normalize_message(entry)
                 msg.setdefault("source", prefix)
+                # WhatsApp entries carry their preview text in `body` (no
+                # separate snippet fetch, unlike Gmail/O365's snippet-only
+                # listing calls) — without this, format_listing has nothing
+                # to show and WhatsApp rows render with no preview at all.
+                msg.setdefault("snippet", msg.get("body", ""))
                 cache.store_message(msg.get("id", ""), msg, provider=provider)
                 messages.append(msg)
             return messages
@@ -795,6 +800,48 @@ async def get_message(
     return CommandResult(output=output, messages_processed=1)
 
 
+async def get_media(id: str, ref_table: RefTable | None = None) -> CommandResult:
+    """Download the media file attached to a message and return its local path.
+
+    Delegates to the adapter's ``download_media()`` (WhatsApp-only for now;
+    other adapters raise ``NotImplementedError``) then relocates whatever
+    it staged into ts4k's own media store under ``~/.config/ts4k/media/``,
+    so callers always get a stable, ts4k-owned path. Nothing here assumes
+    WhatsApp — a future Gmail/O365 attachment adapter can implement
+    ``download_media()`` and this command picks it up unchanged.
+    """
+    id = _resolve_ref(id, ref_table)
+    all_cfg = _ensure_sources()
+    try:
+        prefix = _prefix_from_id(id, all_cfg)
+    except ValueError as exc:
+        return CommandResult(error=str(exc))
+    cfg = all_cfg.get(prefix)
+
+    if not cfg:
+        return CommandResult(error=f"No source configured for prefix {prefix!r}.")
+
+    adapter = _make_adapter(prefix, cfg)
+    if adapter is None:
+        return CommandResult(error=f"Source {prefix!r} not available.")
+
+    async with adapter:
+        try:
+            result = await adapter.download_media(id)
+        except NotImplementedError:
+            return CommandResult(error=f"Source {prefix!r} does not support media download.")
+
+    if not result.get("success"):
+        return CommandResult(error=result.get("message") or "Failed to download media.")
+
+    src_path = result.get("file_path")
+    if not src_path:
+        return CommandResult(error="Bridge reported success but returned no file path.")
+
+    dest = media.save_media(src_path, id)
+    return CommandResult(output=str(dest))
+
+
 async def get_thread(
     tid: str, fmt: str = "pipe", ref_table: RefTable | None = None
 ) -> CommandResult:
@@ -895,6 +942,7 @@ async def list_messages(
                 for entry in listing or []:
                     msg = _normalize_message(entry)
                     msg.setdefault("source", prefix)
+                    msg.setdefault("snippet", msg.get("body", ""))
                     cache.store_message(msg.get("id", ""), msg, provider=provider)
                     all_messages.append(msg)
         except Exception as exc:
@@ -2607,6 +2655,9 @@ def skill_reference(level: str = "basic") -> str:
         "  Truncated results show a continuation command \u2014 copy-paste to get older messages.\n"
         "WhatsApp voice notes are auto-transcribed: body IS the transcript, prefixed [voice 2:11]. "
         "Never ask the user to listen. [voice — transcript unavailable] means no text exists.\n"
+        "WhatsApp images are auto-captioned/OCR'd: body carries [image: caption | text: OCR]. "
+        "Never say you can't see images. [image — enrichment pending] means processing, not "
+        "missing. get REF --media downloads the file and prints its local path.\n"
         "Do NOT pipe through head/grep/awk. Use built-in flags instead:\n"
         "  Limit results: -n 20 (not | head). Search: list -q \"name\" (not | grep).\n"
         "  One call: whatsnew KEY -n 50 (not per-source calls).\n"

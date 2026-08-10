@@ -139,6 +139,13 @@ async def _cmd_get(args: argparse.Namespace) -> None:
             print(f"Ref {msg_id} not found in {label}.{hint}")
             sys.exit(1)
         msg_id = resolved
+    if getattr(args, "media", False):
+        result = await commands.get_media(id=msg_id)
+        if result.error:
+            print(result.error)
+            sys.exit(1)
+        print(result.output)
+        return
     body_mode = getattr(args, "body_mode", None) or (
         "readable" if getattr(args, "readable", False) else "compact"
     )
@@ -1511,7 +1518,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k g 7 -k life                  # ref #7 from 'life' whatsnew\n"
             "  ts4k get g:18f3a2b1c4d5e6f7       # by native Gmail ID\n"
             "  ts4k g 3 -k work -f json          # ref #3, JSON output\n"
-            "  ts4k get 3 --readable             # human-readable body"
+            "  ts4k get 3 --readable             # human-readable body\n"
+            "  ts4k get w:abc123 --media         # download media, print local path"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1525,6 +1533,11 @@ def _build_parser() -> argparse.ArgumentParser:
     get.add_argument(
         "--body-mode", choices=["compact", "readable"], default=None,
         help="Explicit body mode (overrides --readable): compact (default) or readable",
+    )
+    get.add_argument(
+        "--media", action="store_true", default=False,
+        help="Download the message's media file instead of its body; prints "
+             "the local file path (saved under ~/.config/ts4k/media/)",
     )
     _add_common_args(get)
     get.set_defaults(func=_cmd_get)

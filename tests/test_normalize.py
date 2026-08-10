@@ -624,6 +624,36 @@ class TestPlainTextPassthrough:
         assert normalize(None) == ""
 
 
+class TestWhatsAppImageEnrichmentPassthrough:
+    """WhatsApp image OCR/caption markers must survive normalize() unmangled
+    (ts4k#49) — bracket syntax must not be mistaken for HTML, quoting, or a
+    signature and stripped."""
+
+    def test_captioned_and_ocrd_image_unchanged(self):
+        text = '[image: two people by a white fence | text: "SALE 40% OFF"]'
+        assert normalize(text) == text
+
+    def test_image_with_sender_caption_unchanged(self):
+        text = "[image: a boarding pass] look at this"
+        assert normalize(text) == text
+
+    def test_enrichment_pending_marker_not_emptied(self):
+        text = "[image — enrichment pending]"
+        result = normalize(text)
+        assert result == text
+        assert result != ""
+
+    def test_enrichment_unavailable_marker_not_emptied(self):
+        text = "[image — enrichment unavailable]"
+        result = normalize(text)
+        assert result == text
+        assert result != ""
+
+    def test_readable_mode_also_passes_through(self):
+        text = '[image: a receipt | text: "TOTAL 42,90"]'
+        assert normalize(text, mode="readable") == text
+
+
 # ---------------------------------------------------------------------------
 # 11. Header normalization
 # ---------------------------------------------------------------------------

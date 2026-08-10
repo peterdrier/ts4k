@@ -64,7 +64,7 @@ def set_config_dir(path: Path, reason: str = "override") -> ConfigDir:
 
 def _apply_to_modules(config_dir: Path) -> None:
     """Patch ``_CONFIG_DIR`` and derived paths on all state modules."""
-    from ts4k.state import batch, cache, contacts, filters, keyed_watermarks, sources, stats, watermarks
+    from ts4k.state import batch, cache, contacts, filters, keyed_watermarks, media, sources, stats, watermarks
 
     # keyed_watermarks
     keyed_watermarks._CONFIG_DIR = config_dir
@@ -98,6 +98,10 @@ def _apply_to_modules(config_dir: Path) -> None:
     cache_dir = config_dir / "cache"
     cache._CACHE_DIR = cache_dir
     cache._INDEX_FILE = cache_dir / "index.json"
+
+    # media
+    media._CONFIG_DIR = config_dir
+    media._MEDIA_DIR = config_dir / "media"
 
 
 def reset() -> None:
