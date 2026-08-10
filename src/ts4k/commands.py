@@ -2840,7 +2840,10 @@ async def _cal_fetch_events(
         attempted += 1
         try:
             async with adapter:
-                events = await adapter.list_events(time_min=time_min, time_max=time_max, count=count)
+                events = await adapter.list_events(
+                    time_min=time_min, time_max=time_max,
+                    count=count + _CAL_ALL_DAY_MARGIN,
+                )
                 all_events.extend(events)
         except Exception as exc:
             logger.warning("[%s] calendar adapter failed: %s", pfx, exc)
@@ -2858,6 +2861,13 @@ async def _cal_fetch_events(
     # all-day entry it should follow.
     all_events.sort(key=lambda e: _cal_sort_key(e, zone))
     return all_events[:count]
+
+
+# Adapters enforce `count` themselves, but _cal_trim_all_day can drop a
+# boundary all-day event afterwards — so `cal next -n 5` could return four.
+# Ask each source for a small margin; only events straddling the window's
+# edges are ever discarded, so a couple of spares is enough.
+_CAL_ALL_DAY_MARGIN = 2
 
 
 def _cal_display_date(value: str, zone: "tzinfo") -> str:

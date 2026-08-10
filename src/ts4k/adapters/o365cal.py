@@ -17,6 +17,12 @@ from ts4k.core.tz import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
+# Pin the zone Graph answers in, on every read. Unpinned, Graph is free to
+# reply in the mailbox's own zone, whose IDs are Windows-style ("Eastern
+# Standard Time") — names ZoneInfo cannot resolve, which would silently
+# degrade the event to UTC and shift its displayed time.
+_UTC_PREFER = {"Prefer": 'outlook.timezone="UTC"'}
+
 
 # ---------------------------------------------------------------------------
 # Graph recurrence -> human string
@@ -208,11 +214,7 @@ class O365CalAdapter(BaseAdapter):
             "$orderby": "start/dateTime",
         }
 
-        # Pin the response zone. Graph is otherwise free to answer in the
-        # mailbox's own zone, whose IDs are Windows-style ("Eastern Standard
-        # Time") — names ZoneInfo cannot resolve, which would silently
-        # degrade every event to UTC and shift its displayed time.
-        headers = {"Prefer": 'outlook.timezone="UTC"'}
+        headers = _UTC_PREFER
 
         while len(raw_events) < count:
             if next_link:
@@ -285,7 +287,7 @@ class O365CalAdapter(BaseAdapter):
     async def read_event(self, event_id: str) -> dict:
         """Fetch full detail for a single event."""
         raw_id = self._strip_prefix(event_id)
-        event = await self._get(f"/me/events/{raw_id}")
+        event = await self._get(f"/me/events/{raw_id}", headers=_UTC_PREFER)
 
         base = self._normalize_event(event)
 

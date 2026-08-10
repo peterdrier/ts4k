@@ -479,6 +479,26 @@ class TestEventLevelTimezones:
         headers = client.get.await_args.kwargs["headers"]
         assert headers["Prefer"] == 'outlook.timezone="UTC"'
 
+    @pytest.mark.asyncio
+    async def test_o365_pins_the_zone_on_single_event_reads_too(self):
+        """`cal event` reads one event directly — same exposure as listing."""
+        adapter = _o365cal("America/New_York")
+        client = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {
+            "id": "e1", "subject": "Sync", "isAllDay": False,
+            "start": {"dateTime": "2026-03-11T09:00:00.0000000", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-03-11T10:00:00.0000000", "timeZone": "UTC"},
+        }
+        resp.raise_for_status = MagicMock()
+        client.get = AsyncMock(return_value=resp)
+        adapter._client = client
+
+        await adapter.read_event("oc:e1")
+
+        headers = client.get.await_args.kwargs["headers"]
+        assert headers["Prefer"] == 'outlook.timezone="UTC"'
+
 
 class TestAllDayDisplayDate:
     """All-day dates are never shifted, so they must be filtered and sorted
@@ -566,3 +586,70 @@ class TestAllDayDisplayDate:
             key=lambda e: commands._cal_sort_key(e, zone),
         )
         assert [e["title"] for e in events] == ["Holiday", "Night call"]
+
+class TestAllDayFilterDoesNotShrinkResults:
+    @pytest.mark.asyncio
+    async def test_count_is_still_met_when_an_all_day_event_is_filtered_out(
+        self, monkeypatch,
+    ):
+        """`cal next -n N` must still return N when the display-date filter
+        discards a boundary all-day event the adapter counted toward N."""
+        zone = ZoneInfo("America/New_York")
+
+        def _event(n: int) -> dict:
+            return {
+                "id": f"gc:t{n}", "source": "gc", "title": f"Timed {n}",
+                "start": f"2026-03-10T1{n}:00:00+00:00",
+                "end": f"2026-03-10T1{n}:30:00+00:00",
+                "all_day": False, "duration_minutes": 30, "status": "confirmed",
+            }
+
+        # The adapter returns a stale-dated all-day event plus three timed
+        # ones — it can only do so because it was asked for more than 3.
+        returned = [
+            {
+                "id": "gc:a1", "source": "gc", "title": "Yesterday holiday",
+                "start": "2026-03-09", "end": "2026-03-10", "all_day": True,
+                "duration_minutes": None, "status": "confirmed",
+            },
+            *[_event(n) for n in range(1, 4)],
+        ]
+        _mock_cal_sources(monkeypatch, {"gc": returned})
+
+        events = await commands._cal_fetch_events(
+            None,
+            "2026-03-10T04:00:00+00:00",
+            "2026-03-11T04:00:00+00:00",
+            count=3,
+            tz=zone,
+        )
+        assert [e["title"] for e in events] == ["Timed 1", "Timed 2", "Timed 3"]
+
+    @pytest.mark.asyncio
+    async def test_adapters_are_asked_for_a_margin_above_count(self, monkeypatch):
+        seen: dict[str, int] = {}
+
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all",
+            lambda: {"gc": {"provider": "gcal", "email": "a@b.com", "calendar_id": "primary"}},
+        )
+
+        def _make(prefix: str, cfg: dict):
+            mock = MagicMock()
+            mock.__aenter__ = AsyncMock(return_value=mock)
+            mock.__aexit__ = AsyncMock(return_value=None)
+
+            async def _list(time_min, time_max, count):
+                seen["count"] = count
+                return []
+
+            mock.list_events = _list
+            return mock
+
+        monkeypatch.setattr(commands, "_make_adapter", _make)
+
+        await commands._cal_fetch_events(
+            None, "2026-03-10T04:00:00+00:00", "2026-03-11T04:00:00+00:00",
+            count=5, tz=ZoneInfo("America/New_York"),
+        )
+        assert seen["count"] > 5
