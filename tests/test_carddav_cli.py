@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ts4k import cli
+from ts4k.adapters.carddav import carddav_credential_key
 from ts4k.auth.caldav import (
     ICLOUD_CALDAV_URL,
     ICLOUD_CARDDAV_URL,
@@ -14,6 +15,7 @@ from ts4k.auth.caldav import (
 from ts4k.state import sources
 
 PASSWORD = "abcd-efgh-ijkl-mnop"
+FASTMAIL_KEY = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
 
 
 def _args(provider: str, params: list[str]) -> argparse.Namespace:
@@ -77,7 +79,7 @@ class TestSrcAddAppleContacts:
         assert cfg["server_url"] == "https://carddav.fastmail.com/"
         # Non-Apple servers skip the xxxx-xxxx-xxxx-xxxx format check.
         # Credentials land under a service-scoped key, not the plain email.
-        assert load_credentials("me@fastmail.com#carddav#carddav.fastmail.com")["app_password"] == "any-password"
+        assert load_credentials(FASTMAIL_KEY)["app_password"] == "any-password"
 
     def test_generic_carddav_setup_does_not_poison_the_shared_credential(
         self, ts4k_config, monkeypatch
@@ -132,7 +134,7 @@ class TestSrcAddAppleContacts:
         assert caldav_creds["app_password"] == "caldav-pw"
         assert caldav_creds["server_url"] == "https://caldav.fastmail.com/"
 
-        carddav_creds = load_credentials("me@fastmail.com#carddav#carddav.fastmail.com")
+        carddav_creds = load_credentials(FASTMAIL_KEY)
         assert carddav_creds is not None
         assert carddav_creds["app_password"] == "carddav-pw"
 
@@ -143,7 +145,7 @@ class TestSrcAddAppleContacts:
         reused, same as the iCloud shared-credential case."""
         from ts4k.auth.caldav import save_credentials
 
-        save_credentials("me@fastmail.com#carddav#carddav.fastmail.com", username="me@fastmail.com",
+        save_credentials(FASTMAIL_KEY, username="me@fastmail.com",
                          app_password="existing-pw",
                          server_url="")
         monkeypatch.setattr(cli, "_prompt_password", _refuse_prompt)
@@ -152,7 +154,7 @@ class TestSrcAddAppleContacts:
             "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
         ]))
 
-        creds = load_credentials("me@fastmail.com#carddav#carddav.fastmail.com")
+        creds = load_credentials(FASTMAIL_KEY)
         assert creds["app_password"] == "existing-pw"
 
     def test_two_generic_sources_same_email_different_hosts_both_prompt(
@@ -177,8 +179,8 @@ class TestSrcAddAppleContacts:
         ]))
 
         assert len(prompts) == 2  # both setups prompted; neither reused the other
-        creds_a = load_credentials("me@example.com#carddav#carddav.example-a.com")
-        creds_b = load_credentials("me@example.com#carddav#carddav.example-b.com")
+        creds_a = load_credentials(carddav_credential_key("me@example.com", "https://carddav.example-a.com/"))
+        creds_b = load_credentials(carddav_credential_key("me@example.com", "https://carddav.example-b.com/"))
         assert creds_a is not None and creds_a["app_password"] == "pw-server-a"
         assert creds_b is not None and creds_b["app_password"] == "pw-server-b"
 
@@ -191,7 +193,7 @@ class TestSrcAddAppleContacts:
         cli._cmd_sources(_args("carddav", [
             "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
         ]))
-        creds = load_credentials("me@fastmail.com#carddav#carddav.fastmail.com")
+        creds = load_credentials(FASTMAIL_KEY)
         assert creds["app_password"] == "pass with spaces"
 
     def test_icloud_carddav_password_whitespace_is_still_normalized(
@@ -202,6 +204,41 @@ class TestSrcAddAppleContacts:
         cli._cmd_sources(_args("apple-contacts", ["email=a@icloud.com"]))
         creds = load_credentials("a@icloud.com")
         assert creds["app_password"] == "abcd-efgh-ijkl-mnop"
+
+
+class TestSrcAddGenericCarddavRejectsHttp:
+    def test_http_server_url_is_rejected_before_any_prompt(self, ts4k_config):
+        """An http:// endpoint can never connect (CarddavAdapter.connect
+        refuses it), so setup must fail here, before a password is prompted
+        for and a now-useless credential file is written."""
+        cli._cmd_sources(_args("carddav", [
+            "email=me@fastmail.com", "server_url=http://carddav.fastmail.com/",
+        ]))
+        assert "ic" not in sources.list_all()
+        key = carddav_credential_key("me@fastmail.com", "http://carddav.fastmail.com/")
+        assert load_credentials(key) is None
+
+    def test_http_server_url_error_names_the_problem(self, ts4k_config, capsys):
+        cli._cmd_sources(_args("carddav", [
+            "email=me@fastmail.com", "server_url=http://carddav.fastmail.com/",
+        ]))
+        out = capsys.readouterr().out
+        assert "https" in out.lower()
+
+    def test_http_server_url_does_not_prompt(self, ts4k_config, monkeypatch):
+        monkeypatch.setattr(cli, "_prompt_password", _refuse_prompt)
+        cli._cmd_sources(_args("carddav", [
+            "email=me@fastmail.com", "server_url=http://carddav.fastmail.com/",
+        ]))
+
+    def test_http_apple_contacts_preset_is_also_rejected(self, ts4k_config, capsys):
+        """The apple-contacts alias resolves to the iCloud HTTPS URL by
+        default, but an explicit http:// override must still be caught."""
+        cli._cmd_sources(_args("apple-contacts", [
+            "email=a@icloud.com", "server_url=http://contacts.icloud.com/",
+        ]))
+        assert "ic" not in sources.list_all()
+        assert load_credentials("a@icloud.com") is None
 
 
 class TestContactsSyncParser:
@@ -259,7 +296,7 @@ class TestAuthCarddav:
         assert "apple-contacts" not in out
         assert "ts4k src add fm carddav email=me@fastmail.com " \
                "server_url=https://carddav.fastmail.com/" in out
-        assert str(credentials_path("me@fastmail.com#carddav#carddav.fastmail.com")) in out
+        assert str(credentials_path(FASTMAIL_KEY)) in out
         assert str(credentials_path("me@fastmail.com")) not in out
 
     def test_icloud_carddav_guidance_is_unchanged(self, ts4k_config, capsys):
@@ -281,5 +318,5 @@ class TestGenericPasswordVerbatim:
         cli._cmd_sources(_args("carddav", [
             "email=me@fastmail.com", "server_url=https://carddav.fastmail.com/",
         ]))
-        creds = load_credentials("me@fastmail.com#carddav#carddav.fastmail.com")
+        creds = load_credentials(FASTMAIL_KEY)
         assert creds["app_password"] == "abcdefghijklmnop"

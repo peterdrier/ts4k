@@ -16,6 +16,7 @@ Read-only by construction — every request is a PROPFIND or a REPORT.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -265,22 +266,32 @@ def carddav_credential_key(email: str, server_url: str) -> str:
 
     The key is used as a directory name by ``credentials_path()``, so it
     must stay filesystem-safe — ``:`` is illegal in a Windows path, which
-    rules out both the ``#carddav:`` separator and a netloc carrying a
-    non-standard port (``host:port``), and ``/`` from the endpoint path.
-    ``#`` is used throughout instead, deterministically:
-    ``<email>#carddav#<netloc>[#<path segments>]``. The path is included
-    so two services under different paths on one origin (e.g. separate
-    Nextcloud instances) don't share a credential file.
+    rules out a netloc carrying a non-standard port (``host:port``), and
+    ``/`` from the endpoint path. A prior version substituted ``#`` for
+    both characters before concatenating, which is lossy: ``/a/b`` and
+    ``/a:b`` both became ``a#b``, so two distinct endpoints collided on
+    one credential file and the second source silently authenticated with
+    the first one's username/password. Hashing the *unmodified* endpoint
+    string (host + effective port + path, taken from ``_host_and_port``
+    before any character is replaced) avoids that: the hash input differs
+    for any two distinct endpoints, so the digest can't collide the way
+    the character-substituted string did.
+
+    NOTE: this changes the on-disk key for every already-configured
+    generic (non-iCloud) CardDAV source — the old ``#``-substituted key
+    won't be found under the new hash, so ``connect()`` reports "no
+    credentials" and the user is silently re-prompted for the
+    app-specific password on next use. That one-time re-prompt is
+    intentional and acceptable: silently fixing the key in place would
+    mean guessing which of two colliding old sources the recovered
+    password actually belongs to.
     """
     if is_icloud_carddav_url(server_url):
         return email
-    parts = urlsplit(server_url)
-    netloc = parts.netloc.replace(":", "#")
-    path = parts.path.strip("/").replace(":", "#").replace("/", "#")
-    key = f"{email}#carddav#{netloc}"
-    if path:
-        key = f"{key}#{path}"
-    return key
+    host, port = _host_and_port(server_url)
+    path = urlsplit(server_url).path.rstrip("/")
+    digest = hashlib.sha256(f"{host}:{port}{path}".encode()).hexdigest()[:16]
+    return f"{email}#carddav#{digest}"
 
 
 @dataclass

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ts4k import commands
+from ts4k.adapters.carddav import carddav_credential_key
 from ts4k.state import contacts, sources
 
 CARDDAV_CFG = {
@@ -56,8 +57,10 @@ class TestTokenHealth:
             "provider": "carddav", "email": "me@fastmail.com",
             "server_url": "https://carddav.fastmail.com/",
         }
-        save_credentials("me@fastmail.com#carddav#carddav.fastmail.com", username="me@fastmail.com",
-                         app_password="carddav-pw", server_url="")
+        save_credentials(
+            carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/"),
+            username="me@fastmail.com", app_password="carddav-pw", server_url="",
+        )
 
         health = commands.check_token_health("fm", cfg)
         assert health.status == "ok"
