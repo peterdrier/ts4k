@@ -36,8 +36,11 @@ _BODIES_DIR = _CACHE_DIR / "bodies"
 # install serves the superseded body indefinitely.
 SCHEMA_VERSION = 2
 
-# Sources that participate in caching (network-heavy adapters only).
-CACHEABLE_SOURCES = {"g", "o"}
+# Providers that participate in caching (network-heavy adapters only).
+# Prefixes are user-chosen (e.g. "oy", "gw"), so gating on the provider —
+# passed in explicitly by callers, who already have it from source config —
+# is what actually reflects "which adapters make network round-trips".
+CACHEABLE_PROVIDERS = {"gmail", "o365"}
 
 # Minimum free disk space required for preload operations.
 MIN_FREE_BYTES = 5 * 1024 ** 3  # 5 GB
@@ -84,14 +87,17 @@ def _is_current(entry: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def store_header(msg_id: str, header: dict) -> None:
+def store_header(msg_id: str, header: dict, provider: str = "") -> None:
     """Cache a message header (no body).
 
     *header* should contain at least ``from``, ``subject``, ``date``,
     ``source``.  The ``body`` key, if present, is stripped.
+
+    *provider* is the source's configured provider (e.g. ``"gmail"``,
+    ``"o365"``), supplied by the caller — cache.py never looks it up
+    itself. Only providers in ``CACHEABLE_PROVIDERS`` are cached.
     """
-    source = header.get("source", "")
-    if source and source not in CACHEABLE_SOURCES:
+    if provider.lower() not in CACHEABLE_PROVIDERS:
         return
 
     index = _load_index()
@@ -108,9 +114,11 @@ def store_body(msg_id: str, body: str) -> None:
     safe_write_json(_body_path(msg_id), {"body": body}, indent=None)
 
 
-def store_message(msg_id: str, msg: dict) -> None:
+def store_message(msg_id: str, msg: dict, provider: str = "") -> None:
     """Cache a full message (header + body in one call)."""
-    store_header(msg_id, msg)
+    if provider.lower() not in CACHEABLE_PROVIDERS:
+        return
+    store_header(msg_id, msg, provider=provider)
     body = msg.get("body")
     if body:
         store_body(msg_id, body)
@@ -325,7 +333,7 @@ class CacheBatch:
 
         with CacheBatch() as cb:
             for entry in listing:
-                cb.store_header(msg_id, entry)
+                cb.store_header(msg_id, entry, provider=provider)
             # index.json written once on exit
 
     Call ``flush()`` for an explicit mid-batch checkpoint.
@@ -345,13 +353,16 @@ class CacheBatch:
             _save_index(self._index)
         self._index = None
 
-    def store_header(self, msg_id: str, header: dict) -> None:
-        """Accumulate a header in the in-memory index (no disk write)."""
+    def store_header(self, msg_id: str, header: dict, provider: str = "") -> None:
+        """Accumulate a header in the in-memory index (no disk write).
+
+        *provider* is the source's configured provider — see
+        ``store_header`` at module scope for details.
+        """
         if self._index is None:
             raise RuntimeError("CacheBatch must be used as a context manager")
 
-        source = header.get("source", "")
-        if source and source not in CACHEABLE_SOURCES:
+        if provider.lower() not in CACHEABLE_PROVIDERS:
             return
 
         entry = {k: v for k, v in header.items() if k != "body"}

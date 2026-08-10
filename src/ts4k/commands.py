@@ -240,11 +240,6 @@ def _resolve_prefixes(source: str | None) -> list[str]:
     return [source]
 
 
-# Providers whose messages land in the local cache (see cache.CACHEABLE_SOURCES).
-# WhatsApp reads from its own SQLite DB; calendar providers aren't cached at all —
-# for those, activity can't be derived locally, so we report "n/a" rather than
-# a misleading "empty".
-_ACTIVITY_TRACKED_PROVIDERS = {"gmail", "o365"}
 _ACTIVITY_ACTIVE_DAYS = 30
 
 
@@ -259,9 +254,8 @@ def source_activity(
     - ``"active"``: newest cached message within the last 30 days
     - ``"low"``: cached messages exist, but the newest is older than 30 days
     - ``"empty"``: no cached messages (nothing fetched yet, or genuinely idle)
-    - ``"n/a"``: provider isn't cached locally (WhatsApp, calendars), or the
-      source uses a custom prefix that ``cache.CACHEABLE_SOURCES`` doesn't
-      recognize (caching is keyed by prefix today; see issue #64)
+    - ``"n/a"``: provider isn't cached locally (WhatsApp, calendars) — see
+      ``cache.CACHEABLE_PROVIDERS``
 
     *headers*, if given, is a pre-loaded list of this source's cached headers
     (see ``cached_headers_by_source``) — pass it to avoid reloading the whole
@@ -270,10 +264,7 @@ def source_activity(
     Note: this reflects what ts4k has *cached* so far, not a live mailbox
     count — a source that's never been queried also reports "empty".
     """
-    if provider and provider.lower() not in _ACTIVITY_TRACKED_PROVIDERS:
-        return {"count": 0, "newest": None, "tag": "n/a"}
-
-    if prefix not in cache.CACHEABLE_SOURCES:
+    if provider and provider.lower() not in cache.CACHEABLE_PROVIDERS:
         return {"count": 0, "newest": None, "tag": "n/a"}
 
     if headers is None:
@@ -512,7 +503,7 @@ async def _fetch_for_source(
             for entry in listing:
                 msg = _normalize_message(entry)
                 msg.setdefault("source", prefix)
-                cache.store_message(msg.get("id", ""), msg)
+                cache.store_message(msg.get("id", ""), msg, provider=provider)
                 messages.append(msg)
             return messages
 
@@ -784,6 +775,7 @@ async def get_message(
     if adapter is None:
         return CommandResult(error=f"Source {prefix!r} not available.")
 
+    provider = cfg.get("provider", "").lower()
     async with adapter:
         msg = await adapter.read_message(id, prefer_html=(body_mode == "readable"))
         msg = _normalize_message(msg, mode=body_mode)
@@ -796,7 +788,7 @@ async def get_message(
             if (plain_msg.get("body") or "").strip():
                 msg = plain_msg
         if body_mode == "compact":
-            cache.store_message(id, msg)
+            cache.store_message(id, msg, provider=provider)
         output = format_message(msg, fmt=fmt)
         _record_stats("g", [msg], output)
 
@@ -822,6 +814,8 @@ async def get_thread(
     if adapter is None:
         return CommandResult(error=f"Source {prefix!r} not available.")
 
+    provider = cfg.get("provider", "").lower()
+
     # If the ID looks like a message ID (not a thread ID), try resolving
     # via cache — the cached message may have a thread_id field.
     cached_msg = cache.get_message(tid)
@@ -834,7 +828,7 @@ async def get_thread(
         for msg in thread.get("messages", []):
             mid = msg.get("id")
             if mid:
-                cache.store_message(mid, msg)
+                cache.store_message(mid, msg, provider=provider)
         output = format_thread(thread, fmt=fmt)
         _record_stats("t", thread.get("messages", []), output)
 
@@ -894,13 +888,14 @@ async def list_messages(
         if adapter is None:
             continue
 
+        provider = cfg.get("provider", "").lower()
         try:
             async with adapter:
                 listing = await adapter.list_messages(query=query, count=count, sender=sender, domain=domain)
                 for entry in listing or []:
                     msg = _normalize_message(entry)
                     msg.setdefault("source", prefix)
-                    cache.store_message(msg.get("id", ""), msg)
+                    cache.store_message(msg.get("id", ""), msg, provider=provider)
                     all_messages.append(msg)
         except Exception as exc:
             logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -1433,6 +1428,7 @@ async def preload(
         return f"Error: source {prefix!r} not found."
 
     provider = cfg.get("provider", "").lower()
+    cacheable = provider in cache.CACHEABLE_PROVIDERS
 
     # Contact auto-expand
     if contact:
@@ -1511,19 +1507,20 @@ async def preload(
                         msg_id = entry.get("id", "")
                         if not msg_id:
                             continue
-                        cb.store_header(msg_id, entry)
+                        cb.store_header(msg_id, entry, provider=provider)
 
-                        if bodies:
+                        if bodies and cacheable:
                             try:
                                 msg = await adapter.read_message(msg_id)
                                 msg = _normalize_message(msg)
                                 # store_header via batch; body as individual file
-                                cb.store_header(msg_id, msg)
+                                cb.store_header(msg_id, msg, provider=provider)
                                 cache.store_body(msg_id, msg.get("body", ""))
                             except Exception as exc:
                                 logger.warning("[%s] body fetch %s: %s", prefix, msg_id, exc)
 
-                        messages_cached += 1
+                        if cacheable:
+                            messages_cached += 1
 
                 pages_fetched += 1
 

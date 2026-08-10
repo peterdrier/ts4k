@@ -18,8 +18,6 @@ def _args(action: str, prefix: str | None = None, provider: str | None = None,
 
 class TestSourcesListActivity:
     def test_empty_source_shows_empty_tag(self, ts4k_config, capsys):
-        # Canonical prefix: cacheable, so "empty" is truthful. Custom
-        # prefixes (oh, gw, ...) report n/a until #64 lands.
         sources.add("o", provider="o365", email="help@burn.camp")
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
@@ -29,7 +27,8 @@ class TestSourcesListActivity:
         sources.add("g", provider="gmail", email="a@b.com")
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
         )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
@@ -43,18 +42,26 @@ class TestSourcesListActivity:
         out = capsys.readouterr().out
         assert "activity: n/a" in out
 
-    def test_custom_prefix_gmail_source_shows_na(self, ts4k_config, capsys):
-        # "gw" is a Gmail source but isn't in cache.CACHEABLE_SOURCES, so
-        # nothing ever lands in the cache for it — "empty" would wrongly
-        # imply it was checked and found idle.
+    def test_custom_prefix_gmail_source_shows_real_activity(self, ts4k_config, capsys):
+        # "gw" is a Gmail source registered under a non-canonical prefix —
+        # caching now gates on provider, so it's cached and its activity is
+        # real, not "n/a". See issue #64.
         sources.add("gw", provider="gmail", email="work@gmail.com")
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "gw:1", {"source": "gw", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
+        )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
-        assert "activity: n/a" in out
+        assert "activity: active" in out
+        assert "1 cached" in out
 
     def test_dateless_cached_headers_do_not_crash(self, ts4k_config, capsys):
         sources.add("g", provider="gmail", email="a@b.com")
-        cache.store_header("g:1", {"source": "g", "from": "a@b.com", "subject": "hi"})
+        cache.store_header(
+            "g:1", {"source": "g", "from": "a@b.com", "subject": "hi"}, provider="gmail"
+        )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
         assert "activity: low" in out
@@ -66,7 +73,8 @@ class TestSourcesListActivity:
         sources.add("o", provider="o365", email="c@d.com")
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
         )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from ts4k import commands
-from ts4k.state import cache
+from ts4k.state import cache, sources
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +227,8 @@ class TestSourceActivity:
     def test_recent_messages_are_active(self, ts4k_config):
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
         )
         result = commands.source_activity("g", provider="gmail")
         assert result["tag"] == "active"
@@ -236,7 +238,8 @@ class TestSourceActivity:
     def test_stale_messages_are_low(self, ts4k_config):
         old = (datetime.now(timezone.utc) - timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "o:1", {"source": "o", "date": old, "from": "a@b.com", "subject": "hi"}
+            "o:1", {"source": "o", "date": old, "from": "a@b.com", "subject": "hi"},
+            provider="o365",
         )
         result = commands.source_activity("o", provider="o365")
         assert result["tag"] == "low"
@@ -246,10 +249,12 @@ class TestSourceActivity:
     def test_only_counts_matching_source(self, ts4k_config):
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
         )
         cache.store_header(
-            "o:1", {"source": "o", "date": recent, "from": "c@d.com", "subject": "hi"}
+            "o:1", {"source": "o", "date": recent, "from": "c@d.com", "subject": "hi"},
+            provider="o365",
         )
         result = commands.source_activity("g", provider="gmail")
         assert result["count"] == 1
@@ -257,25 +262,37 @@ class TestSourceActivity:
     def test_activity_boundary_is_exactly_30_days(self, ts4k_config):
         just_inside = (datetime.now(timezone.utc) - timedelta(days=29)).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "g:1", {"source": "g", "date": just_inside, "from": "a@b.com", "subject": "hi"}
+            "g:1", {"source": "g", "date": just_inside, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
         )
         result = commands.source_activity("g", provider="gmail")
         assert result["tag"] == "active"
 
-    def test_custom_prefix_gmail_is_na(self, ts4k_config):
-        # "gw" isn't in cache.CACHEABLE_SOURCES ({"g", "o"}) even though its
-        # provider is tracked — cache.store_header silently drops entries for
-        # it, so reporting "empty" would imply "checked, nothing there" when
-        # really it was never checkable. See issue #64 for the real fix.
+    def test_custom_prefix_gmail_is_cached(self, ts4k_config):
+        # "gw" isn't the canonical "g" prefix, but its provider is gmail —
+        # cache writes now gate on provider, not on the literal prefix
+        # string, so activity for it is real, not "n/a". See issue #64.
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "gw:1", {"source": "gw", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
+        )
         result = commands.source_activity("gw", provider="gmail")
-        assert result == {"count": 0, "newest": None, "tag": "n/a"}
+        assert result == {"count": 1, "newest": recent, "tag": "active"}
 
-    def test_custom_prefix_o365_is_na(self, ts4k_config):
+    def test_custom_prefix_o365_is_cached(self, ts4k_config):
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cache.store_header(
+            "oh:1", {"source": "oh", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="o365",
+        )
         result = commands.source_activity("oh", provider="o365")
-        assert result == {"count": 0, "newest": None, "tag": "n/a"}
+        assert result == {"count": 1, "newest": recent, "tag": "active"}
 
     def test_dateless_headers_do_not_crash_and_still_count(self, ts4k_config):
-        cache.store_header("g:1", {"source": "g", "from": "a@b.com", "subject": "hi"})
+        cache.store_header(
+            "g:1", {"source": "g", "from": "a@b.com", "subject": "hi"}, provider="gmail"
+        )
         result = commands.source_activity("g", provider="gmail")
         assert result["count"] == 1
         assert result["newest"] is None
@@ -284,11 +301,13 @@ class TestSourceActivity:
     def test_preloaded_headers_match_per_source_lookup(self, ts4k_config):
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"}
+            "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
+            provider="gmail",
         )
         old = (datetime.now(timezone.utc) - timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
-            "o:1", {"source": "o", "date": old, "from": "c@d.com", "subject": "hi"}
+            "o:1", {"source": "o", "date": old, "from": "c@d.com", "subject": "hi"},
+            provider="o365",
         )
 
         groups = commands.cached_headers_by_source()
@@ -404,3 +423,33 @@ class TestSkillReference:
         """It rides in every skill call — one line is the budget."""
         lines = [ln for ln in commands.skill_reference("basic").splitlines() if "[voice" in ln]
         assert len(lines) == 1, lines
+
+
+# ---------------------------------------------------------------------------
+# preload — body writes must respect provider cache gating (ts4k#64 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestPreloadBodyGating:
+    @pytest.mark.asyncio
+    async def test_bodies_not_cached_for_non_cacheable_provider(self, ts4k_config):
+        """preload --bodies against WhatsApp must not orphan a body file,
+        must not cache the header either, and must not claim the message
+        was cached — only gmail/o365 are cacheable (cache.CACHEABLE_PROVIDERS).
+        """
+        sources.add("w", provider="whatsapp")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.list_messages.return_value = [
+            {"id": "w:1", "source": "w", "from": "a@b.com", "subject": "hi"}
+        ]
+        mock_adapter.read_message.return_value = {
+            "id": "w:1", "source": "w", "body": "secret body text",
+        }
+
+        with patch("ts4k.commands._make_adapter", return_value=mock_adapter):
+            result = await commands.preload(source="w", bodies=True, pages=1, throttle=0)
+
+        assert "0 messages cached" in result
+        assert not (ts4k_config / "cache" / "bodies" / "w_1.json").exists()
+        assert cache.get_header("w:1") is None
