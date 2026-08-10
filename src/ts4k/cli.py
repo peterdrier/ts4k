@@ -43,7 +43,7 @@ from ts4k.state.refs import RefTable
 # Source config keys holding a secret rather than a pointer to one. `src list`
 # runs constantly in agent context and in terminal scrollback, so the value
 # itself never gets printed — `bridge_token_file` (a path) still does.
-_SECRET_SOURCE_KEYS = frozenset({"bridge_token"})
+_SECRET_SOURCE_KEYS = frozenset({"bridge_token", "token"})
 
 
 def _shown(key: str, value: object) -> object:
@@ -578,6 +578,14 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 print(f"Reusing the app-specific password already stored for {email}.")
             # Falls through to generic sources.add — contacts are imported by
             # `ts4k contacts sync`, not by any message command.
+
+        if provider == "github":
+            from ts4k.adapters.github import resolve_token
+            if not resolve_token(kwargs.get("token"), kwargs.get("token_file")):
+                print("Error: a GitHub personal access token is required.")
+                print(f"Usage: ts4k src add {prefix} github token_file=<path>")
+                print("       (or token=<pat>, or set GITHUB_TOKEN)")
+                return
 
         # For O365: inherit client_id/tenant_id from existing O365 source
         # if not explicitly provided (same app registration for all mailboxes).
@@ -1615,6 +1623,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  whatsapp: bridge_url, bridge_token, bridge_token_file, transport (http|stdio)\n"
             "            transport=stdio also needs mcp_cwd, server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
+            "  github:   token or token_file (required unless GITHUB_TOKEN is set)\n"
             "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
             "  apple-contacts: email (required)  → generic carddav provider (ts4k c sync)\n"
             "\n"
@@ -1630,7 +1639,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sr_add.add_argument("prefix", help="Source prefix (e.g. g, gn, w)")
-    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp, apple/icloud/caldav, apple-contacts/carddav")
+    sr_add.add_argument("provider", help="Provider: gmail, o365, whatsapp, github, apple/icloud/caldav, apple-contacts/carddav")
     sr_add.add_argument("params", nargs="*", help="key=value pairs or bare email")
 
     sr_rm = sr_sub.add_parser("rm", help="Remove a source",
@@ -1720,6 +1729,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  ts4k filter add-sender noreply@spam.com\n"
             "  ts4k f add-domain newsletters.example.com\n"
             "  ts4k f add-pattern '^Out of office'\n"
+            "  ts4k f add-category ci           # skip GitHub CI notifications\n"
             "  ts4k f skip-groups true          # skip group chats\n"
             "  ts4k f show                      # show current config\n"
             "  ts4k wn life -F                  # apply filters to whatsnew"
@@ -1735,6 +1745,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ("rm-domain", "Remove domain from skip list"),
         ("add-pattern", "Add regex pattern to skip"),
         ("rm-pattern", "Remove pattern from skip list"),
+        ("add-category", "Add message category to skip list (e.g. ci)"),
+        ("rm-category", "Remove category from skip list"),
         ("skip-groups", "Set group chat skip (true/false)"),
     ]:
         sub = fl_sub.add_parser(action_name, help=help_text)

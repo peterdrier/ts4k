@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from ts4k.adapters.caldav_cal import CaldavAdapter, CaldavAdapterConfig
 from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
 from ts4k.adapters.o365cal import O365CalAdapter, O365CalAdapterConfig
+from ts4k.adapters.github import GitHubAdapter, GitHubAdapterConfig
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.adapters import wa_bridge_auth
@@ -86,7 +87,7 @@ _NON_MESSAGE_PROVIDERS = (*_CAL_PROVIDERS, "carddav")
 
 def _make_adapter(
     prefix: str, cfg: dict[str, Any]
-) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GcalAdapter | O365CalAdapter | CaldavAdapter | None:
+) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GitHubAdapter | GcalAdapter | O365CalAdapter | CaldavAdapter | None:
     """Create an adapter instance from a source config entry."""
     provider = cfg.get("provider", "").lower()
 
@@ -142,6 +143,20 @@ def _make_adapter(
                 tenant_id=cfg.get("tenant_id", "common"),
                 mailbox=cfg.get("mailbox"),
                 config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
+                level=cfg.get("level"),
+            ),
+            prefix=prefix,
+        )
+
+    if provider == "github":
+        from ts4k.adapters.github import resolve_token
+        if not resolve_token(cfg.get("token"), cfg.get("token_file")):
+            logger.warning("GitHub source %r has no resolvable token", prefix)
+            return None
+        return GitHubAdapter(
+            GitHubAdapterConfig(
+                token=cfg.get("token", ""),
+                token_file=cfg.get("token_file"),
                 level=cfg.get("level"),
             ),
             prefix=prefix,
@@ -226,6 +241,7 @@ def _resolve_prefixes(source: str | None) -> list[str]:
 
     provider_map = {
         "wa": "whatsapp", "outlook": "o365", "office": "o365", "365": "o365",
+        "gh": "github",
         "google-calendar": "gcal", "calendar": "gcal", "cal": "gcal",
         "o365-calendar": "o365cal", "outlook-calendar": "o365cal",
         "apple": "caldav", "icloud": "caldav", "apple-calendar": "caldav",
@@ -1116,7 +1132,7 @@ def get_status(
     total_msgs = st.get("total_messages", 0)
     pct = stats.savings_pct()
 
-    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV", "carddav": "CardDAV"}
+    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "github": "GitHub", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV", "carddav": "CardDAV"}
 
     lines.append("")
     lines.append("Stats:")
@@ -1433,6 +1449,12 @@ def manage_filters(action: str | None = None, value: str | None = None) -> str:
     elif action == "rm-pattern":
         result = filters.remove_pattern(value or "")
         return f"skip_patterns: {', '.join(result) or '(empty)'}"
+    elif action == "add-category":
+        result = filters.add_category(value or "")
+        return f"skip_categories: {', '.join(result)}"
+    elif action == "rm-category":
+        result = filters.remove_category(value or "")
+        return f"skip_categories: {', '.join(result) or '(empty)'}"
     elif action == "skip-groups":
         val = (value or "").lower() in ("true", "yes", "on", "1")
         result = filters.set_skip_groups(val)
@@ -1447,6 +1469,7 @@ def manage_filters(action: str | None = None, value: str | None = None) -> str:
             f"skip_domains:  {', '.join(config['skip_domains']) or '(none)'}",
             f"skip_groups:   {config['skip_groups']}",
             f"skip_patterns: {', '.join(config['skip_patterns']) or '(none)'}",
+            f"skip_categories: {', '.join(config['skip_categories']) or '(none)'}",
         ]
         return "\n".join(lines)
 
@@ -1477,6 +1500,19 @@ async def preload(
 
     provider = cfg.get("provider", "").lower()
     cacheable = provider in cache.CACHEABLE_PROVIDERS
+
+    # Gate on the provider, never the prefix: prefixes are user-chosen, so
+    # a GitHub source could be named "g" or "o" and slip through a
+    # prefix-based check even though nothing about it is cacheable.
+    if not cacheable:
+        # Fail closed: only gmail/o365 messages reach the cache, so any
+        # other provider's headers would be discarded and its bodies left
+        # as unreachable orphan files — reject rather than report a fake
+        # success.
+        return (
+            f"Error: source {prefix!r} ({provider}) doesn't support preload — "
+            "only Gmail and O365 messages are cached locally."
+        )
 
     # Contact auto-expand
     if contact:
@@ -2466,6 +2502,18 @@ def check_token_health(prefix: str, cfg: dict[str, Any]) -> "TokenHealth":
         required = scopes_for(provider, parse_level(cfg.get("level")))
         return validate_token(client_id, tenant_id=tenant_id, scopes=required or None, username=username)
 
+    if provider == "github":
+        # A PAT can only be validated by spending an API call, and this runs
+        # on every `ts4k status` — report whether one resolves, not whether
+        # GitHub still accepts it.  A revoked token surfaces as a 401 on use.
+        from ts4k.adapters.github import resolve_token
+        if resolve_token(cfg.get("token"), cfg.get("token_file")):
+            return TokenHealth(status="ok", expiry=None, scopes=[], detail="PAT configured")
+        return TokenHealth(
+            status="auth", expiry=None, scopes=[],
+            detail=f"no token — run: ts4k src add {prefix} github token_file=<path>",
+        )
+
     if provider in ("caldav", "carddav"):
         # Both share one app-specific password per Apple ID — except a
         # generic (non-iCloud) CardDAV source, which is keyed separately.
@@ -2557,6 +2605,12 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    3. ts4k auth o                              (device code flow)")
     lines.append("    4. ts4k src discover                        (find mailboxes)")
     lines.append("    5. ts4k list --source o --since 2d          (verify)")
+    lines.append("  GitHub (notifications, issues, PRs — read + mark-read only):")
+    lines.append("    1. Create a fine-grained PAT: github.com/settings/tokens — Notifications: read, Issues/Pull requests: read")
+    lines.append("       (use Notifications: write instead of read if you'll set level=modify, below, to mark notifications read)")
+    lines.append("    2. ts4k src add gh github token_file=<path>   (or GITHUB_TOKEN env; level=modify to allow mark-read)")
+    lines.append("    3. ts4k whatsnew dev --source gh             (verify)")
+    lines.append("    Categories: ci, review, mention, assignment, dependabot, release — suppress with: ts4k filter add-category ci")
     lines.append("  Calendar (Google & O365):")
     lines.append("    1. Google: same OAuth credentials as Gmail (shared token)")
     lines.append("    2. O365: same auth as O365 mail (calendar scopes added automatically)")
@@ -2608,7 +2662,8 @@ def skill_reference(level: str = "basic") -> str:
             "contacts link ALIAS ID [ID...]|Link identifiers to alias\n"
             "contacts unlink|find|list|Manage contacts\n"
             "contacts sync [--apply]|Import iCloud address book (preview by default)\n"
-            "filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|skip-groups|reset\n"
+            "filter show|add-sender|rm-sender|add-domain|rm-domain|add-pattern|rm-pattern|add-category|rm-category|skip-groups|reset\n"
+            "  GitHub categories: ci|review|mention|assignment|dependabot|release\n"
             "cache stats|clear [--source S] [--stale]|Manage cache\n"
             "manage actions: archive, unarchive, label, unlabel, read, unread, trash, move, list-labels\n"
             "  manage archive 1,2,3|Batch archive by ref\n"
@@ -2671,7 +2726,7 @@ def skill_template() -> str:
         '---\n'
         'name: ts\n'
         'description: "Token-efficient messaging and calendar gateway for Gmail, WhatsApp,'
-        ' O365, and Google Calendar. Use when the user asks about email, messages, inbox,'
+        ' O365, GitHub, and Google Calendar. Use when the user asks about email, messages, inbox,'
         ' communications, mail, calendar, events, meetings, schedule, or wants to check,'
         ' read, search, or manage their messages or calendar across platforms. Always use'
         ' this skill for any email, messaging, or calendar task — even if the user doesn\'t'

@@ -33,10 +33,14 @@ def apply_filters(
     skip_domains = {d.lower() for d in config.get("skip_domains", [])}
     skip_groups = config.get("skip_groups", False)
     skip_patterns = _compile_patterns(config.get("skip_patterns", []))
+    skip_categories = {c.lower() for c in config.get("skip_categories", [])}
 
     result: list[dict] = []
     for msg in messages:
-        if _should_skip(msg, skip_senders, skip_domains, skip_groups, skip_patterns):
+        if _should_skip(
+            msg, skip_senders, skip_domains, skip_groups, skip_patterns,
+            skip_categories,
+        ):
             continue
         result.append(msg)
     return result
@@ -90,9 +94,16 @@ def _should_skip(
     skip_domains: set[str],
     skip_groups: bool,
     skip_patterns: list[re.Pattern],
+    skip_categories: set[str] | None = None,
 ) -> bool:
     """Return True if the message should be filtered out."""
     sender = (msg.get("from") or "").strip().lower()
+
+    # Skip by adapter-assigned category (e.g. GitHub's ci / dependabot)
+    if skip_categories:
+        category = (msg.get("category") or "").strip().lower()
+        if category and category in skip_categories:
+            return True
 
     # Skip by exact sender
     if sender and sender in skip_senders:

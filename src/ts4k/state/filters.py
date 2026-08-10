@@ -12,8 +12,13 @@ File format::
         "skip_senders": ["noreply@linkedin.com", "notifications@github.com"],
         "skip_domains": ["marketing.example.com"],
         "skip_groups": false,
-        "skip_patterns": ["unsubscribe.*click here"]
+        "skip_patterns": ["unsubscribe.*click here"],
+        "skip_categories": ["ci", "dependabot"]
     }
+
+``skip_categories`` matches a message's ``category`` field — set by
+adapters that classify their own traffic (GitHub notifications: ``ci``,
+``review``, ``mention``, ``assignment``, ``dependabot``, ``release``).
 
 All fields are optional.  Missing fields use safe defaults (empty / false).
 """
@@ -34,6 +39,7 @@ _DEFAULTS: dict[str, Any] = {
     "skip_domains": [],
     "skip_groups": False,
     "skip_patterns": [],
+    "skip_categories": [],
 }
 
 
@@ -142,6 +148,26 @@ def remove_pattern(pattern: str) -> list[str]:
         data["skip_patterns"].remove(pattern)
         _save(data)
     return data["skip_patterns"]
+
+
+def add_category(category: str) -> list[str]:
+    """Add a message category to the skip list.  Returns the updated list."""
+    data = _load()
+    category = category.strip().lower()
+    if category and category not in data["skip_categories"]:
+        data["skip_categories"].append(category)
+        _save(data)
+    return data["skip_categories"]
+
+
+def remove_category(category: str) -> list[str]:
+    """Remove a category from the skip list.  Returns the updated list."""
+    data = _load()
+    category = category.strip().lower()
+    if category in data["skip_categories"]:
+        data["skip_categories"].remove(category)
+        _save(data)
+    return data["skip_categories"]
 
 
 def set_skip_groups(skip: bool) -> bool:
