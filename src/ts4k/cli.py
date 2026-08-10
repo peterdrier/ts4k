@@ -43,7 +43,9 @@ from ts4k.state.refs import RefTable
 # Source config keys holding a secret rather than a pointer to one. `src list`
 # runs constantly in agent context and in terminal scrollback, so the value
 # itself never gets printed — `bridge_token_file` (a path) still does.
-_SECRET_SOURCE_KEYS = frozenset({"bridge_token", "token"})
+# `header` (#31 HTTP sources) commonly carries "Authorization: Bearer ..."
+# or an API key, so it's redacted the same way as the other credentials.
+_SECRET_SOURCE_KEYS = frozenset({"bridge_token", "token", "header"})
 
 
 def _shown(key: str, value: object) -> object:
@@ -445,12 +447,17 @@ def _cmd_sources(args: argparse.Namespace) -> None:
         kwargs: dict[str, Any] = {}
         # Fields that must be stored as lists (space-split from CLI string)
         _LIST_FIELDS = {"server_command"}
+        # Fields that accumulate across repeated key=value occurrences
+        # instead of the last one winning (http source auth headers, #31).
+        _APPEND_FIELDS = {"header"}
         for kv in (args.params or []):
             if "=" in kv:
                 k, v = kv.split("=", 1)
                 k, v = k.strip(), v.strip()
                 if k in _LIST_FIELDS:
                     kwargs[k] = v.split()
+                elif k in _APPEND_FIELDS:
+                    kwargs.setdefault(k, []).append(v)
                 else:
                     kwargs[k] = v
             elif "@" in kv:
@@ -615,6 +622,12 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 username = _resolve_o365_username(kwargs)
                 if username:
                     kwargs["email"] = username
+
+        if provider == "http":
+            if "url" not in kwargs:
+                print("Error: url is required for HTTP sources.")
+                print(f'Usage: ts4k src add {prefix} http url=<url> header="Name: value"')
+                return
 
         existed = prefix in sources.list_all()
         entry = sources.add(prefix, provider=provider, **kwargs)
@@ -1625,12 +1638,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "            transport=stdio also needs mcp_cwd, server_command\n"
             "  o365:     client_id (required), tenant_id, mailbox\n"
             "  github:   token or token_file (required unless GITHUB_TOKEN is set)\n"
+            "  http:     url (required), header (auth header 'Name: value'; repeat or comma-separate for multiple)\n"
             "  apple/icloud: email (required), calendar_id, calendar_name  → generic caldav provider\n"
             "  apple-contacts: email (required)  → generic carddav provider (ts4k c sync)\n"
             "\n"
             "examples:\n"
             '  ts4k src add g gmail email=you@gmail.com\n'
             '  ts4k src add w whatsapp bridge_token_file=/path/to/whatsapp-bridge/store/api_token\n'
+            '  ts4k src add h http url=https://example.com/api/notifications header="X-Api-Key: abc123"\n'
             '  ts4k src add cc apple email=you@icloud.com\n'
             '  ts4k src add ic apple-contacts email=you@icloud.com\n'
             "\n"
