@@ -184,7 +184,8 @@ class TestNormalization:
         assert e["id"] == "cc:abc123@icloud.com"
         assert e["source"] == "cc"
         assert e["title"] == "Dentist"
-        assert e["start"].startswith("2026-07-30T14:00:00")
+        # 14:00 CEST (Europe/Amsterdam) is stored as 12:00 UTC
+        assert e["start"] == "2026-07-30T12:00:00+00:00"
         assert e["all_day"] is False
         assert e["duration_minutes"] == 60
         assert e["location"] == "Main St 1"
@@ -201,16 +202,16 @@ class TestNormalization:
         assert e["end"] == "2026-07-31"
         assert e["duration_minutes"] is None
 
-    def test_floating_time_gets_config_timezone(self, adapter: CaldavAdapter):
+    def test_floating_time_read_in_config_timezone_stored_as_utc(self, adapter: CaldavAdapter):
         e = adapter._normalize_component(_mk_caldav_event(FLOATING_ICS).icalendar_component)
-        # Europe/Amsterdam on 2026-07-30 is UTC+2
-        assert e["start"] == "2026-07-30T09:00:00+02:00"
+        # 09:00 floating means 09:00 Europe/Amsterdam (UTC+2 on 2026-07-30)
+        assert e["start"] == "2026-07-30T07:00:00+00:00"
         assert e["duration_minutes"] == 30
 
     def test_recurring_instance_ids(self, adapter: CaldavAdapter):
         e = adapter._normalize_component(_mk_caldav_event(INSTANCE_ICS).icalendar_component)
         assert e["recurring_event_id"] == "cc:rec1@icloud.com"
-        assert e["id"].startswith("cc:rec1@icloud.com::2026-08-06T14:00:00")
+        assert e["id"] == "cc:rec1@icloud.com::2026-08-06T12:00:00+00:00"
 
     def test_single_attendee_is_not_treated_as_a_sequence(self, adapter: CaldavAdapter):
         # icalendar returns a bare vCalAddress (not a list) for one ATTENDEE
@@ -220,10 +221,10 @@ class TestNormalization:
         assert e["attendees_summary"] == "1 people"
         assert e["your_status"] == "tentative"
 
-    def test_foreign_timezone_normalized_to_config_tz(self, adapter: CaldavAdapter):
-        # 09:00 EDT (America/New_York) on 2026-07-30 == 15:00 CEST (Europe/Amsterdam)
+    def test_foreign_timezone_normalized_to_utc(self, adapter: CaldavAdapter):
+        # 09:00 EDT (America/New_York) on 2026-07-30 == 13:00 UTC
         e = adapter._normalize_component(_mk_caldav_event(FOREIGN_TZ_ICS).icalendar_component)
-        assert e["start"] == "2026-07-30T15:00:00+02:00"
+        assert e["start"] == "2026-07-30T13:00:00+00:00"
         assert e["duration_minutes"] == 60
 
 

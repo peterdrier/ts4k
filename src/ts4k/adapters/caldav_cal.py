@@ -176,14 +176,17 @@ class CaldavAdapter(BaseAdapter):
         else:
             end_dt = start_dt
 
+        # Floating (zone-less) times mean "the source's configured zone"; from
+        # there everything is stored in UTC and rendered by the format layer.
+        # ``date`` values are all-day and stay dates.
         if isinstance(start_dt, datetime) and start_dt.tzinfo is None:
             start_dt = start_dt.replace(tzinfo=tzinfo)
         if isinstance(end_dt, datetime) and end_dt.tzinfo is None:
             end_dt = end_dt.replace(tzinfo=tzinfo)
         if isinstance(start_dt, datetime):
-            start_dt = start_dt.astimezone(tzinfo)
+            start_dt = start_dt.astimezone(timezone.utc)
         if isinstance(end_dt, datetime):
-            end_dt = end_dt.astimezone(tzinfo)
+            end_dt = end_dt.astimezone(timezone.utc)
 
         start = start_dt.isoformat() if start_dt is not None else ""
         end = end_dt.isoformat() if end_dt is not None else start
@@ -213,7 +216,7 @@ class CaldavAdapter(BaseAdapter):
             if isinstance(rid, datetime) and rid.tzinfo is None:
                 rid = rid.replace(tzinfo=tzinfo)
             if isinstance(rid, datetime):
-                rid = rid.astimezone(tzinfo)
+                rid = rid.astimezone(timezone.utc)
             event_id = f"{uid}::{rid.isoformat()}"
             recurring_event_id = f"{self._prefix}:{uid}"
         else:

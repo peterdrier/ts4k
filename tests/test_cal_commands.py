@@ -16,10 +16,15 @@ from ts4k.commands import (
     cal_update,
     cal_rsvp,
     _cal_time_bounds,
-    _get_cal_timezone,
     _cal_fetch_events,
 )
 from ts4k.state import sources
+
+
+@pytest.fixture(autouse=True)
+def fixed_display_tz(monkeypatch):
+    """Pin the display timezone so tests never depend on the host's zone."""
+    monkeypatch.setenv("TS4K_TIMEZONE", "Europe/Amsterdam")
 
 
 @pytest.fixture
@@ -57,46 +62,40 @@ def mock_events():
 
 
 class TestCalTimeBounds:
-    def test_returns_iso_strings(self):
-        time_min, time_max = _cal_time_bounds(day_offset=0, days=1, timezone="UTC")
-        assert "T00:00:00" in time_min
-        assert "T" in time_max
+    def test_returns_utc_iso_strings(self):
+        from zoneinfo import ZoneInfo
+
+        time_min, time_max = _cal_time_bounds(day_offset=0, days=1, tz=ZoneInfo("UTC"))
+        assert "T00:00:00+00:00" in time_min
+        assert "+00:00" in time_max
 
     def test_day_offset_shifts_start(self):
-        today_min, _ = _cal_time_bounds(day_offset=0, days=1, timezone="UTC")
-        tomorrow_min, _ = _cal_time_bounds(day_offset=1, days=1, timezone="UTC")
+        today_min, _ = _cal_time_bounds(day_offset=0, days=1)
+        tomorrow_min, _ = _cal_time_bounds(day_offset=1, days=1)
         assert today_min < tomorrow_min
 
-    def test_invalid_timezone_falls_back_to_utc(self):
-        time_min, time_max = _cal_time_bounds(timezone="Not/A/Zone")
-        assert "+00:00" in time_min
+    def test_boundaries_are_midnight_in_the_display_timezone(self, monkeypatch):
+        """"Today" starts at the reader's midnight, not UTC's."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
 
+        monkeypatch.setenv("TS4K_TIMEZONE", "America/New_York")
+        time_min, time_max = _cal_time_bounds(day_offset=0, days=1)
 
-class TestGetCalTimezone:
-    def test_returns_configured_tz(self, mock_sources):
-        tz = _get_cal_timezone(None)
-        assert tz == "UTC"
+        # Expressed in UTC on the wire...
+        assert time_min.endswith("+00:00")
+        # ...but midnight-to-midnight for a New York reader.
+        ny = ZoneInfo("America/New_York")
+        local_min = datetime.fromisoformat(time_min).astimezone(ny)
+        local_max = datetime.fromisoformat(time_max).astimezone(ny)
+        assert (local_min.hour, local_min.minute) == (0, 0)
+        assert (local_max.hour, local_max.minute) == (0, 0)
+        assert (local_max.date() - local_min.date()).days == 1
 
-    def test_returns_utc_when_no_gcal_sources(self, tmp_path, monkeypatch):
-        sources_file = tmp_path / "sources.json"
-        sources_file.write_text('{"g": {"provider": "gmail", "email": "x@y.com"}}')
-        monkeypatch.setattr(sources, "_CONFIG_DIR", tmp_path)
-        monkeypatch.setattr(sources, "_SOURCES_FILE", sources_file)
-        tz = _get_cal_timezone(None)
-        assert tz == "UTC"
-
-    def test_returns_specific_source_tz(self, tmp_path, monkeypatch):
-        sources_file = tmp_path / "sources.json"
-        sources_file.write_text(
-            '{"gc": {"provider": "gcal", "email": "a@b.com", "calendar_id": "primary", '
-            '"timezone": "Europe/Amsterdam"}, '
-            '"gc2": {"provider": "gcal", "email": "a@b.com", "calendar_id": "work", '
-            '"timezone": "America/New_York"}}'
-        )
-        monkeypatch.setattr(sources, "_CONFIG_DIR", tmp_path)
-        monkeypatch.setattr(sources, "_SOURCES_FILE", sources_file)
-        tz = _get_cal_timezone("gc2")
-        assert tz == "America/New_York"
+    def test_display_timezone_falls_back_to_utc_for_unknown_zone(self, monkeypatch):
+        monkeypatch.setenv("TS4K_TIMEZONE", "Not/A/Zone")
+        time_min, _ = _cal_time_bounds()
+        assert "T00:00:00+00:00" in time_min
 
 
 class TestCalToday:
@@ -179,10 +178,12 @@ class TestCalWeek:
 
             await cal_week(source=None, fmt="pipe")
 
-        # Verify the time_min is a Monday (weekday 0) at midnight
+        # Verify the time_min is a Monday (weekday 0) at midnight, read back
+        # in the display timezone the boundary was computed in
         from datetime import datetime
+        from zoneinfo import ZoneInfo
         time_min = captured_args.get("time_min", "")
-        dt = datetime.fromisoformat(time_min)
+        dt = datetime.fromisoformat(time_min).astimezone(ZoneInfo("Europe/Amsterdam"))
         assert dt.weekday() == 0, f"Expected Monday (0), got {dt.weekday()}"
         assert dt.hour == 0 and dt.minute == 0
 
@@ -628,11 +629,46 @@ class TestCalEventO365:
         assert "O365 Review" in result
 
 
-class TestGetCalTimezoneO365:
-    def test_returns_o365cal_tz(self, mock_o365cal_sources):
-        tz = _get_cal_timezone(None)
-        assert tz == "UTC"
+class TestDisplayTimezoneIsGlobal:
+    """One display timezone per render, whatever the sources are configured as."""
 
-    def test_returns_specific_o365cal_tz(self, mock_mixed_sources):
-        tz = _get_cal_timezone("oc")
-        assert tz == "Europe/Amsterdam"
+    @pytest.mark.asyncio
+    async def test_mixed_zone_sources_render_in_one_zone(self, mock_mixed_sources, monkeypatch):
+        monkeypatch.setenv("TS4K_TIMEZONE", "America/New_York")
+        # Both events are 14:00 UTC = 10:00 in New York, whatever the
+        # per-source "timezone" config says (UTC and Europe/Amsterdam here).
+        gcal_events = [
+            {"id": "gc:e1", "source": "gc", "title": "Google Event",
+             "start": "2026-03-11T14:00:00+00:00", "end": "2026-03-11T15:00:00+00:00",
+             "all_day": False, "duration_minutes": 60, "location": "",
+             "attendees_summary": "", "status": "confirmed",
+             "your_status": None, "recurring_event_id": None},
+        ]
+        o365_events = [
+            {"id": "oc:e2", "source": "oc", "title": "Outlook Event",
+             "start": "2026-03-11T14:00:00+00:00", "end": "2026-03-11T15:00:00+00:00",
+             "all_day": False, "duration_minutes": 60, "location": "",
+             "attendees_summary": "", "status": "confirmed",
+             "your_status": None, "recurring_event_id": None},
+        ]
+
+        call_count = [0]
+
+        async def mock_list_events(**kwargs):
+            call_count[0] += 1
+            return gcal_events if call_count[0] == 1 else o365_events
+
+        with patch("ts4k.commands.GcalAdapter") as MockGcal, \
+             patch("ts4k.commands.O365CalAdapter") as MockO365:
+            for MockCls in (MockGcal, MockO365):
+                inst = AsyncMock()
+                inst.list_events = AsyncMock(side_effect=mock_list_events)
+                inst.__aenter__ = AsyncMock(return_value=inst)
+                inst.__aexit__ = AsyncMock(return_value=False)
+                MockCls.return_value = inst
+
+            result = await cal_today(source=None, fmt="pipe")
+
+        rows = [ln for ln in result.output.splitlines() if not ln.startswith("REF|")]
+        assert len(rows) == 2
+        assert all("10:00-11:00" in row for row in rows), result.output

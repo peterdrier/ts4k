@@ -13,6 +13,7 @@ import httpx
 
 from ts4k.adapters.base import BaseAdapter
 from ts4k.core.levels import AccessLevel, check_level, parse_level, scopes_for
+from ts4k.core.tz import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -230,12 +231,15 @@ class O365CalAdapter(BaseAdapter):
         end_raw = event.get("end", {})
 
         if all_day:
+            # All-day events are dates, not instants — never converted.
             start = start_raw.get("dateTime", "").split("T")[0]
             end = end_raw.get("dateTime", "").split("T")[0]
             duration_minutes = None
         else:
-            start = start_raw.get("dateTime", "")
-            end = end_raw.get("dateTime", "")
+            # Graph puts the zone in a sibling field, not in the dateTime
+            # string; stored in UTC, rendered by the format layer.
+            start = to_utc_iso(start_raw.get("dateTime", ""), start_raw.get("timeZone", "UTC"))
+            end = to_utc_iso(end_raw.get("dateTime", ""), end_raw.get("timeZone", "UTC"))
             duration_minutes = self._compute_duration(start, end)
 
         your_status_raw = event.get("responseStatus", {}).get("response", "")

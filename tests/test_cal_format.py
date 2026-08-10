@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def fixed_display_tz(monkeypatch):
+    """Pin the display timezone so tests never depend on the host's zone.
+
+    Events below carry Amsterdam wall-clock times (+01:00 in March), so
+    rendering in Europe/Amsterdam leaves the printed clock unchanged.
+    """
+    monkeypatch.setenv("TS4K_TIMEZONE", "Europe/Amsterdam")
+
 
 
 class TestFormatEventsPipe:

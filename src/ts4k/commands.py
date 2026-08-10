@@ -41,10 +41,13 @@ from ts4k.core.format import (
     format_thread_listing,
 )
 from ts4k.core.normalize import normalize, normalize_headers
+from ts4k.core.tz import display_tzinfo
 from ts4k.state import batch, cache, contacts, filters, media, meters, sources, stats
 from ts4k.state.refs import RefTable
 
 if TYPE_CHECKING:
+    from datetime import tzinfo
+
     from ts4k.auth.health import TokenHealth
 
 logger = logging.getLogger("ts4k")
@@ -2845,87 +2848,68 @@ async def _cal_fetch_events(
     if source and attempted and len(errors) == attempted:
         raise RuntimeError("; ".join(errors))
 
-    # Sort by start time
+    # Sort by start time.  Every adapter stores timed starts in UTC, so this
+    # cheap string sort is chronological even across sources in different
+    # zones; all-day dates (no "T") sort ahead of that day's timed events.
     all_events.sort(key=lambda e: e.get("start", ""))
     return all_events[:count]
 
 
-def _cal_time_bounds(day_offset: int = 0, days: int = 1, timezone: str = "UTC") -> tuple[str, str]:
-    """Compute time_min and time_max for calendar queries."""
-    import zoneinfo
+def _cal_time_bounds(
+    day_offset: int = 0, days: int = 1, tz: "tzinfo | None" = None,
+) -> tuple[str, str]:
+    """Compute time_min and time_max (UTC ISO) for calendar queries.
 
-    try:
-        tzinfo = zoneinfo.ZoneInfo(timezone)
-    except Exception:
-        from datetime import timezone as _tz
-        tzinfo = _tz.utc
-
-    now = datetime.now(tzinfo)
+    Day boundaries are the reader's midnights — computed in the display
+    timezone, then expressed in UTC like every other timestamp ts4k moves.
+    """
+    zone = tz or display_tzinfo()
+    now = datetime.now(zone)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
     end = start + timedelta(days=days)
-    return start.isoformat(), end.isoformat()
-
-
-def _get_cal_timezone(source: str | None) -> str:
-    """Get timezone from calendar sources config."""
-    from ts4k.state import sources as src_mod
-
-    all_sources = src_mod.list_all()
-    wanted = set(_resolve_prefixes(source)) if source else None
-    for pfx, cfg in all_sources.items():
-        if cfg.get("provider") not in _CAL_PROVIDERS:
-            continue
-        if wanted is not None and pfx not in wanted:
-            continue
-        return cfg.get("timezone", "UTC")
-    return "UTC"
+    return (
+        start.astimezone(timezone.utc).isoformat(),
+        end.astimezone(timezone.utc).isoformat(),
+    )
 
 
 async def cal_today(source: str | None, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
     """Today's calendar events."""
-    tz = _get_cal_timezone(source)
-    time_min, time_max = _cal_time_bounds(day_offset=0, days=1, timezone=tz)
+    tz = display_tzinfo()
+    time_min, time_max = _cal_time_bounds(day_offset=0, days=1, tz=tz)
     events = await _cal_fetch_events(source, time_min, time_max)
-    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
 
 async def cal_tomorrow(source: str | None, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
     """Tomorrow's calendar events."""
-    tz = _get_cal_timezone(source)
-    time_min, time_max = _cal_time_bounds(day_offset=1, days=1, timezone=tz)
+    tz = display_tzinfo()
+    time_min, time_max = _cal_time_bounds(day_offset=1, days=1, tz=tz)
     events = await _cal_fetch_events(source, time_min, time_max)
-    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
 
 async def cal_week(source: str | None, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
     """This week's calendar events (Mon-Sun)."""
-    tz = _get_cal_timezone(source)
+    tz = display_tzinfo()
     # Compute actual Monday-Sunday range for current week
-    import zoneinfo
-    try:
-        tzinfo = zoneinfo.ZoneInfo(tz)
-    except Exception:
-        from datetime import timezone as _tz
-        tzinfo = _tz.utc
-    now = datetime.now(tzinfo)
-    monday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
-    sunday_end = monday + timedelta(days=7)
-    time_min, time_max = monday.isoformat(), sunday_end.isoformat()
+    now = datetime.now(tz)
+    time_min, time_max = _cal_time_bounds(day_offset=-now.weekday(), days=7, tz=tz)
     events = await _cal_fetch_events(source, time_min, time_max)
-    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
 
 async def cal_next(source: str | None, count: int, fmt: str, ref_table: RefTable | None = None) -> CommandResult:
     """Next N events from now, any timeframe."""
-    tz = _get_cal_timezone(source)
+    tz = display_tzinfo()
     # Look ahead 365 days max, collapse recurring
-    time_min, _ = _cal_time_bounds(day_offset=0, days=1, timezone=tz)
-    _, time_max = _cal_time_bounds(day_offset=0, days=365, timezone=tz)
+    time_min, _ = _cal_time_bounds(day_offset=0, days=1, tz=tz)
+    _, time_max = _cal_time_bounds(day_offset=0, days=365, tz=tz)
     events = await _cal_fetch_events(source, time_min, time_max, count=count)
-    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=True)
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=True, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
 
@@ -2934,19 +2918,18 @@ async def cal_range(
     ref_table: RefTable | None = None,
 ) -> CommandResult:
     """Events in an arbitrary date range."""
-    import zoneinfo
-
-    tz_name = _get_cal_timezone(source)
-    try:
-        tzinfo = zoneinfo.ZoneInfo(tz_name)
-    except Exception:
-        tzinfo = timezone.utc
-
-    start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=tzinfo)
-    end = datetime.strptime(to_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=tzinfo)
+    tz = display_tzinfo()
+    start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=tz)
+    end = datetime.strptime(to_date, "%Y-%m-%d").replace(
+        hour=23, minute=59, second=59, tzinfo=tz,
+    )
     collapse = (end - start).days > 7
-    events = await _cal_fetch_events(source, start.isoformat(), end.isoformat())
-    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=collapse)
+    events = await _cal_fetch_events(
+        source,
+        start.astimezone(timezone.utc).isoformat(),
+        end.astimezone(timezone.utc).isoformat(),
+    )
+    output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=collapse, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
 
@@ -2979,7 +2962,7 @@ async def cal_event(
         event = await adapter.read_event(event_id)
 
     ref_num = int(ref_or_id) if ref_or_id.isdigit() else 0
-    return format_event_detail(event, ref=ref_num, fmt=fmt)
+    return format_event_detail(event, ref=ref_num, fmt=fmt, tz=display_tzinfo())
 
 
 async def cal_list_calendars(email: str, config_dir: Path | None = None) -> list[dict]:

@@ -436,6 +436,25 @@ The skill mode returns minimal output optimized for LLM context windows.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TS4K_CONFIG_DIR` | `~/.config/ts4k` | Override config/state directory |
+| `TS4K_TIMEZONE` | the machine's zone | Display timezone for calendar times (IANA name) |
+
+### Display timezone
+
+Calendar events are stored and compared in UTC, and converted to a **single
+display timezone** when rendered — one zone for the whole agenda, so a listing
+merged from calendars in different zones does not mix offsets. Event times and
+the `today` / `tomorrow` / `week` day boundaries all follow it.
+
+Resolution order: `TS4K_TIMEZONE`, then `"timezone"` in
+`~/.config/ts4k/settings.json`, then the machine's own zone.
+
+```json
+{
+  "timezone": "Europe/Amsterdam"
+}
+```
+
+All-day events are dates rather than instants, so they are never shifted.
 
 ---
 

@@ -11,6 +11,7 @@ from typing import Any
 
 from ts4k.adapters.base import BaseAdapter
 from ts4k.core.levels import AccessLevel, check_level, parse_level, scopes_for
+from ts4k.core.tz import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -194,12 +195,14 @@ class GcalAdapter(BaseAdapter):
         all_day = "date" in start_raw and "dateTime" not in start_raw
 
         if all_day:
+            # All-day events are dates, not instants — never converted.
             start = start_raw["date"]
             end = end_raw.get("date", start)
             duration_minutes = None
         else:
-            start = start_raw.get("dateTime", "")
-            end = end_raw.get("dateTime", "")
+            # Stored in UTC; the format layer renders the display timezone.
+            start = to_utc_iso(start_raw.get("dateTime", ""), self._config.timezone)
+            end = to_utc_iso(end_raw.get("dateTime", ""), self._config.timezone)
             duration_minutes = self._compute_duration(start, end)
 
         # Attendees
