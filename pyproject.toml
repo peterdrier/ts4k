@@ -38,6 +38,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "anthropic>=0.40",
+    "ruff>=0.16",
 ]
 
 [project.scripts]
@@ -46,6 +47,15 @@ ts4k-mcp = "ts4k.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ts4k"]
+
+[tool.ruff.lint]
+# Pyflakes only. These are the checks with an unambiguous right answer —
+# unused imports and variables, undefined names — and they are the ones that
+# actually cost time here: a stale import removed on main breaks any in-flight
+# branch whose tests still need it, which is how #60 and #63 both broke.
+# Style rules (E402 late imports, E741 short names) are deliberate in this
+# codebase and are not enabled; add them only with the cleanup to match.
+select = ["F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
