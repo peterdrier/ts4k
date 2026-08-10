@@ -144,15 +144,15 @@ class TestByteBudgets:
         """Skill self-doc rides in every call; guard its size without an API key."""
         from ts4k.commands import skill_reference
 
-        basic = len(skill_reference("basic"))  # 2874 bytes at time of writing
-        more = len(skill_reference("more"))  # 1197 bytes at time of writing
+        basic = len(skill_reference("basic").encode("utf-8"))  # 2884 bytes at time of writing
+        more = len(skill_reference("more").encode("utf-8"))  # 1197 bytes at time of writing
 
         assert basic < 3300, f"Tier 1 skill ref is {basic} bytes (budget: 3300)"
         assert more < 1400, f"Tier 2 skill ref is {more} bytes (budget: 1400)"
 
     def test_mcp_schema_bytes(self):
         """Serialized MCP tool schemas — proxy for the per-call tool context."""
-        payload = len(json.dumps(_get_tool_schemas()))  # 12872 bytes at time of writing
+        payload = len(json.dumps(_get_tool_schemas()).encode("utf-8"))  # 12872 bytes at time of writing
 
         assert payload < 14800, f"MCP tool schemas are {payload} bytes (budget: 14800)"
 
