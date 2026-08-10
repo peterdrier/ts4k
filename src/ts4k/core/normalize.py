@@ -51,7 +51,7 @@ def normalize(html: str, mode: str = "compact") -> str:
         _remove_tracking_pixels(soup)
 
         # Remove style and script elements entirely
-        for tag in soup.find_all(_HEAD_ELEMENTS):
+        for tag in soup.find_all(["style", "script", "head"]):
             tag.decompose()
 
         # Remove hidden elements (display:none, visibility:hidden, etc.)
@@ -117,8 +117,6 @@ def normalize_headers(raw_headers: dict) -> dict:
 # HTML detection
 # ---------------------------------------------------------------------------
 
-_HEAD_ELEMENTS = ("style", "script", "head")
-
 _HTML_TAG_PATTERN = re.compile(
     r"<(?:html|head|body|div|span|p|br|table|tr|td|th|a\s|img\s|"
     r"h[1-6]|ul|ol|li|strong|em|b|i|style|script|meta|link|footer|header|"
@@ -139,10 +137,6 @@ def _looks_like_html(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # HTML preprocessing (BeautifulSoup phase)
 # ---------------------------------------------------------------------------
-
-_STYLE_WIDTH_TINY = re.compile(r"width\s*:\s*[01]px", re.IGNORECASE)
-_STYLE_HEIGHT_TINY = re.compile(r"height\s*:\s*[01]px", re.IGNORECASE)
-_STYLE_DISPLAY_NONE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
 
 _STYLE_TINY_PATTERN = re.compile(
     r"(?:width|height)\s*:\s*[01]px|display\s*:\s*none", re.IGNORECASE
@@ -191,7 +185,6 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
             img.decompose()
 
 
-_STYLE_VISIBILITY_HIDDEN = re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)
 _STYLE_ZERO_SIZE = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
 
 _STYLE_HIDDEN_PATTERN = re.compile(
@@ -219,8 +212,6 @@ _UNSUB_PATTERNS_HTML = re.compile(
     r"|stop\s+receiving\s+these\s+emails",
     re.IGNORECASE,
 )
-
-_UNSUB_ELEMENTS = ("div", "p", "table", "tr", "td", "center", "footer")
 
 def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     """Remove unsubscribe / email preference sections from HTML before text conversion.
@@ -253,7 +244,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     # Remove footer-like elements containing unsubscribe language.
     # Collect first, then decompose.
     unsub_elements = []
-    for el in soup.find_all(_UNSUB_ELEMENTS):
+    for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
         if _UNSUB_PATTERNS_HTML.search(el_text) and len(el_text) < 1000:
             unsub_elements.append(el)
@@ -279,10 +270,6 @@ def _cell_rowspan(cell) -> int:
     except (ValueError, TypeError):
         return 1
 
-
-_CELL_ELEMENTS = ("th", "td")
-_LAYOUT_ELEMENTS = ("thead", "tbody", "tr", "th", "td")
-_TABLE_BODY_ELEMENTS = ("thead", "tbody")
 
 def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     """Convert HTML tables to pipe-delimited text.
@@ -315,7 +302,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
 
         for row in rows:
             cells = [
-                c for c in row.find_all(_CELL_ELEMENTS) if c.find_parent("table") is table
+                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
             ]
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
@@ -334,7 +321,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 # and inline markup survive for html2text
                 own = [
                     t
-                    for t in table.find_all(_LAYOUT_ELEMENTS)
+                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
                     if t.find_parent("table") is table
                 ]
                 # Unwrapping td/tr drops the tag boundaries that kept
@@ -363,7 +350,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             lines = []
             for row in rows:
                 cells = [
-                    c for c in row.find_all(_CELL_ELEMENTS) if c.find_parent("table") is table
+                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
                 ]
                 cell_texts = [c.get_text("\n", strip=True) for c in cells]
                 if any(cell_texts):
@@ -381,7 +368,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             def _own_cells(row):
                 return [
                     c
-                    for c in row.find_all(_CELL_ELEMENTS)
+                    for c in row.find_all(["th", "td"])
                     if c.find_parent("table") is table
                 ]
 
@@ -461,7 +448,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 row.name = "div"
             for t in [
                 t
-                for t in table.find_all(_TABLE_BODY_ELEMENTS)
+                for t in table.find_all(["thead", "tbody"])
                 if t.find_parent("table") is table
             ]:
                 t.unwrap()
