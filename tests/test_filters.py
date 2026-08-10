@@ -225,6 +225,62 @@ class TestSkipPatterns:
         assert len(apply_filters(msgs, config)) == 0
 
 
+class TestSkipCategories:
+    """Adapter-assigned categories (GitHub: ci, review, dependabot, ...)."""
+
+    def _gh(self, category: str) -> dict:
+        return {
+            "id": f"gh:{category}",
+            "from": "peterdrier/ts4k",
+            "subject": f"[{category}] something happened",
+            "date": "2026-08-09T14:30:00Z",
+            "category": category,
+        }
+
+    def test_skips_matching_category(self):
+        config = {"skip_categories": ["ci"]}
+        msgs = [self._gh("ci"), self._gh("review")]
+        result = apply_filters(msgs, config)
+        assert [m["category"] for m in result] == ["review"]
+
+    def test_ci_suppression_keeps_reviews_and_mentions(self):
+        config = {"skip_categories": ["ci", "dependabot"]}
+        msgs = [
+            self._gh("ci"),
+            self._gh("dependabot"),
+            self._gh("review"),
+            self._gh("mention"),
+            self._gh("assignment"),
+        ]
+        result = apply_filters(msgs, config)
+        assert [m["category"] for m in result] == ["review", "mention", "assignment"]
+
+    def test_case_insensitive(self):
+        assert apply_filters([self._gh("ci")], {"skip_categories": ["CI"]}) == []
+
+    def test_messages_without_a_category_are_kept(self):
+        config = {"skip_categories": ["ci"]}
+        msgs = [_msg(sender="alice@example.com")]
+        assert len(apply_filters(msgs, config)) == 1
+
+    def test_empty_skip_list_keeps_all(self):
+        assert len(apply_filters([self._gh("ci")], {"skip_categories": []})) == 1
+
+    def test_config_roundtrip(self):
+        assert filters.get_config()["skip_categories"] == []
+        filters.add_category("CI")
+        assert filters.get_config()["skip_categories"] == ["ci"]
+        filters.add_category("ci")
+        assert filters.get_config()["skip_categories"] == ["ci"]
+        filters.remove_category("ci")
+        assert filters.get_config()["skip_categories"] == []
+
+    def test_applies_through_the_real_config(self):
+        filters.add_category("ci")
+        result = apply_filters([self._gh("ci"), self._gh("review")], filters.get_config())
+        assert [m["category"] for m in result] == ["review"]
+
+
 class TestCombinedFilters:
     def test_any_rule_skips(self):
         """A message is skipped if ANY rule matches."""
