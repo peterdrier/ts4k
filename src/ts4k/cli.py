@@ -32,6 +32,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ts4k import commands, state
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
@@ -367,11 +368,12 @@ def _ensure_apple_password(
     poisoning a CalDAV source that later reuses the same email.
 
     ``credential_key`` overrides the credential file's directory name
-    (default: *email*).  Generic CardDAV setups pass a host-scoped key
-    (``<email>#carddav#<host>``) so they neither silently reuse a CalDAV
-    credential for the same email — which may be a different password for
-    a different service — nor collide with another generic CardDAV server
-    that happens to share the same email.
+    (default: *email*).  Generic CardDAV setups pass an endpoint-scoped key
+    (``<email>#carddav#<hash>``, see ``carddav_credential_key``) so they
+    neither silently reuse a CalDAV credential for the same email — which
+    may be a different password for a different service — nor collide
+    with another generic CardDAV server that happens to share the same
+    email.
     """
     from ts4k.auth.caldav import ICLOUD_CALDAV_URL, load_credentials, save_credentials
 
@@ -546,6 +548,11 @@ def _cmd_sources(args: argparse.Namespace) -> None:
                 print(f"Usage: ts4k src add {prefix} apple-contacts email=you@icloud.com")
                 return
             kwargs.setdefault("server_url", ICLOUD_CARDDAV_URL)
+            if urlsplit(kwargs["server_url"]).scheme != "https":
+                print(f"Error: {kwargs['server_url']} is not HTTPS — CardDAV requires "
+                      f"HTTPS, since credentials would otherwise be sent in cleartext. "
+                      f"Use an https:// URL for server_url.")
+                return
 
             from ts4k.adapters.carddav import carddav_credential_key
             is_icloud_contacts = is_icloud_carddav_url(kwargs["server_url"])

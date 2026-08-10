@@ -116,7 +116,8 @@ class TestConnect:
 
     async def test_generic_server_uses_its_own_scoped_credential(self, tmp_path: Path):
         save_credentials(
-            "test@fastmail.com#carddav#carddav.fastmail.com", username="test@fastmail.com",
+            carddav_credential_key("test@fastmail.com", "https://carddav.fastmail.com/"),
+            username="test@fastmail.com",
             app_password="carddav-pw", server_url="",
             config_dir=tmp_path,
         )
@@ -180,7 +181,9 @@ class TestCredentialKey:
 
     def test_generic_server_key_is_scoped_by_email_and_host(self):
         key = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
-        assert key == "me@fastmail.com#carddav#carddav.fastmail.com"
+        assert key.startswith("me@fastmail.com#carddav#")
+        # The host/path portion is now a hash, not a readable hostname.
+        assert key != "me@fastmail.com#carddav#carddav.fastmail.com"
 
     def test_same_email_different_hosts_get_distinct_keys(self):
         """Two generic CardDAV sources sharing an email but pointed at
@@ -744,6 +747,15 @@ class TestIcloudUrlPorts:
 
 
 class TestCredentialKeyPaths:
+    def test_slash_vs_colon_in_path_get_distinct_keys(self):
+        """A prior version built the key by replacing both '/' and ':'
+        with '#', so paths '/a/b' and '/a:b' collapsed to the same
+        string and collided on one credential file — the second source
+        would silently authenticate with the first source's password."""
+        a = carddav_credential_key("me@x.com", "https://cloud.example.com/a/b")
+        b = carddav_credential_key("me@x.com", "https://cloud.example.com/a:b")
+        assert a != b
+
     def test_same_origin_different_paths_get_distinct_keys(self):
         """Two services under different paths on one origin (e.g. separate
         Nextcloud instances) must not share a credential file."""
@@ -752,8 +764,9 @@ class TestCredentialKeyPaths:
         assert a != b
         assert "/" not in a and ":" not in a.split("#", 1)[1]
 
-    def test_root_path_key_is_unchanged(self):
-        assert (
-            carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
-            == "me@fastmail.com#carddav#carddav.fastmail.com"
-        )
+    def test_root_path_key_is_deterministic(self):
+        """Same email/endpoint must hash to the same key every call, or a
+        source would be re-prompted for a password on every use."""
+        key_a = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
+        key_b = carddav_credential_key("me@fastmail.com", "https://carddav.fastmail.com/")
+        assert key_a == key_b
