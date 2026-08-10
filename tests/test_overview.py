@@ -43,7 +43,8 @@ def seeded_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(cache_mod, "_BODIES_DIR", tmp_path / "cache" / "bodies")
 
     for h in SAMPLE_HEADERS:
-        cache_mod.store_header(h["id"], h)
+        provider = "gmail" if h["source"] == "g" else "o365"
+        cache_mod.store_header(h["id"], h, provider=provider)
 
     return cache_mod
 
