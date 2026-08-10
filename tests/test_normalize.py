@@ -874,6 +874,79 @@ class TestReadableMode:
             for line in result.split("\n")
         )
 
+    def test_readable_rowspan_in_data_row_degrades_to_pipe_rows(self):
+        """A clean header row followed by a rowspan cell in the DATA rows
+        must not reach html2text unexpanded — the rowspan cell would span
+        two data rows and shift the second row's cells under the wrong
+        headers. Degrade to pipe rows instead, same as the
+        rowspan-in-header case above."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="2">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        for text in ("Item", "Q1", "Widget", "$100", "$90"):
+            assert text in result
+        assert "Widget | $100 | $150" in result
+        assert not any(
+            set(line.strip()) <= set("-|: ") and "-" in line
+            for line in result.split("\n")
+        )
+
+    def test_readable_rowspan_zero_in_data_row_degrades_to_pipe_rows(self):
+        """rowspan="0" means "span all remaining rows in the row group" —
+        it must be treated as spanning just like rowspan > 1, not missed
+        by a bare > 1 check."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="0">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        for text in ("Item", "Q1", "Widget", "$100", "$90"):
+            assert text in result
+        assert "Widget | $100 | $150" in result
+        assert not any(
+            set(line.strip()) <= set("-|: ") and "-" in line
+            for line in result.split("\n")
+        )
+
+    def test_readable_rowspan_degrade_keeps_column_positions(self):
+        """Degrading to pipe rows must not let a later row's first cell
+        slide under the spanned column's header — an empty field marks
+        the column the rowspan still occupies."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="2">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Widget | $100 | $150" in result
+        # $90 belongs to Q1, so an empty Item field must precede it.
+        assert "| $90 | $120" in result
+        assert "\n$90 | $120" not in result
+
+    def test_readable_rowspan_degrade_resumes_after_the_span_ends(self):
+        """Once a rowspan is exhausted the column is free again, so no
+        stray blank field may be emitted for it."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="2">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+            <tr><td>Gadget</td><td>$70</td><td>$80</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Gadget | $70 | $80" in result
+
     def test_readable_strips_emphasized_signature_with_outside_punctuation(self):
         """Punctuation outside the emphasis — <strong>Thanks</strong>, —
         yields "**Thanks**," whose trailing markers sit before the comma;
@@ -989,6 +1062,23 @@ class TestReadableMode:
             "<strong>Sent:</strong> Monday, February 19, 2026 10:00 AM<br>"
             "<strong>To:</strong> Bob Jones<br>"
             "<strong>Subject:</strong> Meeting Tomorrow</p>"
+            "<p>Bob, can you prepare the slides?</p>"
+        )
+        result = normalize(html, mode="readable")
+        assert "Thanks, will do." in result
+        assert "can you prepare the slides?" not in result
+
+    def test_readable_outlook_header_split_across_paragraphs(self):
+        """Outlook sometimes renders each header field as its own <p> —
+        readable mode's own paragraph spacing then inserts blank lines
+        between them, which the reply-header pattern must still detect
+        (a regression introduced by readable mode's spacing itself)."""
+        html = (
+            "<p>Thanks, will do.</p>"
+            "<p><strong>From:</strong> Alice Smith</p>"
+            "<p><strong>Sent:</strong> Monday, February 19, 2026 10:00 AM</p>"
+            "<p><strong>To:</strong> Bob Jones</p>"
+            "<p><strong>Subject:</strong> Meeting Tomorrow</p>"
             "<p>Bob, can you prepare the slides?</p>"
         )
         result = normalize(html, mode="readable")

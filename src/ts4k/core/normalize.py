@@ -406,8 +406,11 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     span[0] -= 1
                 active_spans = [s for s in active_spans if s[0] > 0]
                 for c in r_cells:
-                    if _cell_rowspan(c) > 1:
-                        active_spans.append([_cell_rowspan(c) - 1, _cell_colspan(c)])
+                    # rowspan="0" spans every remaining row in the group.
+                    rs = _cell_rowspan(c)
+                    if rs != 1:
+                        carry = len(rows) if rs == 0 else rs - 1
+                        active_spans.append([carry, _cell_colspan(c)])
             if header_row is None and promoted_candidate is not None and not has_any_th:
                 # Promotion is only right when the table has no real header
                 # anywhere — if <th> labels exist but none qualifies (e.g.
@@ -416,6 +419,27 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 for cell in _own_cells(promoted_candidate):
                     cell.name = "th"
                 header_row = promoted_candidate
+            if header_row is not None:
+                # The search above stops the moment it finds a qualifying
+                # header row, so rowspans carried by rows AFTER the header
+                # are never inspected. A clean header followed by a data
+                # row that spans multiple rows would otherwise reach
+                # html2text unexpanded, shifting cells under the wrong
+                # headers. Degrade instead of expanding — same outcome as
+                # the no-clean-header case below.
+                after_header = False
+                has_data_rowspan = False
+                for row in rows:
+                    if row is header_row:
+                        after_header = True
+                        continue
+                    if after_header and any(
+                        _cell_rowspan(c) != 1 for c in _own_cells(row)
+                    ):
+                        has_data_rowspan = True
+                        break
+                if has_data_rowspan:
+                    header_row = None
             if header_row is not None:
                 # html2text only emits the two-sided "---|---" separator
                 # when the <th> row is the table's FIRST row; a title or
@@ -439,13 +463,54 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # so inline markup (links, emphasis) survives for html2text;
             # the compact table_data conversion would flatten it to bare
             # text and drop link destinations entirely.
+            # A cell that spans into later rows still occupies its column
+            # there, but those rows don't repeat it — so emit an empty
+            # field in its place. Without this the next row's first cell
+            # slides left, landing under the wrong header, which is the
+            # very shift this degrade path exists to avoid.
+            carried: list[list[int]] = []  # [remaining_rows, col, colspan]
             for row in rows:
+                occupied = {
+                    i for _, col, cs in carried for i in range(col, col + cs)
+                }
                 r_cells = _own_cells(row)
-                for c in r_cells[:-1]:
-                    c.insert_after(NavigableString(" | "))
+
+                # Walk the grid, assigning each own cell to the next free
+                # column and recording how many blanks precede it.
+                gaps: list[int] = []  # blanks before each own cell
+                col = 0
+                for c in r_cells:
+                    blanks = 0
+                    while col in occupied:
+                        blanks += 1
+                        col += 1
+                    gaps.append(blanks)
+                    span = _cell_colspan(c)
+                    rs = _cell_rowspan(c)
+                    if rs != 1:
+                        # Counted from this row, then decremented once at
+                        # the end of it, so the span starts biting on the
+                        # next row — which is the first that omits the cell.
+                        carried.append(
+                            [len(rows) if rs == 0 else rs, col, span]
+                        )
+                    # A colspan cell's own extra columns need no blank —
+                    # it already renders as one wide field.
+                    col += span
+
+                for i, c in enumerate(r_cells):
+                    lead = " | " * gaps[i]
+                    if lead:
+                        c.insert_before(NavigableString(lead))
+                    if i < len(r_cells) - 1:
+                        c.insert_after(NavigableString(" | "))
                 for c in r_cells:
                     c.unwrap()
                 row.name = "div"
+
+                for span in carried:
+                    span[0] -= 1
+                carried = [s for s in carried if s[0] > 0]
             for t in [
                 t
                 for t in table.find_all(["thead", "tbody"])
@@ -557,7 +622,11 @@ _REPLY_HEADER_PATTERN = re.compile(
     r"On\s+\d.*\bwrote:\s*|"
     r"On\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b.*\bwrote:\s*|"
     r"-{2,}\s*(?:Original|Forwarded)\s+[Mm]essage\s*-{2,}\s*|"
-    r"From:\s+.+\nSent:\s+.+\nTo:\s+.+\nSubject:\s+.+)$",
+    # \s* (not a bare \n) between fields tolerates the blank lines readable
+    # mode's paragraph spacing inserts when Outlook renders each field as
+    # its own <p> — otherwise the header goes undetected and the unquoted
+    # prior message leaks into the readable body.
+    r"From:\s+.+\n\s*Sent:\s+.+\n\s*To:\s+.+\n\s*Subject:\s+.+)$",
     re.MULTILINE | re.IGNORECASE,
 )
 
