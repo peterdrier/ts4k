@@ -23,6 +23,7 @@ from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
 from ts4k.adapters.o365cal import O365CalAdapter, O365CalAdapterConfig
 from ts4k.adapters.github import GitHubAdapter, GitHubAdapterConfig
 from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+from ts4k.adapters.http import HTTPAdapter, HTTPAdapterConfig
 from ts4k.adapters.o365 import O365Adapter, O365AdapterConfig
 from ts4k.adapters import wa_bridge_auth
 from ts4k.adapters.whatsapp import WhatsAppAdapter, WhatsAppAdapterConfig
@@ -40,7 +41,7 @@ from ts4k.core.format import (
     format_thread_listing,
 )
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.state import batch, cache, contacts, filters, media, sources, stats
+from ts4k.state import batch, cache, contacts, filters, media, meters, sources, stats
 from ts4k.state.refs import RefTable
 
 if TYPE_CHECKING:
@@ -87,7 +88,7 @@ _NON_MESSAGE_PROVIDERS = (*_CAL_PROVIDERS, "carddav")
 
 def _make_adapter(
     prefix: str, cfg: dict[str, Any]
-) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GitHubAdapter | GcalAdapter | O365CalAdapter | CaldavAdapter | None:
+) -> GmailAdapter | WhatsAppAdapter | O365Adapter | GitHubAdapter | HTTPAdapter | GcalAdapter | O365CalAdapter | CaldavAdapter | None:
     """Create an adapter instance from a source config entry."""
     provider = cfg.get("provider", "").lower()
 
@@ -159,6 +160,16 @@ def _make_adapter(
                 token_file=cfg.get("token_file"),
                 level=cfg.get("level"),
             ),
+            prefix=prefix,
+        )
+
+    if provider == "http":
+        url = cfg.get("url", "")
+        if not url:
+            logger.warning("HTTP source %r missing url", prefix)
+            return None
+        return HTTPAdapter(
+            HTTPAdapterConfig(url=url, header=cfg.get("header")),
             prefix=prefix,
         )
 
@@ -1132,7 +1143,7 @@ def get_status(
     total_msgs = st.get("total_messages", 0)
     pct = stats.savings_pct()
 
-    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "github": "GitHub", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV", "carddav": "CardDAV"}
+    _provider_labels = {"gmail": "Gmail", "whatsapp": "WhatsApp", "o365": "O365", "github": "GitHub", "http": "HTTP", "o365cal": "O365 Cal", "gcal": "GCal", "caldav": "CalDAV", "carddav": "CardDAV"}
 
     lines.append("")
     lines.append("Stats:")
@@ -2000,13 +2011,33 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
             sender = _resolve_sender(m.get("from", ""), m.get("source", ""), sibling_prefixes)
             sender_counts[sender] = sender_counts.get(sender, 0) + 1
         top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:top]
-        sources_list.append({
+        entry = {
             "prefix": src,
             "label": _SOURCE_LABELS.get(src, src),
             "count": len(msgs),
             "date_start": min(dates)[:7] if dates else "",
             "date_end": max(dates)[:7] if dates else "",
             "top_senders": [{"name": n, "count": c} for n, c in top_senders[:5]],
+        }
+        src_meters = meters.get_meters(src)
+        if src_meters:
+            entry["meters"] = src_meters
+        sources_list.append(entry)
+
+    # Sources with a live meter snapshot (#31) but no cached messages — HTTP
+    # notification sources poll live and aren't written to the message
+    # cache (like WhatsApp), so they'd otherwise be invisible here.
+    for src, src_meters in sorted(meters.all_meters().items()):
+        if src in by_source or not src_meters:
+            continue
+        sources_list.append({
+            "prefix": src,
+            "label": _SOURCE_LABELS.get(src, src),
+            "count": 0,
+            "date_start": "",
+            "date_end": "",
+            "top_senders": [],
+            "meters": src_meters,
         })
 
     return {
@@ -2622,6 +2653,10 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    2. ts4k list --source w --since 2d          (verify)")
     lines.append("    Rollback to the Python stdio server:")
     lines.append('       ts4k src add w whatsapp transport=stdio mcp_cwd=/path/to/whatsapp-mcp-server server_command="uv run python main.py"')
+    lines.append("  HTTP notifications (any JSON endpoint returning {notifications, meters}):")
+    lines.append('    1. ts4k src add h http url=<url> header="X-Api-Key: <key>"')
+    lines.append("       (repeat header= or comma-separate for multiple auth headers)")
+    lines.append("    2. ts4k list --source h                     (verify)")
 
 
 def _append_errors(lines: list[str]) -> None:

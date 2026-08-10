@@ -1200,6 +1200,9 @@ def _overview_pipe(data: dict) -> str:
                 f"{src['prefix']}|{src['label']}|{src['count']} msgs"
                 f"|{date_range}|top: {top}"
             )
+            for m in src.get("meters", []):
+                link = f" ({m['link']})" if m.get("link") else ""
+                lines.append(f"  meter: {m.get('label', '')}={m.get('count', '')}{link}")
         lines.append("---")
         lines.append("Drill: ts4k overview --source <prefix> | ts4k overview --contact <name>")
 
@@ -1277,7 +1280,14 @@ def _overview_xml(data: dict) -> str:
             senders = " ".join(
                 f"{s['name']}({s['count']})" for s in src.get("top_senders", [])
             )
-            lines.append(f"<src{attrs} top={xml_quoteattr(senders)}/>")
+            meter_attrs = ""
+            src_meters = src.get("meters", [])
+            if src_meters:
+                meter_str = " ".join(
+                    f"{m.get('label', '')}({m.get('count', '')})" for m in src_meters
+                )
+                meter_attrs = f" meters={xml_quoteattr(meter_str)}"
+            lines.append(f"<src{attrs} top={xml_quoteattr(senders)}{meter_attrs}/>")
         lines.append("</overview>")
 
     elif level == "source":

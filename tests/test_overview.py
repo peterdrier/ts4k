@@ -50,6 +50,16 @@ def seeded_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def seeded_meters(tmp_path, monkeypatch):
+    """Isolate the meters state file (#31 HTTP notification sources)."""
+    import ts4k.state.meters as meters_mod
+
+    monkeypatch.setattr(meters_mod, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(meters_mod, "_METERS_FILE", tmp_path / "meters.json")
+    return meters_mod
+
+
+@pytest.fixture()
 def seeded_contacts(tmp_path, monkeypatch):
     """Set up contacts with an alice alias."""
     import ts4k.state.contacts as contacts_mod
@@ -196,6 +206,31 @@ class TestOverviewTopLevel:
 
 
 # ---------------------------------------------------------------------------
+# TestOverviewMeters (#31 — HTTP notification source meter snapshots)
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewMeters:
+    def test_meters_attach_to_a_cached_source(self, seeded_cache, seeded_meters):
+        seeded_meters.set_meters("g", [{"label": "Something", "count": 2}])
+        result = overview()
+        assert "meter: Something=2" in result
+
+    def test_meters_only_source_still_appears(self, seeded_cache, seeded_meters):
+        """An HTTP source has no cached messages (it polls live, like
+        WhatsApp) but should still show up for its live meter snapshot."""
+        seeded_meters.set_meters(
+            "h", [{"label": "Board votes needed", "count": 5, "link": "/OnboardingReview/BoardVoting"}]
+        )
+        result = overview()
+        assert "meter: Board votes needed=5 (/OnboardingReview/BoardVoting)" in result
+
+    def test_no_meters_no_output(self, seeded_cache):
+        result = overview()
+        assert "meter:" not in result
+
+
+# ---------------------------------------------------------------------------
 # TestOverviewSourceDrilldown
 # ---------------------------------------------------------------------------
 
@@ -317,6 +352,18 @@ class TestFormatOverview:
         assert "<overview" in result
         assert 'level="top"' in result
         assert "</overview>" in result
+
+    def test_pipe_top_with_meters(self):
+        data = self._top_data()
+        data["sources"][0]["meters"] = [{"label": "Board votes needed", "count": 5, "link": "/x"}]
+        result = format_overview(data, fmt="pipe")
+        assert "meter: Board votes needed=5 (/x)" in result
+
+    def test_xml_top_with_meters(self):
+        data = self._top_data()
+        data["sources"][0]["meters"] = [{"label": "Board votes needed", "count": 5}]
+        result = format_overview(data, fmt="xml")
+        assert 'meters="Board votes needed(5)"' in result
 
     def test_pipe_source(self):
         data = {
