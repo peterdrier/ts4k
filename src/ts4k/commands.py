@@ -1428,6 +1428,7 @@ async def preload(
         return f"Error: source {prefix!r} not found."
 
     provider = cfg.get("provider", "").lower()
+    cacheable = provider in cache.CACHEABLE_PROVIDERS
 
     # Contact auto-expand
     if contact:
@@ -1508,7 +1509,7 @@ async def preload(
                             continue
                         cb.store_header(msg_id, entry, provider=provider)
 
-                        if bodies:
+                        if bodies and cacheable:
                             try:
                                 msg = await adapter.read_message(msg_id)
                                 msg = _normalize_message(msg)
@@ -1518,7 +1519,8 @@ async def preload(
                             except Exception as exc:
                                 logger.warning("[%s] body fetch %s: %s", prefix, msg_id, exc)
 
-                        messages_cached += 1
+                        if cacheable:
+                            messages_cached += 1
 
                 pages_fetched += 1
 

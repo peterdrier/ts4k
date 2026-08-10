@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from ts4k import commands
-from ts4k.state import cache
+from ts4k.state import cache, sources
 
 
 # ---------------------------------------------------------------------------
@@ -422,3 +423,33 @@ class TestSkillReference:
         """It rides in every skill call — one line is the budget."""
         lines = [ln for ln in commands.skill_reference("basic").splitlines() if "[voice" in ln]
         assert len(lines) == 1, lines
+
+
+# ---------------------------------------------------------------------------
+# preload — body writes must respect provider cache gating (ts4k#64 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestPreloadBodyGating:
+    @pytest.mark.asyncio
+    async def test_bodies_not_cached_for_non_cacheable_provider(self, ts4k_config):
+        """preload --bodies against WhatsApp must not orphan a body file,
+        must not cache the header either, and must not claim the message
+        was cached — only gmail/o365 are cacheable (cache.CACHEABLE_PROVIDERS).
+        """
+        sources.add("w", provider="whatsapp")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.list_messages.return_value = [
+            {"id": "w:1", "source": "w", "from": "a@b.com", "subject": "hi"}
+        ]
+        mock_adapter.read_message.return_value = {
+            "id": "w:1", "source": "w", "body": "secret body text",
+        }
+
+        with patch("ts4k.commands._make_adapter", return_value=mock_adapter):
+            result = await commands.preload(source="w", bodies=True, pages=1, throttle=0)
+
+        assert "0 messages cached" in result
+        assert not (ts4k_config / "cache" / "bodies" / "w_1.json").exists()
+        assert cache.get_header("w:1") is None
