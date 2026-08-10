@@ -617,6 +617,9 @@ class TestPreloadBodyGating:
         """preload --bodies against WhatsApp must not orphan a body file,
         must not cache the header either, and must not claim the message
         was cached — only gmail/o365 are cacheable (cache.CACHEABLE_PROVIDERS).
+
+        ts4k#22 turned the silent no-op into an explicit rejection, which
+        is the stronger guarantee: it can't be mistaken for "nothing new".
         """
         sources.add("w", provider="whatsapp")
 
@@ -631,6 +634,7 @@ class TestPreloadBodyGating:
         with patch("ts4k.commands._make_adapter", return_value=mock_adapter):
             result = await commands.preload(source="w", bodies=True, pages=1, throttle=0)
 
-        assert "0 messages cached" in result
+        assert "doesn't support preload" in result
+        assert "0 messages cached" not in result
         assert not (ts4k_config / "cache" / "bodies" / "w_1.json").exists()
         assert cache.get_header("w:1") is None
