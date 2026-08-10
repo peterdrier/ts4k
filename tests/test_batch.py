@@ -59,8 +59,7 @@ class TestUpdateJob:
 
     def test_update_sets_updated_at(self):
         job_id = batch.create_job("g", "test")
-        original = batch.get_job(job_id)["updated_at"]
-        # Force a time change by sleeping briefly is unreliable,
+        # Forcing a time change by sleeping briefly is unreliable,
         # so just verify it's set
         batch.update_job(job_id, pages_fetched=1)
         updated = batch.get_job(job_id)["updated_at"]

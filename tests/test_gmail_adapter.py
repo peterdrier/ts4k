@@ -693,8 +693,6 @@ class TestGmailAdapterListMessages:
             _make_api_message(msg_id="msg1", subject="Subject 1", internal_date=EPOCH_MS_2026_02_20_09_15, format="metadata"),
             _make_api_message(msg_id="msg2", subject="Subject 2", internal_date=EPOCH_MS_2026_02_19_14_30, format="metadata"),
         ]
-        batch_idx = [0]
-
         class MockBatch:
             def __init__(self, callback):
                 self.callback = callback

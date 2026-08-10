@@ -51,7 +51,7 @@ class TestManageMessage:
         mock_adapter.source_prefix = "g"
 
         with patch("ts4k.commands._make_adapter", return_value=mock_adapter):
-            result = await manage_message(
+            await manage_message(
                 action="archive", msg_id="g:abc,g:def,g:ghi"
             )
         assert mock_adapter.archive_message.call_count == 3

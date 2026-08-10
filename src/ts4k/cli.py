@@ -1289,8 +1289,8 @@ def _auth_interactive(targets: list[tuple[str, dict]], no_calendar: bool) -> Non
                 server_url = cfg.get("server_url", ICLOUD_CARDDAV_URL)
                 is_generic_carddav = provider == "carddav" and not is_icloud_carddav_url(server_url)
                 print(f"  {prefix}: {provider} — no OAuth; uses an app-specific password")
-                print(f"        Generate one at https://account.apple.com "
-                      f"(Sign-In and Security → App-Specific Passwords),")
+                print("        Generate one at https://account.apple.com "
+                      "(Sign-In and Security → App-Specific Passwords),")
                 if is_generic_carddav:
                     from ts4k.adapters.carddav import carddav_credential_key
                     key = carddav_credential_key(email, server_url)
@@ -1421,7 +1421,7 @@ def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
                 scopes.extend(s for s in cal_scopes if s not in scopes)
 
     try:
-        creds = get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes or None)
+        get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes or None)
         print(f"Authenticated {prefix} (client {client_id[:8]}...) successfully.")
 
     except Exception as exc:

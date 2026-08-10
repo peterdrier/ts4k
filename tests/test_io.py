@@ -42,8 +42,6 @@ class TestSafeWriteJson:
     def test_no_temp_files_on_failure(self, tmp_path, monkeypatch):
         p = tmp_path / "out.json"
         # Make os.replace raise to simulate a failure after write
-        original_replace = os.replace
-
         def bad_replace(src, dst):
             raise OSError("disk full")
 

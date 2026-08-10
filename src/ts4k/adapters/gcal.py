@@ -213,14 +213,7 @@ class GcalAdapter(BaseAdapter):
         # Recurring event ID
         recurring_id = event.get("recurringEventId")
 
-        # Meeting link
         location = event.get("location", "")
-        conference = event.get("conferenceData", {})
-        meeting_link = ""
-        for ep in conference.get("entryPoints", []):
-            if ep.get("entryPointType") == "video":
-                meeting_link = ep.get("uri", "")
-                break
 
         return {
             "id": f"{self._prefix}:{event['id']}",

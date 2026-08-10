@@ -261,7 +261,7 @@ class TestGetCredentials:
             "ts4k.auth.google.InstalledAppFlow.from_client_secrets_file",
             return_value=mock_flow,
         ) as mock_from_file:
-            result = get_credentials("user@test.com", config_dir=tmp_path)
+            get_credentials("user@test.com", config_dir=tmp_path)
             # Should have used the shared path with the default scopes.
             mock_from_file.assert_called_once_with(
                 str(shared),

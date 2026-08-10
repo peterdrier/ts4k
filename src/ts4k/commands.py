@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ts4k.adapters.caldav_cal import CaldavAdapter, CaldavAdapterConfig
 from ts4k.adapters.gcal import GcalAdapter, GcalAdapterConfig
@@ -41,6 +41,9 @@ from ts4k.core.format import (
 from ts4k.core.normalize import normalize, normalize_headers
 from ts4k.state import batch, cache, contacts, filters, sources, stats
 from ts4k.state.refs import RefTable
+
+if TYPE_CHECKING:
+    from ts4k.auth.health import TokenHealth
 
 logger = logging.getLogger("ts4k")
 
@@ -603,7 +606,6 @@ async def _fetch_messages(
     # Track which sources had messages dropped by count truncation
     truncated_sources: set[str] = set()
     if has_more:
-        returned_ids = {m.get("id") for m in truncated}
         for m in all_messages[count:]:
             src = m.get("source", "")
             if src:

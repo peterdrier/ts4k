@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
+
+if TYPE_CHECKING:
+    from ts4k.state.refs import RefTable
 
 
 # ---------------------------------------------------------------------------

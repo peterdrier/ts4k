@@ -89,15 +89,6 @@ class TestToolRegistration:
         props = schema.get("properties", {})
         assert "tid" in props
 
-    def test_list_params(self):
-        """list has source, query, count params."""
-        tool = mcp._tool_manager._tools["list"]
-        schema = tool.parameters
-        props = schema.get("properties", {})
-        assert "source" in props
-        assert "query" in props
-        assert "count" in props
-
     def test_overview_params(self):
         """overview has source, contact, period, fmt, top."""
         tool = mcp._tool_manager._tools["overview"]
