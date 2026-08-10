@@ -138,9 +138,9 @@ def _looks_like_html(text: str) -> bool:
 # HTML preprocessing (BeautifulSoup phase)
 # ---------------------------------------------------------------------------
 
-_STYLE_WIDTH_TINY = re.compile(r"width\s*:\s*[01]px", re.IGNORECASE)
-_STYLE_HEIGHT_TINY = re.compile(r"height\s*:\s*[01]px", re.IGNORECASE)
-_STYLE_DISPLAY_NONE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
+_STYLE_TINY_PATTERN = re.compile(
+    r"(?:width|height)\s*:\s*[01]px|display\s*:\s*none", re.IGNORECASE
+)
 
 _TRACKING_URL_PATTERN = re.compile(
     r"track|pixel|beacon|open\.|\.gif\?|"
@@ -167,17 +167,16 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
                 pass
 
         # Check style for tiny dimensions
-        style = img.get("style", "")
-        if style:
-            if _STYLE_WIDTH_TINY.search(style) or \
-               _STYLE_HEIGHT_TINY.search(style) or \
-               _STYLE_DISPLAY_NONE.search(style):
+        if not is_tiny:
+            style = img.get("style", "")
+            if style and _STYLE_TINY_PATTERN.search(style):
                 is_tiny = True
 
         # Check for common tracking pixel URL patterns
-        src = img.get("src", "")
-        if src and _TRACKING_URL_PATTERN.search(src):
-            is_tiny = True
+        if not is_tiny:
+            src = img.get("src", "")
+            if src and _TRACKING_URL_PATTERN.search(src):
+                is_tiny = True
 
         # Check for images with no alt text and very small size
         if not img.get("alt") and is_tiny:
@@ -186,14 +185,16 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
             img.decompose()
 
 
-_STYLE_VISIBILITY_HIDDEN = re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE)
 _STYLE_ZERO_SIZE = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
+
+_STYLE_HIDDEN_PATTERN = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden",
+    re.IGNORECASE,
+)
 
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=_STYLE_DISPLAY_NONE):
-        el.decompose()
-    for el in soup.find_all(style=_STYLE_VISIBILITY_HIDDEN):
+    for el in soup.find_all(style=_STYLE_HIDDEN_PATTERN):
         el.decompose()
     for el in soup.find_all(attrs={"hidden": True}):
         el.decompose()
