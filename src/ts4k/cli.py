@@ -1531,7 +1531,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "examples:\n"
             "  ts4k thread g:18f3a2b1c4d5e6f7  # thread containing this msg\n"
             "  ts4k t 7 -k life                # thread for ref #7\n"
-            "  ts4k t w:chat123 --tail 5        # last 5 msgs in WhatsApp chat"
+            "  ts4k t w:chat123 --tail 5        # last 5 msgs in WhatsApp chat\n"
+            "  ts4k t w:chat123 --format convo  # compact one-line-per-message view"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

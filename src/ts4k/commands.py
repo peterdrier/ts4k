@@ -2576,6 +2576,7 @@ def skill_reference(level: str = "basic") -> str:
             "cal update REF [--title T] [--start DT] [--end DT]|Update event fields\n"
             "cal rsvp REF --status accepted|declined|tentative|RSVP to event\n"
             "cal setup|Discover and add calendar sources\n"
+            "thread REF --format convo|Compact one-line-per-message transcript\n"
             "help|Human-readable help"
         )
     return (

@@ -162,8 +162,12 @@ def format_thread(thread: dict, fmt: str = "pipe") -> str:
     *thread* must have ``thread_id``, ``subject``, ``message_count``,
     ``messages`` (list of message dicts with ``from``, ``date``, ``body``).
 
-    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``.
+    *fmt*: ``'pipe'``, ``'json'``, ``'xml'``, or ``'convo'`` (compact
+    one-line-per-message transcript; thread-only, not a listing format).
     """
+    if fmt.lower().strip() == "convo":
+        return _thread_convo(thread)
+
     fmt = _resolve_fmt(fmt)
 
     if fmt == "pipe":
@@ -733,6 +737,106 @@ def _thread_pipe(thread: dict) -> str:
         body = msg.get("body", "")
         if body:
             lines.append(body)
+
+    return "\n".join(lines)
+
+
+# Character cap for a flattened message body in the convo view — matches
+# the snippet truncation already used in listings.
+_CONVO_BODY_LIMIT = 77
+
+
+def _sender_first_name(frm: str) -> str:
+    """First-name-ish token for a ``from`` string.
+
+    Emails (``alice@acme.com``) use the local part; display names
+    (``Thomas Scheibe``) use the first word.
+    """
+    local = frm.split("@", 1)[0] if "@" in frm else frm
+    word = local.split()[0] if local.split() else local
+    return word.capitalize() if word else "?"
+
+
+def _sender_tokens(messages: list[dict]) -> dict[str, str]:
+    """Map each unique ``from`` value to a short conversation-view token.
+
+    Single initial by default. Senders sharing an initial widen to their
+    full first name; if those still collide, a numeric suffix (``Peter1``,
+    ``Peter2``) keeps every token unambiguous.
+    """
+    senders: list[str] = []
+    seen: set[str] = set()
+    for msg in messages:
+        frm = msg.get("from", "")
+        if frm not in seen:
+            seen.add(frm)
+            senders.append(frm)
+
+    names = {frm: _sender_first_name(frm) for frm in senders}
+
+    by_initial: dict[str, list[str]] = {}
+    for frm in senders:
+        by_initial.setdefault(names[frm][0].upper(), []).append(frm)
+
+    tokens: dict[str, str] = {}
+    for initial, frms in by_initial.items():
+        if len(frms) == 1:
+            tokens[frms[0]] = initial
+            continue
+        name_counts: dict[str, int] = {}
+        for frm in frms:
+            name_counts[names[frm]] = name_counts.get(names[frm], 0) + 1
+        seen_names: dict[str, int] = {}
+        for frm in frms:
+            name = names[frm]
+            if name_counts[name] == 1:
+                tokens[frm] = name
+            else:
+                seen_names[name] = seen_names.get(name, 0) + 1
+                tokens[frm] = f"{name}{seen_names[name]}"
+
+    return tokens
+
+
+def _flatten_body(body: str, limit: int = _CONVO_BODY_LIMIT) -> str:
+    """Collapse a body to one line and truncate it to *limit* chars."""
+    flat = " ".join(body.split())
+    if len(flat) > limit:
+        flat = flat[:limit].rstrip() + "..."
+    return flat
+
+
+def _thread_convo(thread: dict) -> str:
+    """Compact conversation view — one line per message.
+
+    Date and time on the first message of a day, time only thereafter.
+    Senders are abbreviated (see :func:`_sender_tokens`) and bodies are
+    flattened to a single truncated line.
+    """
+    messages = thread.get("messages", [])
+    lines = [
+        f"THREAD|{thread.get('thread_id', '')}|{thread.get('subject', '')}"
+        f"|{thread.get('message_count', 0)} msgs"
+    ]
+
+    tokens = _sender_tokens(messages)
+    last_day: tuple[int, int, int] | None = None
+    for msg in messages:
+        dt = _parse_iso(msg.get("date", ""))
+        if dt is None:
+            ts = msg.get("date", "")
+        else:
+            day = (dt.year, dt.month, dt.day)
+            time_part = f"{dt.hour:02d}:{dt.minute:02d}"
+            if day != last_day:
+                ts = f"{dt.day} {_MONTHS[dt.month]} {time_part}"
+                last_day = day
+            else:
+                ts = time_part
+
+        token = tokens.get(msg.get("from", ""), "?")
+        body = _flatten_body(msg.get("body", ""))
+        lines.append(f"|{ts}|{token}|{body}|")
 
     return "\n".join(lines)
 
