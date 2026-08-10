@@ -2016,6 +2016,7 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
 
     all_cfg = _ensure_sources()
     sibling_prefixes = _sibling_prefixes(all_cfg)
+    live_meters = _live_meters(all_cfg)
 
     sources_list = []
     for src in sorted(by_source.keys()):
@@ -2034,7 +2035,10 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
             "date_end": max(dates)[:7] if dates else "",
             "top_senders": [{"name": n, "count": c} for n, c in top_senders[:5]],
         }
-        src_meters = meters.get_meters(src)
+        # Same staleness filter as the meter-only loop below — a prefix that
+        # once served an HTTP source but now has cached messages under a
+        # different provider must not keep showing the old snapshot.
+        src_meters = live_meters.get(src)
         if src_meters:
             entry["meters"] = src_meters
         sources_list.append(entry)
@@ -2042,7 +2046,7 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
     # Sources with a live meter snapshot (#31) but no cached messages — HTTP
     # notification sources poll live and aren't written to the message
     # cache (like WhatsApp), so they'd otherwise be invisible here.
-    for src, src_meters in sorted(_live_meters(all_cfg).items()):
+    for src, src_meters in sorted(live_meters.items()):
         if src in by_source:
             continue
         sources_list.append({

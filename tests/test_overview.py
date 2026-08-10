@@ -236,7 +236,14 @@ class TestOverviewTopLevel:
 
 
 class TestOverviewMeters:
-    def test_meters_attach_to_a_cached_source(self, seeded_cache, seeded_meters):
+    def test_meters_attach_to_a_cached_source(
+        self, seeded_cache, seeded_meters, seeded_sources
+    ):
+        """Contrived on purpose: HTTP sources poll live and normally have
+        no cached messages, so this state only arises from leftovers. The
+        attach path still has to work — and only for a prefix that really
+        is a configured HTTP source (#31 review — F3)."""
+        seeded_sources.add("g", provider="http", url="https://example.com/api/notifications")
         seeded_meters.set_meters("g", [{"label": "Something", "count": 2}])
         result = overview()
         assert "meter: Something=2" in result
@@ -515,3 +522,14 @@ class TestFormatOverview:
         assert 'level="contact"' in result
         assert 'name="alice"' in result
         assert "<period" in result
+
+    def test_stale_meter_hidden_on_a_source_that_has_cached_messages(
+        self, seeded_cache, seeded_meters, seeded_sources
+    ):
+        """The cached-source path must apply the same staleness filter as
+        the meter-only loop — a prefix reused by a non-HTTP provider that
+        does have cached messages was previously still showing old meters."""
+        seeded_meters.set_meters("g", [{"label": "Board votes needed", "count": 5}])
+        seeded_sources.add("g", provider="gmail", email="g@example.com")
+        result = overview()
+        assert "Board votes needed" not in result

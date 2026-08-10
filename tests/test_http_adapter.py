@@ -352,3 +352,24 @@ class TestErrorHandling:
         await adapter.whatsnew()
         # A failed poll doesn't clear the last-known-good snapshot.
         assert meters_mod.get_meters("h") == NOTIFICATIONS_RESPONSE["meters"]
+
+
+class TestSinceNormalization:
+    @pytest.mark.asyncio
+    async def test_non_utc_since_is_normalized_before_comparing(self):
+        """A watermark with an offset must be converted to UTC too —
+        otherwise a "Z" date is compared lexically against a "-04:00" one.
+        since=2026-04-09T20:00:00-04:00 IS midnight UTC, so a 23:00Z
+        notification (an hour earlier) must be excluded."""
+        payload = {
+            "notifications": [
+                {"id": "older", "date": "2026-04-09T23:00:00Z", "source": "Ops", "subject": "x"},
+                {"id": "newer", "date": "2026-04-10T01:00:00Z", "source": "Ops", "subject": "y"},
+            ],
+            "meters": [],
+        }
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        results = await adapter.whatsnew(since="2026-04-09T20:00:00-04:00")
+
+        assert [r["id"] for r in results] == ["h:newer"]

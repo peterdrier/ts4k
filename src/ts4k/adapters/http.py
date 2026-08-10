@@ -245,6 +245,10 @@ class HTTPAdapter(BaseAdapter):
         notifications = data.get("notifications", []) or []
         results = [_notification_to_header(n, self._prefix) for n in notifications]
         if since:
+            # Notification dates are normalized to UTC when the header is
+            # built, so the watermark has to be too — otherwise this
+            # compares a "Z" string against a "-04:00" one lexically.
+            since = _normalize_date(since)
             results = [r for r in results if r.get("date", "") >= since]
         results.sort(key=lambda r: r.get("date", ""), reverse=True)
         return results[:count]
