@@ -116,6 +116,8 @@ def store_body(msg_id: str, body: str) -> None:
 
 def store_message(msg_id: str, msg: dict, provider: str = "") -> None:
     """Cache a full message (header + body in one call)."""
+    if provider.lower() not in CACHEABLE_PROVIDERS:
+        return
     store_header(msg_id, msg, provider=provider)
     body = msg.get("body")
     if body:

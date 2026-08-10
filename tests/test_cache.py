@@ -140,6 +140,21 @@ class TestCacheableProviders:
         store_message("oy:custom", msg, provider=O365)
         assert has("oy:custom")
 
+    def test_whatsapp_body_not_written(self, tmp_path):
+        """Non-cacheable provider must not leave an orphan body file
+        (issue #64 follow-up: store_message gates the whole write, not
+        just the header)."""
+        msg = {"id": "w:1", "from": "alice", "subject": "", "date": "2026-01-01", "source": "w", "body": "hi"}
+        store_message("w:1", msg, provider="whatsapp")
+        assert get_body("w:1") is None
+        assert not (tmp_path / "cache" / "bodies" / "w_1.json").exists()
+
+    def test_no_provider_body_not_written(self, tmp_path):
+        """Omitting provider must not leave an orphan body file either."""
+        store_message("g:noprov2", _gmail_msg("noprov2"))
+        assert get_body("g:noprov2") is None
+        assert not (tmp_path / "cache" / "bodies" / "g_noprov2.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # Schema versioning
