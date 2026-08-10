@@ -87,3 +87,4 @@ Gmail, WhatsApp, O365.
 5. **Using a command IS the side effect.** `whatsnew <key>` advances watermarks on use. No separate save step.
 6. **Format is a feature.** Pipe-delimited for listings (~60% savings over JSON), mini XML for bodies.
 7. **Adapter-agnostic output.** Downstream consumers never see platform-specific data. A WhatsApp message and a Gmail message look identical after normalization.
+8. **UTC internally, local at display.** Adapters emit timestamps in UTC; only the format layer converts, to one global display timezone. Sorting and comparison stay correct across sources in different zones — and stay cheap, since ISO strings that all carry `+00:00` sort chronologically as plain text. All-day calendar events are the sole exception: they are dates, not instants, and stay bare `YYYY-MM-DD`.

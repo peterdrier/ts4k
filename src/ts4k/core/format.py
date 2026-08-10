@@ -17,7 +17,11 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
 
+from ts4k.core.tz import display_tzinfo, parse_utc, tzinfo_for
+
 if TYPE_CHECKING:
+    from datetime import tzinfo
+
     from ts4k.state.refs import RefTable
 
 
@@ -254,14 +258,19 @@ def format_events(
     fmt: str = "pipe",
     ref_table: "RefTable | None" = None,
     collapse_recurring: bool = False,
+    tz: "str | tzinfo | None" = None,
 ) -> str:
     """Format calendar events as pipe-delimited listing.
 
     Args:
-        events: Normalized event dicts from GcalAdapter.
+        events: Normalized event dicts from a calendar adapter.  Timed
+            ``start``/``end`` are UTC; all-day ones are bare dates.
         fmt: Output format (pipe, json, xml).
         ref_table: If provided, assigns short refs via ref_table.assign().
         collapse_recurring: If True, collapse recurring series into one row.
+        tz: Display timezone.  Defaults to the resolved global one — every
+            row in a listing is rendered in the same zone, whatever mix of
+            sources it was merged from.
     """
     if fmt == "json":
         return json.dumps(events, indent=2)
@@ -269,8 +278,10 @@ def format_events(
     if not events:
         return "No events."
 
+    zone = tzinfo_for(tz) if tz else display_tzinfo()
+
     # Determine time display mode from date span
-    time_mode = _detect_time_mode(events)
+    time_mode = _detect_time_mode(events, zone)
 
     # Optionally collapse recurring events
     display_events = _collapse_recurring(events) if collapse_recurring else events
@@ -282,7 +293,7 @@ def format_events(
     for evt in display_events:
         ref_num = ref_map.get(evt.get("id", ""), 0) if ref_map else 0
 
-        time_str = _format_event_time(evt, time_mode)
+        time_str = _format_event_time(evt, time_mode, zone)
         dur_str = _format_duration(evt)
         title = evt.get("title", "")
         if evt.get("your_status") == "declined":
@@ -303,12 +314,18 @@ def format_events(
     return "\n".join(lines)
 
 
-def format_event_detail(event: dict, ref: int = 0, fmt: str = "pipe") -> str:
-    """Format a single event's full detail as mini-XML."""
+def format_event_detail(
+    event: dict, ref: int = 0, fmt: str = "pipe",
+    tz: "str | tzinfo | None" = None,
+) -> str:
+    """Format a single event's full detail as mini-XML.
+
+    *tz* is the display timezone; it defaults to the resolved global one.
+    """
     if fmt == "json":
         return json.dumps(event, indent=2)
 
-    when = _format_when_detail(event)
+    when = _format_when_detail(event, tzinfo_for(tz) if tz else display_tzinfo())
     parts = [f'<ev ref="{ref}" id="{event.get("id", "")}">']
     parts.append(f'<title>{event.get("title", "")}</title>')
     parts.append(f"<when>{when}</when>")
@@ -345,8 +362,17 @@ def format_event_detail(event: dict, ref: int = 0, fmt: str = "pipe") -> str:
 # -- Calendar format helpers --------------------------------------------------
 
 
-def _detect_time_mode(events: list[dict]) -> str:
+def _local_start(event: dict, tz: "tzinfo") -> datetime | None:
+    """A timed event's stored UTC ``start`` as a wall clock in *tz*."""
+    dt = parse_utc(event.get("start", ""))
+    return dt.astimezone(tz) if dt is not None else None
+
+
+def _detect_time_mode(events: list[dict], tz: "tzinfo") -> str:
     """Determine time display mode based on date span of events.
+
+    The span is measured in *tz* — a UTC date can fall on the day either
+    side of the one the reader sees.
 
     Returns: 'time' (same day), 'day' (multi-day <=7d), 'date' (>7d).
     """
@@ -356,8 +382,8 @@ def _detect_time_mode(events: list[dict]) -> str:
         if evt.get("all_day"):
             dates.add(start)
         else:
-            # Extract date part from ISO datetime
-            dates.add(start[:10])
+            local = _local_start(evt, tz)
+            dates.add(local.strftime("%Y-%m-%d") if local else start[:10])
 
     if len(dates) <= 1:
         return "time"
@@ -373,8 +399,8 @@ def _detect_time_mode(events: list[dict]) -> str:
     return "day" if span <= 7 else "date"
 
 
-def _format_event_time(event: dict, mode: str) -> str:
-    """Format event time based on display mode."""
+def _format_event_time(event: dict, mode: str, tz: "tzinfo") -> str:
+    """Format event time based on display mode, in the display timezone *tz*."""
     if event.get("all_day"):
         start = event["start"]
         end = event.get("end", start)
@@ -396,12 +422,12 @@ def _format_event_time(event: dict, mode: str) -> str:
             return f"{start_display}-{end_dt.day}"
         return f"{start_display} all-day"
 
-    # Timed event
-    try:
-        start_dt = datetime.fromisoformat(event["start"])
-        end_dt = datetime.fromisoformat(event["end"])
-    except (ValueError, KeyError):
+    # Timed event — stored UTC, rendered in the display timezone
+    start_dt = _local_start(event, tz)
+    end_utc = parse_utc(event.get("end", ""))
+    if start_dt is None or end_utc is None:
         return event.get("start", "?")
+    end_dt = end_utc.astimezone(tz)
 
     start_time = start_dt.strftime("%H:%M")
     end_time = end_dt.strftime("%H:%M")
@@ -438,8 +464,8 @@ def _format_duration(event: dict) -> str:
     return f"{mins}m"
 
 
-def _format_when_detail(event: dict) -> str:
-    """Format when line for event detail XML."""
+def _format_when_detail(event: dict, tz: "tzinfo") -> str:
+    """Format when line for event detail XML, in the display timezone *tz*."""
     if event.get("all_day"):
         try:
             s = datetime.strptime(event["start"], "%Y-%m-%d")
@@ -453,15 +479,15 @@ def _format_when_detail(event: dict) -> str:
         except ValueError:
             return "all-day"
 
-    try:
-        s = datetime.fromisoformat(event["start"])
-        e = datetime.fromisoformat(event["end"])
-        day_str = f"{s.strftime('%a %b')} {str(s.day)}"
-        time_str = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
-        dur = _format_duration(event)
-        return f"{day_str}, {time_str} ({dur})" if dur else f"{day_str}, {time_str}"
-    except (ValueError, KeyError):
+    s = _local_start(event, tz)
+    e_utc = parse_utc(event.get("end", ""))
+    if s is None or e_utc is None:
         return event.get("start", "?")
+    e = e_utc.astimezone(tz)
+    day_str = f"{s.strftime('%a %b')} {str(s.day)}"
+    time_str = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+    dur = _format_duration(event)
+    return f"{day_str}, {time_str} ({dur})" if dur else f"{day_str}, {time_str}"
 
 
 def _collapse_recurring(events: list[dict]) -> list[dict]:

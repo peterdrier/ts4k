@@ -61,7 +61,8 @@ class TestCreateEvent:
             description="Birthday", location="Cafe",
         )
         assert e["title"] == "Dinner"
-        assert e["start"] == "2026-07-30T19:00:00+02:00"
+        # Written as 19:00 Europe/Amsterdam, echoed back stored in UTC
+        assert e["start"] == "2026-07-30T17:00:00+00:00"
         assert e["duration_minutes"] == 120
         sent_ics = a._calendar.save_event.call_args.args[0]
         assert "SUMMARY:Dinner" in sent_ics
@@ -145,7 +146,8 @@ END:VCALENDAR
         e = await a.update_event("cc:up1", title="New", start="2026-07-30T12:00:00")
         obj.save.assert_called_once()
         assert e["title"] == "New"
-        assert e["start"] == "2026-07-30T12:00:00+02:00"
+        # Naive input is read in the source's zone, stored as UTC
+        assert e["start"] == "2026-07-30T10:00:00+00:00"
 
     async def test_all_day_inclusive_end_date_converted(self, tmp_path: Path):
         """All-day end is inclusive from the user, exclusive in iCal — same as create."""

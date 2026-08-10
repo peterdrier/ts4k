@@ -36,6 +36,7 @@ Read `docs/rip/ts4k-rip.md` for the RIP (Rapid Implementation Plan) — the cons
 4. **Native platform IDs** prefixed with source (`g:`, `w:`, `t:`). No synthetic sequential IDs.
 5. **Using a command IS the side effect.** Watermarks update on `whatsnew`. No separate save step.
 6. **Format is a feature.** Pipe-delimited for listings (~60% savings over JSON), mini XML for bodies.
+7. **UTC internally, local at display.** Adapters emit UTC timestamps; only `core/format.py` converts, to one global display timezone (`ts4k.core.tz.display_tzinfo`). All-day calendar events stay bare dates.
 
 ## Implementation Phases
 

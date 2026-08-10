@@ -20,6 +20,9 @@ user-chosen prefix (e.g. "g", "gn", "w") that namespaces all its message IDs.
 
 Environment variables:
     TS4K_CONFIG_DIR        Config directory (default: ~/.config/ts4k)
+    TS4K_TIMEZONE          Display timezone for calendar times (IANA name).
+                           Overrides "timezone" in settings.json; both
+                           default to the machine's own zone.
 """
 
 from __future__ import annotations

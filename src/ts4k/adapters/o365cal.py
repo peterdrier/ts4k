@@ -13,8 +13,15 @@ import httpx
 
 from ts4k.adapters.base import BaseAdapter
 from ts4k.core.levels import AccessLevel, check_level, parse_level, scopes_for
+from ts4k.core.tz import to_utc_iso
 
 logger = logging.getLogger(__name__)
+
+# Pin the zone Graph answers in, on every read. Unpinned, Graph is free to
+# reply in the mailbox's own zone, whose IDs are Windows-style ("Eastern
+# Standard Time") — names ZoneInfo cannot resolve, which would silently
+# degrade the event to UTC and shift its displayed time.
+_UTC_PREFER = {"Prefer": 'outlook.timezone="UTC"'}
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +135,10 @@ class O365CalAdapter(BaseAdapter):
 
     # -- HTTP helpers ------------------------------------------------------
 
-    async def _get(self, path: str, params: dict[str, str] | None = None) -> dict:
+    async def _get(self, path: str, params: dict[str, str] | None = None,
+                   headers: dict[str, str] | None = None) -> dict:
         client = self._require_client()
-        resp = await client.get(path, params=params or {})
+        resp = await client.get(path, params=params or {}, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
@@ -206,14 +214,18 @@ class O365CalAdapter(BaseAdapter):
             "$orderby": "start/dateTime",
         }
 
+        headers = _UTC_PREFER
+
         while len(raw_events) < count:
             if next_link:
                 client = self._require_client()
-                resp = await client.get(next_link)
+                resp = await client.get(next_link, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
             else:
-                data = await self._get(f"{self._calendar_path()}/calendarView", params)
+                data = await self._get(
+                    f"{self._calendar_path()}/calendarView", params, headers=headers,
+                )
 
             raw_events.extend(data.get("value", []))
             next_link = data.get("@odata.nextLink")
@@ -230,12 +242,15 @@ class O365CalAdapter(BaseAdapter):
         end_raw = event.get("end", {})
 
         if all_day:
+            # All-day events are dates, not instants — never converted.
             start = start_raw.get("dateTime", "").split("T")[0]
             end = end_raw.get("dateTime", "").split("T")[0]
             duration_minutes = None
         else:
-            start = start_raw.get("dateTime", "")
-            end = end_raw.get("dateTime", "")
+            # Graph puts the zone in a sibling field, not in the dateTime
+            # string; stored in UTC, rendered by the format layer.
+            start = to_utc_iso(start_raw.get("dateTime", ""), start_raw.get("timeZone", "UTC"))
+            end = to_utc_iso(end_raw.get("dateTime", ""), end_raw.get("timeZone", "UTC"))
             duration_minutes = self._compute_duration(start, end)
 
         your_status_raw = event.get("responseStatus", {}).get("response", "")
@@ -272,7 +287,7 @@ class O365CalAdapter(BaseAdapter):
     async def read_event(self, event_id: str) -> dict:
         """Fetch full detail for a single event."""
         raw_id = self._strip_prefix(event_id)
-        event = await self._get(f"/me/events/{raw_id}")
+        event = await self._get(f"/me/events/{raw_id}", headers=_UTC_PREFER)
 
         base = self._normalize_event(event)
 
