@@ -702,3 +702,67 @@ class TestUnreadFlagJson:
         assert data[0]["unread"] is True
         assert data[1]["unread"] is False
         assert "unread" not in data[2]
+
+
+# ---------------------------------------------------------------------------
+# Snippet sanitization in pipe listings
+# ---------------------------------------------------------------------------
+
+# WhatsApp image enrichment appends OCR text as documented:
+# "[image: caption | text: OCR]" — the embedded "|" must not become an
+# extra pipe-delimited column.
+OCR_MESSAGE = {
+    "id": "w:ocr1",
+    "from": "charlie",
+    "subject": "",
+    "date": "2026-02-20T09:15:00Z",
+    "body": "",
+    "source": "w",
+    "snippet": "[image: receipt | text: Total $42.10]",
+}
+
+MULTILINE_MESSAGE = {
+    "id": "w:multi1",
+    "from": "dana",
+    "subject": "",
+    "date": "2026-02-20T09:20:00Z",
+    "body": "",
+    "source": "w",
+    "snippet": "Line one\nLine two\r\nLine three",
+}
+
+
+class TestSnippetPipeSanitization:
+    """Embedded pipes/newlines in snippets must not corrupt the pipe record."""
+
+    def test_legacy_pipe_ocr_snippet_field_count(self):
+        result = format_listing([OCR_MESSAGE], "pipe")
+        lines = result.split("\n")
+        header_fields = lines[0].split("|")
+        data_fields = lines[1].split("|")
+        assert len(data_fields) == len(header_fields)
+        assert "|" not in data_fields[-1]
+
+    def test_refs_pipe_ocr_snippet_field_count(self):
+        result = format_listing([OCR_MESSAGE], "pipe", ref_map={"w:ocr1": 1})
+        data_lines = [
+            l for l in result.split("\n") if l and not l.startswith("---") and not l.startswith(" |N|")
+        ]
+        header_fields = result.split("\n")[0].split("|")
+        data_fields = data_lines[0].split("|")
+        assert len(data_fields) == len(header_fields)
+        assert "|" not in data_fields[-1]
+
+    def test_legacy_pipe_multiline_snippet_single_row(self):
+        result = format_listing([MULTILINE_MESSAGE], "pipe")
+        lines = result.split("\n")
+        # header + exactly one data row
+        assert len(lines) == 2
+        assert "\n" not in lines[1]
+
+    def test_refs_pipe_multiline_snippet_single_row(self):
+        result = format_listing([MULTILINE_MESSAGE], "pipe", ref_map={"w:multi1": 1})
+        data_lines = [
+            l for l in result.split("\n") if l and not l.startswith("---") and not l.startswith(" |N|")
+        ]
+        assert len(data_lines) == 1

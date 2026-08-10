@@ -451,6 +451,8 @@ class TestWhatsAppImageEnrichmentListing:
 
     @pytest.mark.asyncio
     async def test_captioned_image_appears_as_snippet(self, monkeypatch):
+        # The embedded "|" is a pipe-format delimiter, so it must be
+        # neutralized rather than copied verbatim (ts4k#49 follow-up).
         body = '[image: two people by a white fence | text: "SALE 40% OFF"]'
         stub = _WaListStub([{
             "id": "w:1", "source": "w", "from": "Alice", "subject": "Fam",
@@ -461,7 +463,12 @@ class TestWhatsAppImageEnrichmentListing:
         result = await commands.whatsnew(key="test", source="w")
 
         assert "SNIPPET" in result.output
-        assert body in result.output
+        lines = result.output.split("\n")
+        header_fields = lines[0].split("|")
+        data_fields = lines[1].split("|")
+        assert len(data_fields) == len(header_fields)
+        assert "|" not in data_fields[-1]
+        assert "two people by a white fence" in result.output
 
     @pytest.mark.asyncio
     async def test_long_ocr_text_truncates_like_any_snippet(self, monkeypatch):

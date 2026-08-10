@@ -12,6 +12,7 @@ Target: 60%+ byte savings vs raw JSON pretty-print for listings.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape, quoteattr as xml_quoteattr
@@ -567,15 +568,32 @@ def _unread_marker(msg: dict) -> str:
     return " "
 
 
+_SNIPPET_NEWLINE_RE = re.compile(r"[\r\n]+")
+
+
+def _snippet_field(msg: dict) -> str:
+    """Single-line, pipe-safe snippet for a pipe-delimited listing row.
+
+    A raw snippet can carry an embedded ``|`` (e.g. WhatsApp OCR bodies of
+    the form ``[image: caption | text: OCR]``) or embedded newlines from a
+    multiline message. Left as-is, either would corrupt the pipe record —
+    extra columns or extra rows — so both are neutralized before truncating.
+    """
+    snippet = msg.get("snippet", "").strip()
+    snippet = _SNIPPET_NEWLINE_RE.sub(" ", snippet)
+    snippet = snippet.replace("|", "/")
+    if len(snippet) > 80:
+        snippet = snippet[:77].rstrip() + "..."
+    return snippet
+
+
 def _listing_pipe_legacy(messages: list[dict]) -> str:
     """Legacy pipe listing with full IDs and ISO timestamps."""
     has_snippets = any(msg.get("snippet") for msg in messages)
     if has_snippets:
         lines = [" |SOURCE|FROM|SUBJECT|DATE|ID|SIZE|SNIPPET"]
         for msg in messages:
-            snippet = msg.get("snippet", "").strip()
-            if len(snippet) > 80:
-                snippet = snippet[:77].rstrip() + "..."
+            snippet = _snippet_field(msg)
             lines.append(
                 f"{_unread_marker(msg)}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}"
                 f"|{msg.get('date', '')}|{msg.get('id', '')}|{_size(msg)}|{snippet}"
@@ -614,10 +632,7 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
                 ts = _compact_ts(msg.get("date", ""), "time")
                 row = f"{_unread_marker(msg)}|{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
                 if has_snippets:
-                    snippet = msg.get("snippet", "").strip()
-                    if len(snippet) > 80:
-                        snippet = snippet[:77].rstrip() + "..."
-                    row += f"|{snippet}"
+                    row += f"|{_snippet_field(msg)}"
                 lines.append(row)
     else:
         for msg in messages:
@@ -625,10 +640,7 @@ def _listing_pipe_refs(messages: list[dict], ref_map: dict[str, int]) -> str:
             ts = _compact_ts(msg.get("date", ""), precision)
             row = f"{_unread_marker(msg)}|{ref}|{_source(msg)}|{msg.get('from', '')}|{msg.get('subject', '')}|{ts}|{_size(msg)}"
             if has_snippets:
-                snippet = msg.get("snippet", "").strip()
-                if len(snippet) > 80:
-                    snippet = snippet[:77].rstrip() + "..."
-                row += f"|{snippet}"
+                row += f"|{_snippet_field(msg)}"
             lines.append(row)
 
     return "\n".join(lines)
