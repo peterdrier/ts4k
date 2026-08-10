@@ -455,6 +455,38 @@ class WhatsAppAdapter(BaseAdapter):
         })
         return parse_message_context_response(text, self.source_prefix)
 
+    async def download_media(self, msg_id: str) -> dict:
+        """Download the media file attached to a WhatsApp message.
+
+        The bridge's ``download_media`` tool needs both the message ID and
+        its chat JID, so this reads the message first to resolve the JID.
+        See ``BaseAdapter.download_media`` for what the returned
+        ``file_path`` means to the caller.
+        """
+        raw_id = self._strip_prefix(msg_id)
+        msg = await self.read_message(msg_id)
+        chat_jid = msg.get("chat_jid", "")
+        if not chat_jid:
+            return {
+                "success": False,
+                "file_path": None,
+                "message": "Could not resolve the chat for this message",
+            }
+
+        text = await self._call_tool("download_media", {
+            "message_id": raw_id,
+            "chat_jid": chat_jid,
+        })
+        items = _parse_ndjson(text)
+        if not items:
+            return {"success": False, "file_path": None, "message": "No response from bridge"}
+        data = items[0]
+        return {
+            "success": bool(data.get("success")),
+            "file_path": data.get("file_path"),
+            "message": data.get("message", ""),
+        }
+
     def _strip_prefix(self, prefixed_id: str) -> str:
         if prefixed_id.startswith(f"{self.source_prefix}:"):
             return prefixed_id[len(self.source_prefix) + 1:]

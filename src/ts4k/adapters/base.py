@@ -124,6 +124,19 @@ class BaseAdapter(ABC):
         dicts as returned by :meth:`read_message`).
         """
 
+    async def download_media(self, msg_id: str) -> dict:
+        """Download the media file attached to a message.
+
+        Only adapters with a media source need to override this — the
+        default raises, matching the management methods below. Returns
+        ``{"success": bool, "file_path": str | None, "message": str}``.
+        On success, *file_path* is wherever the adapter staged the
+        downloaded file; the command layer relocates it into ts4k's own
+        media store under ``~/.config/ts4k/media/``, so callers must not
+        treat this value as a stable location.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support media download")
+
     async def mailbox_stats(self) -> dict | None:
         """Return live mailbox label/folder counts, or None if unsupported.
 

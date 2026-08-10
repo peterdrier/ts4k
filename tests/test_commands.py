@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -406,6 +407,169 @@ class TestGetMessageReadableFallback:
 
         assert result.output != ""  # header line still present, just no body
         assert stub.calls == [False]  # single fetch only, no fallback retry
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp image enrichment — listing preview + --media (ts4k#49)
+# ---------------------------------------------------------------------------
+
+
+class _WaListStub:
+    """Stub adapter for whatsnew/list_messages — returns canned entries."""
+
+    def __init__(self, messages):
+        self._messages = messages
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def whatsnew(self, since=None, sender=None, domain=None, count=200):
+        return self._messages
+
+    async def list_messages(self, query=None, count=20, page_token=None,
+                             sender=None, domain=None):
+        return self._messages
+
+
+class TestWhatsAppImageEnrichmentListing:
+    """Enrichment text must show up in listings, truncated like any other
+    snippet — WhatsApp entries carry it in `body`, with no separate
+    snippet fetch like Gmail/O365 (ts4k#49)."""
+
+    @pytest.fixture(autouse=True)
+    def _sources(self, tmp_path):
+        from ts4k import state
+        state.set_config_dir(tmp_path, reason="test")
+        (tmp_path / "sources.json").write_text(
+            json.dumps({"w": {"provider": "whatsapp"}})
+        )
+        yield
+        state.reset()
+
+    @pytest.mark.asyncio
+    async def test_captioned_image_appears_as_snippet(self, monkeypatch):
+        # The embedded "|" is a pipe-format delimiter, so it must be
+        # neutralized rather than copied verbatim (ts4k#49 follow-up).
+        body = '[image: two people by a white fence | text: "SALE 40% OFF"]'
+        stub = _WaListStub([{
+            "id": "w:1", "source": "w", "from": "Alice", "subject": "Fam",
+            "date": "2026-08-10T09:00:00Z", "body": body,
+        }])
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.whatsnew(key="test", source="w")
+
+        assert "SNIPPET" in result.output
+        lines = result.output.split("\n")
+        header_fields = lines[0].split("|")
+        data_fields = lines[1].split("|")
+        assert len(data_fields) == len(header_fields)
+        assert "|" not in data_fields[-1]
+        assert "two people by a white fence" in result.output
+
+    @pytest.mark.asyncio
+    async def test_long_ocr_text_truncates_like_any_snippet(self, monkeypatch):
+        long_ocr = "x" * 100
+        body = f'[image | text: "{long_ocr}"]'
+        stub = _WaListStub([{
+            "id": "w:1", "source": "w", "from": "Alice", "subject": "Fam",
+            "date": "2026-08-10T09:00:00Z", "body": body,
+        }])
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.whatsnew(key="test", source="w")
+
+        assert body not in result.output  # too long to appear whole
+        assert "..." in result.output
+
+    @pytest.mark.asyncio
+    async def test_enrichment_pending_is_not_an_empty_snippet(self, monkeypatch):
+        stub = _WaListStub([{
+            "id": "w:1", "source": "w", "from": "Alice", "subject": "Fam",
+            "date": "2026-08-10T09:00:00Z", "body": "[image — enrichment pending]",
+        }])
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.whatsnew(key="test", source="w")
+
+        assert "[image — enrichment pending]" in result.output
+
+
+class _MediaStubAdapter:
+    """Stub adapter for get_media tests."""
+
+    def __init__(self, result=None, raise_not_implemented=False):
+        self._result = result
+        self._raise = raise_not_implemented
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def download_media(self, msg_id):
+        if self._raise:
+            raise NotImplementedError(f"{type(self).__name__} does not support media download")
+        return self._result
+
+
+class TestGetMedia:
+    """`ts4k get REF --media` downloads via the adapter and relocates the
+    file into ts4k's own media store (ts4k#49)."""
+
+    @pytest.fixture(autouse=True)
+    def _sources(self, tmp_path):
+        from ts4k import state
+        state.set_config_dir(tmp_path, reason="test")
+        (tmp_path / "sources.json").write_text(
+            json.dumps({"w": {"provider": "whatsapp"}})
+        )
+        yield
+        state.reset()
+
+    @pytest.mark.asyncio
+    async def test_success_copies_file_into_media_store(self, tmp_path, monkeypatch):
+        src = tmp_path / "downloaded.jpg"
+        src.write_bytes(b"fake jpeg bytes")
+        stub = _MediaStubAdapter({
+            "success": True, "file_path": str(src), "message": "Media downloaded successfully",
+        })
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.get_media("w:msg1")
+
+        assert result.error is None
+        dest = Path(result.output)
+        assert dest.exists()
+        assert dest.read_bytes() == b"fake jpeg bytes"
+
+        from ts4k.state import media
+        assert dest.parent == media.media_dir()
+
+    @pytest.mark.asyncio
+    async def test_bridge_failure_surfaces_as_error(self, monkeypatch):
+        stub = _MediaStubAdapter({"success": False, "message": "Failed to download media"})
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.get_media("w:msg1")
+
+        assert result.error == "Failed to download media"
+
+    @pytest.mark.asyncio
+    async def test_unsupported_adapter_reports_clearly(self, monkeypatch):
+        stub = _MediaStubAdapter(raise_not_implemented=True)
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.get_media("w:msg1")
+
+        assert result.error is not None
+        assert "does not support media download" in result.error
+
+
 class TestSkillReference:
     """Skill text is the agent's only self-documentation — pin what it must say."""
 
@@ -424,6 +588,23 @@ class TestSkillReference:
         lines = [ln for ln in commands.skill_reference("basic").splitlines() if "[voice" in ln]
         assert len(lines) == 1, lines
 
+    def test_images_are_declared_captioned_and_ocrd(self):
+        """Agents must not say they can't see images (ts4k#49) — the bridge
+        folds a caption/OCR into the body automatically."""
+        text = commands.skill_reference("basic")
+        assert "[image" in text
+        assert "can't see images" in text.lower()
+
+    def test_media_flag_is_documented(self):
+        """--media is how an agent gets the actual pixels when the caption
+        or OCR text isn't enough."""
+        text = commands.skill_reference("basic")
+        assert "--media" in text
+
+    def test_image_guidance_survives_in_one_line(self):
+        """It rides in every skill call — one line is the budget."""
+        lines = [ln for ln in commands.skill_reference("basic").splitlines() if "[image" in ln]
+        assert len(lines) == 1, lines
 
 # ---------------------------------------------------------------------------
 # preload — body writes must respect provider cache gating (ts4k#64 follow-up)
