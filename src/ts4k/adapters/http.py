@@ -22,7 +22,7 @@ Polls any JSON endpoint that returns::
                  the same with ``snippet``/``has_attachments``)
 - ``unread``  -> ``unread``
 - ``id``      -> used as-is if present, else synthesized from a
-                 source+date hash
+                 source+date+subject+link hash
 
 ``meters`` are not messages — they're stashed via ``ts4k.state.meters``
 so ``ts4k overview`` can surface them without a live call (see that
@@ -101,8 +101,18 @@ def _parse_headers(raw: Any) -> dict[str, str]:
 
 
 def _synthesize_id(notif: dict) -> str:
-    """Derive a stable ID from source+date when the payload has none."""
-    basis = f"{notif.get('source', '')}|{notif.get('date', '')}"
+    """Derive a stable ID from source+date+subject+link when the payload
+    has none.
+
+    source+date alone collide when an endpoint reports two distinct
+    notifications for the same source at the same timestamp (e.g. two
+    consent requests filed in the same second) — subject/link disambiguate
+    those while staying stable across polls for an unchanged notification.
+    """
+    basis = (
+        f"{notif.get('source', '')}|{notif.get('date', '')}|"
+        f"{notif.get('subject', '')}|{notif.get('link', '')}"
+    )
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:12]
 
 
@@ -226,7 +236,14 @@ class HTTPAdapter(BaseAdapter):
             )
             return None
 
-        meters_state.set_meters(self._prefix, data.get("meters", []) or [])
+        meters = data.get("meters", []) or []
+        if not isinstance(meters, list) or not all(isinstance(m, dict) for m in meters):
+            logger.warning(
+                "[%s] HTTP source returned unexpected meters shape: %s",
+                self._prefix, type(meters).__name__,
+            )
+            meters = []
+        meters_state.set_meters(self._prefix, meters)
         return data
 
     # -- BaseAdapter data methods -------------------------------------------

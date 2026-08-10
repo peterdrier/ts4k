@@ -120,6 +120,35 @@ class TestSynthesizeId:
         n2 = {"source": "ConsentReviewNeeded", "date": "2026-04-11T09:00:00Z"}
         assert _synthesize_id(n1) != _synthesize_id(n2)
 
+    def test_differs_for_different_subject(self):
+        """#31 follow-up F1 — same source+date but different subject must
+        not collide, or the two notifications share one short ref and
+        read_message() can only ever return the first."""
+        n1 = {"source": "ConsentReviewNeeded", "date": "2026-04-10T09:00:00Z", "subject": "A"}
+        n2 = {"source": "ConsentReviewNeeded", "date": "2026-04-10T09:00:00Z", "subject": "B"}
+        assert _synthesize_id(n1) != _synthesize_id(n2)
+
+    def test_differs_for_different_link(self):
+        n1 = {
+            "source": "ConsentReviewNeeded", "date": "2026-04-10T09:00:00Z",
+            "subject": "A", "link": "/one",
+        }
+        n2 = {
+            "source": "ConsentReviewNeeded", "date": "2026-04-10T09:00:00Z",
+            "subject": "A", "link": "/two",
+        }
+        assert _synthesize_id(n1) != _synthesize_id(n2)
+
+    def test_stable_across_repeated_polls(self):
+        """Same notification re-fetched on a later poll must keep the same
+        synthesized ID — it's the whole point of a synthesized identity."""
+        notif = {
+            "source": "ConsentReviewNeeded", "date": "2026-04-10T09:00:00Z",
+            "subject": "Consent review pending", "link": "/OnboardingReview",
+        }
+        polled_again = dict(notif)
+        assert _synthesize_id(notif) == _synthesize_id(polled_again)
+
 
 class TestNotificationToHeader:
     def test_maps_fields(self):
@@ -260,6 +289,41 @@ class TestWhatsnew:
         )
         assert await adapter.whatsnew() == []
 
+    @pytest.mark.asyncio
+    async def test_id_less_notifications_with_different_subjects_get_distinct_ids(self):
+        """#31 follow-up F1 — without id, two notifications sharing
+        source+date must not collapse onto the same synthesized id."""
+        payload = {
+            "notifications": [
+                {"date": "2026-04-10T09:00:00Z", "source": "Ops", "subject": "First issue"},
+                {"date": "2026-04-10T09:00:00Z", "source": "Ops", "subject": "Second issue"},
+            ],
+            "meters": [],
+        }
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        results = await adapter.whatsnew()
+
+        ids = {r["id"] for r in results}
+        assert len(ids) == 2
+
+    @pytest.mark.asyncio
+    async def test_id_less_notification_keeps_same_id_across_polls(self):
+        """#31 follow-up F1 — a repeat poll of the same unchanged
+        notification must synthesize the same id both times."""
+        payload = {
+            "notifications": [
+                {"date": "2026-04-10T09:00:00Z", "source": "Ops", "subject": "Same issue"},
+            ],
+            "meters": [],
+        }
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        first = await adapter.whatsnew()
+        second = await adapter.whatsnew()
+
+        assert first[0]["id"] == second[0]["id"]
+
 
 class TestListMessages:
     @pytest.mark.asyncio
@@ -352,6 +416,25 @@ class TestErrorHandling:
         await adapter.whatsnew()
         # A failed poll doesn't clear the last-known-good snapshot.
         assert meters_mod.get_meters("h") == NOTIFICATIONS_RESPONSE["meters"]
+
+    @pytest.mark.asyncio
+    async def test_dict_shaped_meters_rejected(self):
+        """#31 follow-up F2 — a malformed nested ``meters`` shape (a dict
+        instead of a list) must not be persisted, or overview() later
+        crashes iterating it."""
+        payload = {"notifications": [], "meters": {"label": "x"}}
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        assert await adapter.whatsnew() == []
+        assert meters_mod.get_meters("h") == []
+
+    @pytest.mark.asyncio
+    async def test_meters_list_with_non_object_entry_rejected(self):
+        payload = {"notifications": [], "meters": ["not-a-dict"]}
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        assert await adapter.whatsnew() == []
+        assert meters_mod.get_meters("h") == []
 
 
 class TestSinceNormalization:
