@@ -916,6 +916,37 @@ class TestReadableMode:
             for line in result.split("\n")
         )
 
+    def test_readable_rowspan_degrade_keeps_column_positions(self):
+        """Degrading to pipe rows must not let a later row's first cell
+        slide under the spanned column's header — an empty field marks
+        the column the rowspan still occupies."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="2">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Widget | $100 | $150" in result
+        # $90 belongs to Q1, so an empty Item field must precede it.
+        assert "| $90 | $120" in result
+        assert "\n$90 | $120" not in result
+
+    def test_readable_rowspan_degrade_resumes_after_the_span_ends(self):
+        """Once a rowspan is exhausted the column is free again, so no
+        stray blank field may be emitted for it."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="2">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+            <tr><td>Gadget</td><td>$70</td><td>$80</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        assert "Gadget | $70 | $80" in result
+
     def test_readable_strips_emphasized_signature_with_outside_punctuation(self):
         """Punctuation outside the emphasis — <strong>Thanks</strong>, —
         yields "**Thanks**," whose trailing markers sit before the comma;

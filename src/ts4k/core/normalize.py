@@ -463,13 +463,54 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # so inline markup (links, emphasis) survives for html2text;
             # the compact table_data conversion would flatten it to bare
             # text and drop link destinations entirely.
+            # A cell that spans into later rows still occupies its column
+            # there, but those rows don't repeat it — so emit an empty
+            # field in its place. Without this the next row's first cell
+            # slides left, landing under the wrong header, which is the
+            # very shift this degrade path exists to avoid.
+            carried: list[list[int]] = []  # [remaining_rows, col, colspan]
             for row in rows:
+                occupied = {
+                    i for _, col, cs in carried for i in range(col, col + cs)
+                }
                 r_cells = _own_cells(row)
-                for c in r_cells[:-1]:
-                    c.insert_after(NavigableString(" | "))
+
+                # Walk the grid, assigning each own cell to the next free
+                # column and recording how many blanks precede it.
+                gaps: list[int] = []  # blanks before each own cell
+                col = 0
+                for c in r_cells:
+                    blanks = 0
+                    while col in occupied:
+                        blanks += 1
+                        col += 1
+                    gaps.append(blanks)
+                    span = _cell_colspan(c)
+                    rs = _cell_rowspan(c)
+                    if rs != 1:
+                        # Counted from this row, then decremented once at
+                        # the end of it, so the span starts biting on the
+                        # next row — which is the first that omits the cell.
+                        carried.append(
+                            [len(rows) if rs == 0 else rs, col, span]
+                        )
+                    # A colspan cell's own extra columns need no blank —
+                    # it already renders as one wide field.
+                    col += span
+
+                for i, c in enumerate(r_cells):
+                    lead = " | " * gaps[i]
+                    if lead:
+                        c.insert_before(NavigableString(lead))
+                    if i < len(r_cells) - 1:
+                        c.insert_after(NavigableString(" | "))
                 for c in r_cells:
                     c.unwrap()
                 row.name = "div"
+
+                for span in carried:
+                    span[0] -= 1
+                carried = [s for s in carried if s[0] > 0]
             for t in [
                 t
                 for t in table.find_all(["thead", "tbody"])
