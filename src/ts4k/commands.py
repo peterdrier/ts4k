@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,7 +41,7 @@ from ts4k.core.format import (
     format_thread_listing,
 )
 from ts4k.core.normalize import normalize, normalize_headers
-from ts4k.core.tz import display_tzinfo
+from ts4k.core.tz import display_tzinfo, parse_utc
 from ts4k.state import batch, cache, contacts, filters, media, meters, sources, stats
 from ts4k.state.refs import RefTable
 
@@ -2810,6 +2810,7 @@ async def _cal_fetch_events(
     time_min: str,
     time_max: str,
     count: int = 250,
+    tz: "tzinfo | None" = None,
 ) -> list[dict]:
     """Fetch events from all calendar sources (or a specific one), merge by start time."""
     from ts4k.state import sources as src_mod
@@ -2848,11 +2849,73 @@ async def _cal_fetch_events(
     if source and attempted and len(errors) == attempted:
         raise RuntimeError("; ".join(errors))
 
-    # Sort by start time.  Every adapter stores timed starts in UTC, so this
-    # cheap string sort is chronological even across sources in different
-    # zones; all-day dates (no "T") sort ahead of that day's timed events.
-    all_events.sort(key=lambda e: e.get("start", ""))
+    zone = tz or display_tzinfo()
+    all_events = _cal_trim_all_day(all_events, time_min, time_max, zone)
+
+    # Sort by the day the reader sees, all-day events first within that day,
+    # then timed events by their UTC instant.  A plain string sort would put
+    # a 00:30+01:00 event (stored as the previous UTC day) ahead of the
+    # all-day entry it should follow.
+    all_events.sort(key=lambda e: _cal_sort_key(e, zone))
     return all_events[:count]
+
+
+def _cal_display_date(value: str, zone: "tzinfo") -> str:
+    """The date a stored start/end lands on for the reader.
+
+    Bare dates are all-day events and are already display dates — they are
+    deliberately never shifted.  Instants are converted into *zone*.
+    """
+    if "T" not in value:
+        return value
+    dt = parse_utc(value)
+    return dt.astimezone(zone).date().isoformat() if dt else value[:10]
+
+
+def _cal_sort_key(event: dict, zone: "tzinfo") -> tuple[str, int, str]:
+    start = event.get("start", "")
+    return (_cal_display_date(start, zone), 0 if "T" not in start else 1, start)
+
+
+def _cal_trim_all_day(
+    events: list[dict], time_min: str, time_max: str, zone: "tzinfo",
+) -> list[dict]:
+    """Drop all-day events that fall outside the requested display dates.
+
+    Calendar APIs select by overlap in absolute time, so a query bounded by
+    display-zone midnights can return an adjacent day's all-day event when
+    the calendar's own zone differs (a Tokyo March 11 all-day event begins
+    during March 10 in New York).  All-day dates are never shifted, so the
+    only correct filter is against the requested dates themselves.
+    """
+    lo = parse_utc(time_min)
+    hi = parse_utc(time_max)
+    if lo is None or hi is None:
+        return events
+
+    lo_date = lo.astimezone(zone).date()
+    # Callers bound differently — midnight of the next day (cal today/week)
+    # or 23:59:59 of the last day (cal range).  Stepping back an instant
+    # yields the last date actually requested under either convention.
+    last_date = (hi - timedelta(microseconds=1)).astimezone(zone).date()
+
+    kept = []
+    for event in events:
+        start = event.get("start", "")
+        if "T" in start or not start:
+            kept.append(event)
+            continue
+        try:
+            ev_start = date.fromisoformat(start)
+            ev_end = date.fromisoformat(event.get("end") or start)
+        except ValueError:
+            kept.append(event)  # unparseable: degrade to today's behaviour
+            continue
+        # All-day ends are exclusive; a same-day end means a one-day event.
+        ev_end = max(ev_end, ev_start + timedelta(days=1))
+        if ev_start <= last_date and ev_end > lo_date:
+            kept.append(event)
+    return kept
 
 
 def _cal_time_bounds(
@@ -2877,7 +2940,7 @@ async def cal_today(source: str | None, fmt: str, ref_table: RefTable | None = N
     """Today's calendar events."""
     tz = display_tzinfo()
     time_min, time_max = _cal_time_bounds(day_offset=0, days=1, tz=tz)
-    events = await _cal_fetch_events(source, time_min, time_max)
+    events = await _cal_fetch_events(source, time_min, time_max, tz=tz)
     output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
@@ -2886,7 +2949,7 @@ async def cal_tomorrow(source: str | None, fmt: str, ref_table: RefTable | None 
     """Tomorrow's calendar events."""
     tz = display_tzinfo()
     time_min, time_max = _cal_time_bounds(day_offset=1, days=1, tz=tz)
-    events = await _cal_fetch_events(source, time_min, time_max)
+    events = await _cal_fetch_events(source, time_min, time_max, tz=tz)
     output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
@@ -2897,7 +2960,7 @@ async def cal_week(source: str | None, fmt: str, ref_table: RefTable | None = No
     # Compute actual Monday-Sunday range for current week
     now = datetime.now(tz)
     time_min, time_max = _cal_time_bounds(day_offset=-now.weekday(), days=7, tz=tz)
-    events = await _cal_fetch_events(source, time_min, time_max)
+    events = await _cal_fetch_events(source, time_min, time_max, tz=tz)
     output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=False, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
@@ -2908,7 +2971,7 @@ async def cal_next(source: str | None, count: int, fmt: str, ref_table: RefTable
     # Look ahead 365 days max, collapse recurring
     time_min, _ = _cal_time_bounds(day_offset=0, days=1, tz=tz)
     _, time_max = _cal_time_bounds(day_offset=0, days=365, tz=tz)
-    events = await _cal_fetch_events(source, time_min, time_max, count=count)
+    events = await _cal_fetch_events(source, time_min, time_max, count=count, tz=tz)
     output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=True, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))
 
@@ -2928,6 +2991,7 @@ async def cal_range(
         source,
         start.astimezone(timezone.utc).isoformat(),
         end.astimezone(timezone.utc).isoformat(),
+        tz=tz,
     )
     output = format_events(events, fmt=fmt, ref_table=ref_table, collapse_recurring=collapse, tz=tz)
     return CommandResult(output=output, messages_processed=len(events))

@@ -129,9 +129,10 @@ class O365CalAdapter(BaseAdapter):
 
     # -- HTTP helpers ------------------------------------------------------
 
-    async def _get(self, path: str, params: dict[str, str] | None = None) -> dict:
+    async def _get(self, path: str, params: dict[str, str] | None = None,
+                   headers: dict[str, str] | None = None) -> dict:
         client = self._require_client()
-        resp = await client.get(path, params=params or {})
+        resp = await client.get(path, params=params or {}, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
@@ -207,14 +208,22 @@ class O365CalAdapter(BaseAdapter):
             "$orderby": "start/dateTime",
         }
 
+        # Pin the response zone. Graph is otherwise free to answer in the
+        # mailbox's own zone, whose IDs are Windows-style ("Eastern Standard
+        # Time") — names ZoneInfo cannot resolve, which would silently
+        # degrade every event to UTC and shift its displayed time.
+        headers = {"Prefer": 'outlook.timezone="UTC"'}
+
         while len(raw_events) < count:
             if next_link:
                 client = self._require_client()
-                resp = await client.get(next_link)
+                resp = await client.get(next_link, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
             else:
-                data = await self._get(f"{self._calendar_path()}/calendarView", params)
+                data = await self._get(
+                    f"{self._calendar_path()}/calendarView", params, headers=headers,
+                )
 
             raw_events.extend(data.get("value", []))
             next_link = data.get("@odata.nextLink")

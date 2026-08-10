@@ -201,8 +201,17 @@ class GcalAdapter(BaseAdapter):
             duration_minutes = None
         else:
             # Stored in UTC; the format layer renders the display timezone.
-            start = to_utc_iso(start_raw.get("dateTime", ""), self._config.timezone)
-            end = to_utc_iso(end_raw.get("dateTime", ""), self._config.timezone)
+            # A floating dateTime is interpreted in the event's own zone —
+            # Google lets an event override the calendar default — and only
+            # falls back to the calendar's configured zone when absent.
+            start = to_utc_iso(
+                start_raw.get("dateTime", ""),
+                start_raw.get("timeZone") or self._config.timezone,
+            )
+            end = to_utc_iso(
+                end_raw.get("dateTime", ""),
+                end_raw.get("timeZone") or self._config.timezone,
+            )
             duration_minutes = self._compute_duration(start, end)
 
         # Attendees

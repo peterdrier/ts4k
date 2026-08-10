@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from icalendar import Calendar as IcsCalendar
@@ -430,3 +431,138 @@ class TestSingleTimezoneUnchanged:
         assert "09:00-10:00" in out
         assert "21:00-22:00" in out
         assert "Wed" not in out
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: zone fidelity at the adapter edge, display-date
+# correctness at the command edge
+# ---------------------------------------------------------------------------
+
+
+class TestEventLevelTimezones:
+    """An event may override its calendar's zone; honour it."""
+
+    def test_gcal_floating_time_uses_the_event_zone_not_the_calendar_zone(self):
+        adapter = _gcal("Europe/Amsterdam")
+        raw = {
+            "id": "e1", "summary": "Tokyo call", "status": "confirmed",
+            "start": {"dateTime": "2026-03-11T09:00:00", "timeZone": "Asia/Tokyo"},
+            "end": {"dateTime": "2026-03-11T10:00:00", "timeZone": "Asia/Tokyo"},
+        }
+        event = adapter._normalize_event(raw)
+        # 09:00 in Tokyo is 00:00 UTC — not 08:00 UTC as Amsterdam would give.
+        assert event["start"].startswith("2026-03-11T00:00")
+
+    def test_gcal_falls_back_to_the_calendar_zone_when_absent(self):
+        adapter = _gcal("Europe/Amsterdam")
+        raw = {
+            "id": "e1", "summary": "Local", "status": "confirmed",
+            "start": {"dateTime": "2026-03-11T09:00:00"},
+            "end": {"dateTime": "2026-03-11T10:00:00"},
+        }
+        event = adapter._normalize_event(raw)
+        assert event["start"].startswith("2026-03-11T08:00")
+
+    @pytest.mark.asyncio
+    async def test_o365_pins_the_graph_response_zone_to_utc(self):
+        """Unpinned, Graph may answer in Windows zone IDs ZoneInfo cannot read."""
+        adapter = _o365cal("America/New_York")
+        client = MagicMock()
+        resp = MagicMock()
+        resp.json.return_value = {"value": []}
+        resp.raise_for_status = MagicMock()
+        client.get = AsyncMock(return_value=resp)
+        adapter._client = client
+
+        await adapter.list_events("2026-03-11T00:00:00+00:00", "2026-03-12T00:00:00+00:00")
+
+        headers = client.get.await_args.kwargs["headers"]
+        assert headers["Prefer"] == 'outlook.timezone="UTC"'
+
+
+class TestAllDayDisplayDate:
+    """All-day dates are never shifted, so they must be filtered and sorted
+    against the *requested* display date rather than an absolute instant."""
+
+    @staticmethod
+    def _all_day(eid: str, title: str, start: str, end: str) -> dict:
+        return {
+            "id": f"gc:{eid}", "source": "gc", "title": title,
+            "start": start, "end": end, "all_day": True,
+            "duration_minutes": None, "status": "confirmed",
+        }
+
+    @staticmethod
+    def _timed(eid: str, title: str, start: str, end: str) -> dict:
+        return {
+            "id": f"gc:{eid}", "source": "gc", "title": title,
+            "start": start, "end": end, "all_day": False,
+            "duration_minutes": 60, "status": "confirmed",
+        }
+
+    def test_adjacent_day_all_day_event_is_dropped(self):
+        """A Tokyo Mar 11 all-day event overlaps Mar 10 in New York."""
+        zone = ZoneInfo("America/New_York")
+        events = [
+            self._all_day("e1", "Tokyo holiday", "2026-03-11", "2026-03-12"),
+            self._all_day("e2", "NY holiday", "2026-03-10", "2026-03-11"),
+        ]
+        kept = commands._cal_trim_all_day(
+            events,
+            "2026-03-10T04:00:00+00:00",  # Mar 10 00:00 EDT
+            "2026-03-11T04:00:00+00:00",  # Mar 11 00:00 EDT
+            zone,
+        )
+        assert [e["title"] for e in kept] == ["NY holiday"]
+
+    def test_multi_day_all_day_event_spanning_the_window_is_kept(self):
+        zone = ZoneInfo("America/New_York")
+        events = [self._all_day("e1", "Conference", "2026-03-09", "2026-03-13")]
+        kept = commands._cal_trim_all_day(
+            events, "2026-03-10T04:00:00+00:00", "2026-03-11T04:00:00+00:00", zone,
+        )
+        assert len(kept) == 1
+
+    def test_same_day_end_is_treated_as_a_one_day_event(self):
+        """Some sources report end == start rather than an exclusive next day."""
+        zone = ZoneInfo("America/New_York")
+        events = [self._all_day("e1", "Holiday", "2026-03-10", "2026-03-10")]
+        kept = commands._cal_trim_all_day(
+            events, "2026-03-10T04:00:00+00:00", "2026-03-11T04:00:00+00:00", zone,
+        )
+        assert len(kept) == 1
+
+    def test_inclusive_end_of_day_bound_keeps_that_days_all_day_event(self):
+        """`cal range` bounds at 23:59:59, not the next midnight."""
+        zone = ZoneInfo("America/New_York")
+        events = [self._all_day("e1", "Last day", "2026-03-12", "2026-03-13")]
+        kept = commands._cal_trim_all_day(
+            events,
+            "2026-03-10T04:00:00+00:00",
+            "2026-03-13T03:59:59+00:00",  # Mar 12 23:59:59 EDT
+            zone,
+        )
+        assert len(kept) == 1
+
+    def test_timed_events_are_never_filtered(self):
+        zone = ZoneInfo("America/New_York")
+        events = [self._timed("e1", "Call", "2026-03-10T14:00:00+00:00",
+                              "2026-03-10T15:00:00+00:00")]
+        kept = commands._cal_trim_all_day(
+            events, "2026-03-10T04:00:00+00:00", "2026-03-11T04:00:00+00:00", zone,
+        )
+        assert len(kept) == 1
+
+    def test_all_day_sorts_ahead_of_that_local_days_timed_events(self):
+        """00:30+01:00 is stored on the previous UTC day but is the same
+        local day, so the all-day entry must still lead it."""
+        zone = ZoneInfo("Europe/Amsterdam")
+        all_day = self._all_day("e1", "Holiday", "2026-03-11", "2026-03-12")
+        just_after_midnight = self._timed(
+            "e2", "Night call", "2026-03-10T23:30:00+00:00", "2026-03-11T00:30:00+00:00",
+        )
+        events = sorted(
+            [just_after_midnight, all_day],
+            key=lambda e: commands._cal_sort_key(e, zone),
+        )
+        assert [e["title"] for e in events] == ["Holiday", "Night call"]
