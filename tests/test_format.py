@@ -343,6 +343,49 @@ class TestConvoFormatThread:
         assert lines[0].split("|")[2] == "Peter"
         assert lines[1].split("|")[2] == "Paula"
 
+    def test_date_includes_year_when_thread_spans_years(self):
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Multi-year",
+            "message_count": 2,
+            "messages": [
+                {"from": "Alice", "date": "2025-01-01T09:00:00Z", "body": "old"},
+                {"from": "Bob", "date": "2026-01-01T09:00:00Z", "body": "new"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].startswith("|1 Jan 25 09:00|")
+        assert lines[1].startswith("|1 Jan 26 09:00|")
+
+    def test_date_omits_year_when_thread_stays_within_one_year(self):
+        # Regression guard: same-year multi-day threads must stay
+        # byte-identical to the pre-year-support format.
+        result = format_thread(SAMPLE_THREAD, "convo")
+        lines = result.split("\n")[1:]
+        assert lines[0].startswith("|20 Feb 09:15|")
+        assert "26" not in lines[0]
+
+    def test_sender_token_suffix_never_collides_with_real_token(self):
+        """A suffixed token must never collide with another sender's actual
+        (unsuffixed) token — e.g. two "Alice"s must not produce "Alice1"
+        when a third sender's own token is already "Alice1"."""
+        thread = {
+            "thread_id": "w:chat@g.us",
+            "subject": "Collision",
+            "message_count": 3,
+            "messages": [
+                {"from": "alice@home.com", "date": "2026-07-28T20:33:00Z", "body": "hi"},
+                {"from": "alice@work.com", "date": "2026-07-28T20:35:00Z", "body": "hey"},
+                {"from": "alice1@else.com", "date": "2026-07-28T20:40:00Z", "body": "yo"},
+            ],
+        }
+        result = format_thread(thread, "convo")
+        lines = result.split("\n")[1:]
+        tokens = [line.split("|")[2] for line in lines]
+        assert len(tokens) == len(set(tokens)), f"colliding sender tokens: {tokens}"
+        assert "Alice1" in tokens  # belongs to alice1@else.com
+
     def test_long_body_truncated(self):
         thread = {
             "thread_id": "w:chat@g.us",

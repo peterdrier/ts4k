@@ -786,14 +786,27 @@ def _sender_tokens(messages: list[dict]) -> dict[str, str]:
         name_counts: dict[str, int] = {}
         for frm in frms:
             name_counts[names[frm]] = name_counts.get(names[frm], 0) + 1
+
+        # Reserve every name that's already unique on its own so a later
+        # numeric suffix can't collide with it — e.g. "alice@home.com" and
+        # "alice@work.com" both suffixing to "Alice1" would otherwise clash
+        # with an actual sender whose name is already "Alice1".
+        taken = {name for name, count in name_counts.items() if count == 1}
+
         seen_names: dict[str, int] = {}
         for frm in frms:
             name = names[frm]
             if name_counts[name] == 1:
                 tokens[frm] = name
             else:
-                seen_names[name] = seen_names.get(name, 0) + 1
-                tokens[frm] = f"{name}{seen_names[name]}"
+                n = seen_names.get(name, 0) + 1
+                candidate = f"{name}{n}"
+                while candidate in taken:
+                    n += 1
+                    candidate = f"{name}{n}"
+                seen_names[name] = n
+                taken.add(candidate)
+                tokens[frm] = candidate
 
     return tokens
 
@@ -810,8 +823,9 @@ def _thread_convo(thread: dict) -> str:
     """Compact conversation view — one line per message.
 
     Date and time on the first message of a day, time only thereafter.
-    Senders are abbreviated (see :func:`_sender_tokens`) and bodies are
-    flattened to a single truncated line.
+    The year is included in the date whenever the thread spans more than
+    one calendar year. Senders are abbreviated (see :func:`_sender_tokens`)
+    and bodies are flattened to a single truncated line.
     """
     messages = thread.get("messages", [])
     lines = [
@@ -820,6 +834,10 @@ def _thread_convo(thread: dict) -> str:
     ]
 
     tokens = _sender_tokens(messages)
+    # Reuse the same year-span detection the compact timestamp helpers use
+    # (_detect_precision) so day-change labels gain a year suffix only when
+    # the transcript actually crosses a year boundary.
+    multi_year = _detect_precision(messages) == "year"
     last_day: tuple[int, int, int] | None = None
     for msg in messages:
         dt = _parse_iso(msg.get("date", ""))
@@ -829,7 +847,11 @@ def _thread_convo(thread: dict) -> str:
             day = (dt.year, dt.month, dt.day)
             time_part = f"{dt.hour:02d}:{dt.minute:02d}"
             if day != last_day:
-                ts = f"{dt.day} {_MONTHS[dt.month]} {time_part}"
+                ts = f"{dt.day} {_MONTHS[dt.month]}"
+                if multi_year:
+                    # Same two-digit truncation _compact_ts/_date_label use.
+                    ts += f" {dt.year % 100:02d}"
+                ts += f" {time_part}"
                 last_day = day
             else:
                 ts = time_part
