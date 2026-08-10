@@ -15,11 +15,16 @@ ts4k reads GitHub, it never writes to it.  The only mutating call in this
 adapter is ``mark_read``, which marks a *notification thread* as read —
 it touches the notification inbox, never an issue, PR, or repository.
 
-Two ID forms are returned, both native::
+All IDs are native, in one of these forms::
 
-    gh:2984571234            a notification thread ID (from whatsnew)
-    gh:owner/repo#42         an issue or PR (from list_messages/search)
-    gh:owner/repo/comments/9 a single issue comment (from read_thread)
+    gh:2984571234                 a notification thread ID (from whatsnew)
+    gh:owner/repo#42              an issue or PR (from list_messages/search)
+    gh:owner/repo/comments/9      an issue-style conversation comment (read_thread)
+    gh:owner/repo/reviews/9       a PR review submission — approve/request-changes/comment
+    gh:owner/repo/pull-comments/9 a PR inline review comment, on the diff (read_thread)
+
+Review submissions and inline review comments are surfaced only when
+``read_thread`` is called on a pull request — a plain issue has neither.
 
 Usage::
 
@@ -159,6 +164,11 @@ def classify(notification: dict) -> str:
 
 _ISSUE_ID = re.compile(r"^([^/\s]+)/([^/#\s]+)#(\d+)$")
 _COMMENT_ID = re.compile(r"^([^/\s]+)/([^/#\s]+)/comments/(\d+)$")
+# Inline PR review comments are numbered in their own sequence and are only
+# readable via /pulls/comments/{id}, so they need an ID distinct from an
+# issue comment's — the two ranges overlap, and a shared shape would send
+# one to the wrong endpoint.
+_REVIEW_COMMENT_ID = re.compile(r"^([^/\s]+)/([^/#\s]+)/pull-comments/(\d+)$")
 _NOTIFICATION_ID = re.compile(r"^\d+$")
 
 
@@ -172,13 +182,17 @@ def _strip_prefix(prefixed_id: str, prefix: str) -> str:
 def parse_id(raw_id: str) -> tuple[str, tuple[str, ...]]:
     """Classify a de-prefixed ID.
 
-    Returns ``("notification", (id,))``, ``("issue", (owner, repo, number))``
-    or ``("comment", (owner, repo, comment_id))``.  Raises ``ValueError``
-    for anything else, so a mistyped ID fails loudly rather than being
-    sent to GitHub as a guess.
+    Returns ``("notification", (id,))``, ``("issue", (owner, repo, number))``,
+    ``("comment", (owner, repo, comment_id))`` or ``("review_comment",
+    (owner, repo, comment_id))``.  Raises ``ValueError`` for anything else,
+    so a mistyped ID fails loudly rather than being sent to GitHub as a
+    guess.
     """
     if _NOTIFICATION_ID.match(raw_id):
         return "notification", (raw_id,)
+    m = _REVIEW_COMMENT_ID.match(raw_id)
+    if m:
+        return "review_comment", m.groups()
     m = _COMMENT_ID.match(raw_id)
     if m:
         return "comment", m.groups()
@@ -276,18 +290,54 @@ def _issue_to_dict(issue: dict, prefix: str, ref: str) -> dict:
     }
 
 
-def _comment_to_dict(comment: dict, prefix: str, repo: str, subject: str) -> dict:
-    """Convert an issue comment to a normalised message dict."""
+def _comment_to_dict(
+    comment: dict, prefix: str, repo: str, subject: str,
+    segment: str = "comments",
+) -> dict:
+    """Convert an issue comment to a normalised message dict.
+
+    Also used for pull-request inline review comments — both resources
+    share the same ``id`` / ``user`` / ``body`` / ``created_at`` /
+    ``html_url`` shape — but those pass ``segment="pull-comments"`` so the
+    resulting ID reads back from the endpoint it actually came from.
+    """
     cid = comment.get("id", "")
     return {
-        "id": f"{prefix}:{repo}/comments/{cid}",
-        "raw_id": f"{repo}/comments/{cid}",
+        "id": f"{prefix}:{repo}/{segment}/{cid}",
+        "raw_id": f"{repo}/{segment}/{cid}",
         "source": prefix,
         "from": (comment.get("user") or {}).get("login", ""),
         "subject": subject,
         "date": comment.get("created_at", ""),
         "body": comment.get("body") or "",
         "url": comment.get("html_url", ""),
+    }
+
+
+def _review_to_dict(review: dict, prefix: str, repo: str, subject: str) -> dict:
+    """Convert a pull-request review submission to a normalised message dict.
+
+    A review can carry no prose at all — a bare "Approve" or "Request
+    changes" click — in which case the state, not the empty body, is the
+    entire point of the notification. It is folded into the body as a
+    bracketed tag, the same way notification categories are (see
+    ``_notification_to_dict``), so it survives even the pipe format,
+    which renders nothing but ``from``, ``date``, and ``body``.
+    """
+    rid = review.get("id", "")
+    state = (review.get("state") or "").upper()
+    body = review.get("body") or ""
+    if state:
+        body = f"[{state}] {body}".strip()
+    return {
+        "id": f"{prefix}:{repo}/reviews/{rid}",
+        "raw_id": f"{repo}/reviews/{rid}",
+        "source": prefix,
+        "from": (review.get("user") or {}).get("login", ""),
+        "subject": subject,
+        "date": review.get("submitted_at", ""),
+        "body": body,
+        "url": review.get("html_url", ""),
     }
 
 
@@ -344,9 +394,15 @@ class GitHubAdapter(BaseAdapter):
 
         token = resolve_token(self._config.token, self._config.token_file)
         if not token:
+            from ts4k.core.levels import AccessLevel
+            scope = (
+                "Notifications: write"
+                if self._access_level >= AccessLevel.MODIFY
+                else "Notifications: read"
+            )
             raise RuntimeError(
-                "No GitHub token configured. Create a fine-grained PAT with "
-                "Notifications: read (plus Contents/Issues: read for the repos "
+                f"No GitHub token configured. Create a fine-grained PAT with "
+                f"{scope} (plus Contents/Issues: read for the repos "
                 "you follow), then: ts4k src add "
                 f"{self._prefix} github token_file=<path>"
             )
@@ -528,12 +584,15 @@ class GitHubAdapter(BaseAdapter):
             ref = await self._issue_ref_for_notification(parts[0])
             kind, parts = "issue", tuple(re.split(r"[/#]", ref))
 
-        if kind == "comment":
+        if kind in ("comment", "review_comment"):
             owner, repo, cid = parts
-            comment = await self._get(
-                f"/repos/{owner}/{repo}/issues/comments/{cid}"
+            review = kind == "review_comment"
+            path = "pulls" if review else "issues"
+            comment = await self._get(f"/repos/{owner}/{repo}/{path}/comments/{cid}")
+            return _comment_to_dict(
+                comment, self._prefix, f"{owner}/{repo}", "",
+                segment="pull-comments" if review else "comments",
             )
-            return _comment_to_dict(comment, self._prefix, f"{owner}/{repo}", "")
 
         owner, repo, number = parts
         ref = f"{owner}/{repo}#{number}"
@@ -543,15 +602,19 @@ class GitHubAdapter(BaseAdapter):
     async def read_thread(self, thread_id: str) -> dict:
         """Read an issue or PR together with its comments.
 
-        The issue body is the first message; comments follow in the order
-        GitHub returns them (oldest first).
+        The issue body is the first message; comments follow in
+        chronological order. For a pull request that also includes review
+        submissions (approve / request-changes / comment verdicts) and
+        inline review comments — those live under separate endpoints from
+        the issue-style conversation comments, so without them a PR thread
+        would silently omit reviewer feedback.
         """
         kind, parts = parse_id(_strip_prefix(thread_id, self._prefix))
 
         if kind == "notification":
             ref = await self._issue_ref_for_notification(parts[0])
             parts = tuple(re.split(r"[/#]", ref))
-        elif kind == "comment":
+        elif kind in ("comment", "review_comment"):
             raise ValueError(
                 f"{thread_id!r} is a comment, not a thread — use the issue ID "
                 "(gh:owner/repo#42)."
@@ -562,8 +625,9 @@ class GitHubAdapter(BaseAdapter):
 
         issue = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
         head = _issue_to_dict(issue, self._prefix, ref)
+        subject = head.get("subject", "")
 
-        messages = [head]
+        replies: list[dict] = []
         page = 1
         while True:
             comments = await self._get(
@@ -572,22 +636,74 @@ class GitHubAdapter(BaseAdapter):
             )
             if not isinstance(comments, list) or not comments:
                 break
-            messages.extend(
-                _comment_to_dict(
-                    c, self._prefix, f"{owner}/{repo}", head.get("subject", "")
-                )
+            replies.extend(
+                _comment_to_dict(c, self._prefix, f"{owner}/{repo}", subject)
                 for c in comments
             )
             if len(comments) < _COMMENTS_PAGE_SIZE:
                 break
             page += 1
 
+        if head.get("is_pull_request"):
+            replies.extend(
+                await self._pull_request_feedback(owner, repo, number, subject)
+            )
+            # Comments, reviews, and review comments each arrive sorted
+            # within their own endpoint but not against each other —
+            # merge into one chronological conversation.
+            replies.sort(key=lambda m: m.get("date", ""))
+
+        messages = [head, *replies]
+
         return {
             "thread_id": f"{self._prefix}:{ref}",
-            "subject": head.get("subject", ""),
+            "subject": subject,
             "message_count": len(messages),
             "messages": messages,
         }
+
+    async def _pull_request_feedback(
+        self, owner: str, repo: str, number: str, subject: str
+    ) -> list[dict]:
+        """Fetch PR review submissions and inline review comments.
+
+        Only called for pull requests — issues have neither endpoint.
+        """
+        feedback: list[dict] = []
+
+        reviews = await self._get(
+            f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+            {"per_page": _COMMENTS_PAGE_SIZE},
+        )
+        if isinstance(reviews, list):
+            feedback.extend(
+                _review_to_dict(r, self._prefix, f"{owner}/{repo}", subject)
+                for r in reviews
+                # PENDING is the reviewer's own draft, not yet submitted —
+                # nothing to notify anyone about until it's submitted.
+                if (r.get("state") or "").upper() != "PENDING"
+            )
+
+        page = 1
+        while True:
+            review_comments = await self._get(
+                f"/repos/{owner}/{repo}/pulls/{number}/comments",
+                {"per_page": _COMMENTS_PAGE_SIZE, "page": page},
+            )
+            if not isinstance(review_comments, list) or not review_comments:
+                break
+            feedback.extend(
+                _comment_to_dict(
+                    c, self._prefix, f"{owner}/{repo}", subject,
+                    segment="pull-comments",
+                )
+                for c in review_comments
+            )
+            if len(review_comments) < _COMMENTS_PAGE_SIZE:
+                break
+            page += 1
+
+        return feedback
 
     async def _issue_ref_for_notification(self, notification_id: str) -> str:
         """Resolve a notification thread ID to its ``owner/repo#N`` subject."""

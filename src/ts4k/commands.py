@@ -1501,6 +1501,17 @@ async def preload(
     provider = cfg.get("provider", "").lower()
     cacheable = provider in cache.CACHEABLE_PROVIDERS
 
+    if prefix not in cache.CACHEABLE_SOURCES:
+        # Fail closed: cache.CACHEABLE_SOURCES only recognizes "g"/"o"
+        # today (issue #64), so a GitHub source's headers are silently
+        # discarded and its bodies would end up as unreachable orphan
+        # files if we let this proceed — reject instead of reporting a
+        # fake success.
+        return (
+            f"Error: source {prefix!r} ({provider}) doesn't support preload — "
+            "only Gmail and O365 messages are cached locally."
+        )
+
     # Contact auto-expand
     if contact:
         resolved_query = _contact_to_query(contact, prefix, provider)
@@ -2594,6 +2605,7 @@ def _append_setup(lines: list[str]) -> None:
     lines.append("    5. ts4k list --source o --since 2d          (verify)")
     lines.append("  GitHub (notifications, issues, PRs — read + mark-read only):")
     lines.append("    1. Create a fine-grained PAT: github.com/settings/tokens — Notifications: read, Issues/Pull requests: read")
+    lines.append("       (use Notifications: write instead of read if you'll set level=modify, below, to mark notifications read)")
     lines.append("    2. ts4k src add gh github token_file=<path>   (or GITHUB_TOKEN env; level=modify to allow mark-read)")
     lines.append("    3. ts4k whatsnew dev --source gh             (verify)")
     lines.append("    Categories: ci, review, mention, assignment, dependabot, release — suppress with: ts4k filter add-category ci")

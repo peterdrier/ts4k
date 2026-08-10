@@ -538,10 +538,60 @@ class TestReadMessage:
         assert msg["id"] == "gh:peterdrier/ts4k/comments/991"
 
     @pytest.mark.asyncio
+    async def test_reads_a_pull_request_review_comment(self):
+        """Inline review comments are numbered in their own sequence and
+        only exist under /pulls/comments — an issue-comment ID of the same
+        number is a different object entirely."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(REVIEW_COMMENTS[0]))
+        msg = await adapter.read_message("gh:peterdrier/ts4k/pull-comments/6001")
+        assert adapter._client.get.call_args[0][0] == (
+            "/repos/peterdrier/ts4k/pulls/comments/6001"
+        )
+        assert msg["from"] == "bob"
+        assert msg["id"] == "gh:peterdrier/ts4k/pull-comments/6001"
+
+    @pytest.mark.asyncio
+    async def test_review_comment_is_not_a_thread(self):
+        adapter = _make_adapter()
+        with pytest.raises(ValueError, match="is a comment, not a thread"):
+            await adapter.read_thread("gh:peterdrier/ts4k/pull-comments/6001")
+
+    @pytest.mark.asyncio
     async def test_bad_id_raises(self):
         adapter = _make_adapter()
         with pytest.raises(ValueError, match="Unrecognised GitHub ID"):
             await adapter.read_message("gh:nonsense")
+
+
+REVIEWS = [
+    {
+        "id": 5001,
+        "user": {"login": "alice"},
+        "state": "APPROVED",
+        "body": "",
+        "submitted_at": "2026-08-02T12:00:00Z",
+        "html_url": "https://github.com/peterdrier/ts4k/pull/42#pullrequestreview-5001",
+    },
+    {
+        "id": 5002,
+        "user": {"login": "bob"},
+        "state": "CHANGES_REQUESTED",
+        "body": "Please add a test.",
+        "submitted_at": "2026-08-02T14:00:00Z",
+        "html_url": "https://github.com/peterdrier/ts4k/pull/42#pullrequestreview-5002",
+    },
+]
+
+REVIEW_COMMENTS = [
+    {
+        "id": 6001,
+        "user": {"login": "bob"},
+        "created_at": "2026-08-02T13:00:00Z",
+        "body": "Missing null check here.",
+        "html_url": "https://github.com/peterdrier/ts4k/pull/42#discussion_r6001",
+    },
+]
 
 
 class TestReadThread:
@@ -556,6 +606,118 @@ class TestReadThread:
         assert thread["subject"] == "Add GitHub adapter"
         assert thread["message_count"] == 3
         assert [m["from"] for m in thread["messages"]] == ["peterdrier", "alice", "bob"]
+
+    @pytest.mark.asyncio
+    async def test_issue_thread_makes_no_pull_request_calls(self):
+        """A plain issue has no /pulls endpoints — read_thread must not probe them."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            side_effect=[_mock_response(ISSUE), _mock_response(COMMENTS)]
+        )
+        await adapter.read_thread("gh:peterdrier/ts4k#42")
+        assert adapter._client.get.call_count == 2
+        paths = [c[0][0] for c in adapter._client.get.call_args_list]
+        assert not any("/pulls/" in p for p in paths)
+
+    @pytest.mark.asyncio
+    async def test_pull_request_thread_includes_reviews_and_review_comments(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            side_effect=[
+                _mock_response(PULL_REQUEST),
+                _mock_response(COMMENTS),
+                _mock_response(REVIEWS),
+                _mock_response(REVIEW_COMMENTS),
+            ]
+        )
+        thread = await adapter.read_thread("gh:peterdrier/ts4k#42")
+
+        # Chronological across all three endpoints: alice's issue comment
+        # (10:00), alice's approval (12:00), bob's inline review comment
+        # (13:00), bob's changes-requested review (14:00), bob's issue
+        # comment the next day (11:00).
+        froms = [m["from"] for m in thread["messages"]]
+        assert froms == ["peterdrier", "alice", "alice", "bob", "bob", "bob"]
+        assert thread["message_count"] == 6
+
+        bodies = [m["body"] for m in thread["messages"]]
+        # A bare approval has no prose — the state is the whole message.
+        assert "[APPROVED]" in bodies[2]
+        assert bodies[3] == "Missing null check here."
+        assert bodies[4] == "[CHANGES_REQUESTED] Please add a test."
+
+        # Inline review comments get their own ID namespace so they read
+        # back from /pulls/comments, not /issues/comments.
+        assert thread["messages"][3]["id"] == "gh:peterdrier/ts4k/pull-comments/6001"
+
+    @pytest.mark.asyncio
+    async def test_pull_request_calls_the_review_endpoints(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            side_effect=[
+                _mock_response(PULL_REQUEST),
+                _mock_response([]),
+                _mock_response(REVIEWS),
+                _mock_response([]),
+            ]
+        )
+        await adapter.read_thread("gh:peterdrier/ts4k#42")
+        paths = [c[0][0] for c in adapter._client.get.call_args_list]
+        assert "/repos/peterdrier/ts4k/pulls/42/reviews" in paths
+        assert "/repos/peterdrier/ts4k/pulls/42/comments" in paths
+
+    @pytest.mark.asyncio
+    async def test_empty_body_review_keeps_its_state_visible(self):
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            side_effect=[
+                _mock_response(PULL_REQUEST),
+                _mock_response([]),
+                _mock_response(REVIEWS),
+                _mock_response([]),
+            ]
+        )
+        thread = await adapter.read_thread("gh:peterdrier/ts4k#42")
+        approved = next(m for m in thread["messages"] if "APPROVED" in m["body"])
+        assert approved["body"] == "[APPROVED]"
+        requested = next(m for m in thread["messages"] if "CHANGES_REQUESTED" in m["body"])
+        assert requested["body"] == "[CHANGES_REQUESTED] Please add a test."
+
+    @pytest.mark.asyncio
+    async def test_pending_review_is_excluded(self):
+        adapter = _make_adapter()
+        pending = [{
+            "id": 5003, "user": {"login": "carol"}, "state": "PENDING",
+            "body": "", "submitted_at": "2026-08-02T15:00:00Z",
+        }]
+        adapter._client.get = AsyncMock(
+            side_effect=[
+                _mock_response(PULL_REQUEST),
+                _mock_response([]),
+                _mock_response(pending),
+                _mock_response([]),
+            ]
+        )
+        thread = await adapter.read_thread("gh:peterdrier/ts4k#42")
+        assert thread["message_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_replies_are_chronologically_merged(self):
+        """Conversation comments, reviews, and review comments are merged
+        into a single date-ordered sequence rather than left as separate
+        blocks in endpoint order."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(
+            side_effect=[
+                _mock_response(PULL_REQUEST),
+                _mock_response(COMMENTS),  # 10:00, 11:00
+                _mock_response(REVIEWS),  # 12:00, 14:00
+                _mock_response(REVIEW_COMMENTS),  # 13:00
+            ]
+        )
+        thread = await adapter.read_thread("gh:peterdrier/ts4k#42")
+        dates = [m["date"] for m in thread["messages"][1:]]
+        assert dates == sorted(dates)
 
     @pytest.mark.asyncio
     async def test_comment_ids_are_unique_and_native(self):
