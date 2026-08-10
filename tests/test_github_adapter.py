@@ -261,6 +261,16 @@ class TestParseId:
             "comment", ("peterdrier", "ts4k", "991")
         )
 
+    def test_review_comment_id(self):
+        assert parse_id("peterdrier/ts4k/pull-comments/6001") == (
+            "review_comment", ("peterdrier", "ts4k", "6001")
+        )
+
+    def test_review_id(self):
+        assert parse_id("peterdrier/ts4k/pulls/42/reviews/5001") == (
+            "review", ("peterdrier", "ts4k", "42", "5001")
+        )
+
     def test_garbage_raises(self):
         with pytest.raises(ValueError, match="Unrecognised GitHub ID"):
             parse_id("not-an-id")
@@ -439,6 +449,18 @@ class TestListMessages:
         assert results[0]["id"] == "gh:2984571234"
 
     @pytest.mark.asyncio
+    async def test_no_query_does_not_apply_whatsnew_one_day_cutoff(self):
+        """A notification that's been unread for more than 24 hours must
+        still show up in a plain queryless list — only whatsnew() applies
+        the 24-hour "since" default."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(NOTIFICATIONS))
+        await adapter.list_messages()
+        params = adapter._client.get.call_args[1]["params"]
+        assert "since" not in params
+        assert params["all"] == "false"
+
+    @pytest.mark.asyncio
     async def test_page_token_selects_page(self):
         adapter = _make_adapter()
         adapter._client.get = AsyncMock(return_value=_mock_response(SEARCH_RESPONSE))
@@ -451,6 +473,19 @@ class TestListMessages:
         data = dict(SEARCH_RESPONSE, total_count=50)
         adapter._client.get = AsyncMock(return_value=_mock_response(data))
         results = await adapter.list_messages(query="x", count=2)
+        assert results[-1]["_next_page_token"] == "2"
+
+    @pytest.mark.asyncio
+    async def test_next_page_token_uses_actual_page_size_not_count(self):
+        """count=200 exceeds GitHub's 100-item search cap, so per_page is
+        capped at 100. If the pagination check compared against count
+        instead of the real page size, 200 < 150 would be False and the
+        next-page token would be dropped even though 50 matches remain."""
+        adapter = _make_adapter()
+        data = dict(SEARCH_RESPONSE, total_count=150)
+        adapter._client.get = AsyncMock(return_value=_mock_response(data))
+        results = await adapter.list_messages(query="x", count=200)
+        assert adapter._client.get.call_args[1]["params"]["per_page"] == 100
         assert results[-1]["_next_page_token"] == "2"
 
     @pytest.mark.asyncio
@@ -558,6 +593,26 @@ class TestReadMessage:
             await adapter.read_thread("gh:peterdrier/ts4k/pull-comments/6001")
 
     @pytest.mark.asyncio
+    async def test_reads_a_review_by_its_id(self):
+        """A review ID returned from a thread read (gh:owner/repo/pulls/N/
+        reviews/M) must resolve back through read_message rather than
+        raising 'Unrecognised GitHub ID'."""
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(REVIEWS[0]))
+        msg = await adapter.read_message("gh:peterdrier/ts4k/pulls/42/reviews/5001")
+        assert adapter._client.get.call_args[0][0] == (
+            "/repos/peterdrier/ts4k/pulls/42/reviews/5001"
+        )
+        assert msg["from"] == "alice"
+        assert msg["id"] == "gh:peterdrier/ts4k/pulls/42/reviews/5001"
+
+    @pytest.mark.asyncio
+    async def test_review_id_is_not_a_thread(self):
+        adapter = _make_adapter()
+        with pytest.raises(ValueError, match="is a comment, not a thread"):
+            await adapter.read_thread("gh:peterdrier/ts4k/pulls/42/reviews/5001")
+
+    @pytest.mark.asyncio
     async def test_bad_id_raises(self):
         adapter = _make_adapter()
         with pytest.raises(ValueError, match="Unrecognised GitHub ID"):
@@ -650,6 +705,11 @@ class TestReadThread:
         # back from /pulls/comments, not /issues/comments.
         assert thread["messages"][3]["id"] == "gh:peterdrier/ts4k/pull-comments/6001"
 
+        # Review IDs carry the PR number so read_message can resolve them
+        # back through /pulls/{number}/reviews/{id}.
+        assert thread["messages"][2]["id"] == "gh:peterdrier/ts4k/pulls/42/reviews/5001"
+        assert thread["messages"][4]["id"] == "gh:peterdrier/ts4k/pulls/42/reviews/5002"
+
     @pytest.mark.asyncio
     async def test_pull_request_calls_the_review_endpoints(self):
         adapter = _make_adapter()
@@ -665,6 +725,41 @@ class TestReadThread:
         paths = [c[0][0] for c in adapter._client.get.call_args_list]
         assert "/repos/peterdrier/ts4k/pulls/42/reviews" in paths
         assert "/repos/peterdrier/ts4k/pulls/42/comments" in paths
+
+    @pytest.mark.asyncio
+    async def test_paginates_past_100_reviews(self):
+        """A PR with more than 100 submitted reviews must not silently lose
+        the later ones to a single-page fetch — the inline review-comment
+        endpoint already paginates; reviews need the same loop."""
+        adapter = _make_adapter()
+        full_page = [
+            {
+                "id": 9000 + i,
+                "user": {"login": "carol"},
+                "state": "APPROVED",
+                "body": "",
+                "submitted_at": "2026-08-02T12:00:00Z",
+            }
+            for i in range(100)
+        ]
+        adapter._client.get = AsyncMock(
+            side_effect=[
+                _mock_response(PULL_REQUEST),
+                _mock_response([]),
+                _mock_response(full_page),
+                _mock_response(REVIEWS),  # second page, short — stops pagination
+                _mock_response([]),
+            ]
+        )
+        thread = await adapter.read_thread("gh:peterdrier/ts4k#42")
+        # 100 from the first page + 2 from the short second page.
+        assert thread["message_count"] == 1 + 100 + 2
+        review_paths = [
+            c[1]["params"]
+            for c in adapter._client.get.call_args_list
+            if c[0][0] == "/repos/peterdrier/ts4k/pulls/42/reviews"
+        ]
+        assert [p["page"] for p in review_paths] == [1, 2]
 
     @pytest.mark.asyncio
     async def test_empty_body_review_keeps_its_state_visible(self):

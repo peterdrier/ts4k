@@ -1501,7 +1501,12 @@ async def preload(
     provider = cfg.get("provider", "").lower()
     cacheable = provider in cache.CACHEABLE_PROVIDERS
 
-    if prefix not in cache.CACHEABLE_SOURCES:
+    # Gate on the provider, not the prefix: prefixes are user-chosen, so a
+    # GitHub source named "g" or "o" would otherwise collide with
+    # cache.CACHEABLE_SOURCES and slip through this guard even though
+    # nothing about it is actually cacheable (see _ACTIVITY_TRACKED_PROVIDERS,
+    # which gates the same providers by name for the same reason).
+    if provider not in _ACTIVITY_TRACKED_PROVIDERS or prefix not in cache.CACHEABLE_SOURCES:
         # Fail closed: cache.CACHEABLE_SOURCES only recognizes "g"/"o"
         # today (issue #64), so a GitHub source's headers are silently
         # discarded and its bodies would end up as unreachable orphan

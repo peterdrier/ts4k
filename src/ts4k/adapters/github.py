@@ -17,11 +17,11 @@ it touches the notification inbox, never an issue, PR, or repository.
 
 All IDs are native, in one of these forms::
 
-    gh:2984571234                 a notification thread ID (from whatsnew)
-    gh:owner/repo#42              an issue or PR (from list_messages/search)
-    gh:owner/repo/comments/9      an issue-style conversation comment (read_thread)
-    gh:owner/repo/reviews/9       a PR review submission — approve/request-changes/comment
-    gh:owner/repo/pull-comments/9 a PR inline review comment, on the diff (read_thread)
+    gh:2984571234                     a notification thread ID (from whatsnew)
+    gh:owner/repo#42                  an issue or PR (from list_messages/search)
+    gh:owner/repo/comments/9          an issue-style conversation comment (read_thread)
+    gh:owner/repo/pulls/42/reviews/9  a PR review submission — approve/request-changes/comment
+    gh:owner/repo/pull-comments/9     a PR inline review comment, on the diff (read_thread)
 
 Review submissions and inline review comments are surfaced only when
 ``read_thread`` is called on a pull request — a plain issue has neither.
@@ -169,6 +169,11 @@ _COMMENT_ID = re.compile(r"^([^/\s]+)/([^/#\s]+)/comments/(\d+)$")
 # issue comment's — the two ranges overlap, and a shared shape would send
 # one to the wrong endpoint.
 _REVIEW_COMMENT_ID = re.compile(r"^([^/\s]+)/([^/#\s]+)/pull-comments/(\d+)$")
+# A review submission's single-item endpoint is nested under its pull
+# request (/pulls/{number}/reviews/{id}), so the ID must carry the PR
+# number as well — unlike an issue comment or inline review comment, whose
+# endpoints are addressable by comment ID alone.
+_REVIEW_ID = re.compile(r"^([^/\s]+)/([^/#\s]+)/pulls/(\d+)/reviews/(\d+)$")
 _NOTIFICATION_ID = re.compile(r"^\d+$")
 
 
@@ -183,16 +188,19 @@ def parse_id(raw_id: str) -> tuple[str, tuple[str, ...]]:
     """Classify a de-prefixed ID.
 
     Returns ``("notification", (id,))``, ``("issue", (owner, repo, number))``,
-    ``("comment", (owner, repo, comment_id))`` or ``("review_comment",
-    (owner, repo, comment_id))``.  Raises ``ValueError`` for anything else,
-    so a mistyped ID fails loudly rather than being sent to GitHub as a
-    guess.
+    ``("comment", (owner, repo, comment_id))``, ``("review_comment",
+    (owner, repo, comment_id))`` or ``("review", (owner, repo, number,
+    review_id))``.  Raises ``ValueError`` for anything else, so a mistyped
+    ID fails loudly rather than being sent to GitHub as a guess.
     """
     if _NOTIFICATION_ID.match(raw_id):
         return "notification", (raw_id,)
     m = _REVIEW_COMMENT_ID.match(raw_id)
     if m:
         return "review_comment", m.groups()
+    m = _REVIEW_ID.match(raw_id)
+    if m:
+        return "review", m.groups()
     m = _COMMENT_ID.match(raw_id)
     if m:
         return "comment", m.groups()
@@ -314,7 +322,9 @@ def _comment_to_dict(
     }
 
 
-def _review_to_dict(review: dict, prefix: str, repo: str, subject: str) -> dict:
+def _review_to_dict(
+    review: dict, prefix: str, repo: str, number: str, subject: str
+) -> dict:
     """Convert a pull-request review submission to a normalised message dict.
 
     A review can carry no prose at all — a bare "Approve" or "Request
@@ -323,6 +333,11 @@ def _review_to_dict(review: dict, prefix: str, repo: str, subject: str) -> dict:
     bracketed tag, the same way notification categories are (see
     ``_notification_to_dict``), so it survives even the pipe format,
     which renders nothing but ``from``, ``date``, and ``body``.
+
+    The ID carries *number* (the pull request it belongs to) because
+    GitHub's single-review endpoint is nested under the PR
+    (``/pulls/{pull_number}/reviews/{review_id}``) — a review ID with no PR
+    number has nothing for ``read_message``/``parse_id`` to resolve.
     """
     rid = review.get("id", "")
     state = (review.get("state") or "").upper()
@@ -330,8 +345,8 @@ def _review_to_dict(review: dict, prefix: str, repo: str, subject: str) -> dict:
     if state:
         body = f"[{state}] {body}".strip()
     return {
-        "id": f"{prefix}:{repo}/reviews/{rid}",
-        "raw_id": f"{repo}/reviews/{rid}",
+        "id": f"{prefix}:{repo}/pulls/{number}/reviews/{rid}",
+        "raw_id": f"{repo}/pulls/{number}/reviews/{rid}",
         "source": prefix,
         "from": (review.get("user") or {}).get("login", ""),
         "subject": subject,
@@ -496,6 +511,11 @@ class GitHubAdapter(BaseAdapter):
         *sender* and *domain* are email filters; a GitHub notification has
         no email sender, so a query scoped to one returns nothing here
         rather than flooding it with unrelated rows.
+
+        Defaults *since* to the last 24 hours when not given — that default
+        is specific to this "what's new" entry point; ``list_messages``'s
+        queryless path calls ``_fetch_notifications`` directly to read the
+        full unread feed without it.
         """
         if sender or domain:
             return []
@@ -504,21 +524,30 @@ class GitHubAdapter(BaseAdapter):
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             since = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        return await self._fetch_notifications(since, count)
+
+    async def _fetch_notifications(self, since: str | None, count: int) -> list[dict]:
+        """Page through ``/notifications``, optionally filtered by *since*.
+
+        *since* is ``None`` when the caller wants the unread feed
+        unfiltered by recency — GitHub's ``/notifications`` has no implicit
+        time cutoff of its own; that only exists because ``whatsnew``
+        chooses to apply one.
+        """
         results: list[dict] = []
         page = 1
         while len(results) < count:
-            data = await self._get(
-                "/notifications",
-                {
-                    # Explicit rather than relying on GitHub's default:
-                    # mark_read only removes an item from this feed while
-                    # it stays scoped to unread.
-                    "all": "false",
-                    "since": since,
-                    "per_page": _NOTIFICATIONS_PAGE_SIZE,
-                    "page": page,
-                },
-            )
+            params: dict[str, Any] = {
+                # Explicit rather than relying on GitHub's default:
+                # mark_read only removes an item from this feed while
+                # it stays scoped to unread.
+                "all": "false",
+                "per_page": _NOTIFICATIONS_PAGE_SIZE,
+                "page": page,
+            }
+            if since:
+                params["since"] = since
+            data = await self._get("/notifications", params)
             if not isinstance(data, list) or not data:
                 break
             results.extend(_notification_to_dict(n, self._prefix) for n in data)
@@ -547,17 +576,21 @@ class GitHubAdapter(BaseAdapter):
 
         if not query:
             # No query to search with — the notification feed is the only
-            # thing GitHub can list without one.
-            return await self.whatsnew(count=count)
+            # thing GitHub can list without one. Fetch it directly rather
+            # than through whatsnew(), which applies a 24-hour cutoff that
+            # would make anything unread for longer silently disappear
+            # from this listing.
+            return await self._fetch_notifications(None, count)
 
         page = int(page_token) if page_token and page_token.isdigit() else 1
+        per_page = min(count, _SEARCH_PAGE_SIZE)
         data = await self._get(
             "/search/issues",
             {
                 "q": query,
                 "sort": "updated",
                 "order": "desc",
-                "per_page": min(count, _SEARCH_PAGE_SIZE),
+                "per_page": per_page,
                 "page": page,
             },
         )
@@ -567,7 +600,11 @@ class GitHubAdapter(BaseAdapter):
         results = [r for r in results if r][:count]
 
         total = data.get("total_count", 0) if isinstance(data, dict) else 0
-        if results and page * count < total:
+        # Use the actual page size, not the requested count: when count
+        # exceeds GitHub's 100-item cap, per_page is capped but count isn't,
+        # so comparing against count would understate how many pages remain
+        # and drop the continuation token before all matches are fetched.
+        if results and page * per_page < total:
             results[-1]["_next_page_token"] = str(page + 1)
 
         return results
@@ -594,6 +631,13 @@ class GitHubAdapter(BaseAdapter):
                 segment="pull-comments" if review else "comments",
             )
 
+        if kind == "review":
+            owner, repo, number, rid = parts
+            review_obj = await self._get(
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews/{rid}"
+            )
+            return _review_to_dict(review_obj, self._prefix, f"{owner}/{repo}", number, "")
+
         owner, repo, number = parts
         ref = f"{owner}/{repo}#{number}"
         issue = await self._get(f"/repos/{owner}/{repo}/issues/{number}")
@@ -614,7 +658,7 @@ class GitHubAdapter(BaseAdapter):
         if kind == "notification":
             ref = await self._issue_ref_for_notification(parts[0])
             parts = tuple(re.split(r"[/#]", ref))
-        elif kind in ("comment", "review_comment"):
+        elif kind in ("comment", "review_comment", "review"):
             raise ValueError(
                 f"{thread_id!r} is a comment, not a thread — use the issue ID "
                 "(gh:owner/repo#42)."
@@ -671,18 +715,24 @@ class GitHubAdapter(BaseAdapter):
         """
         feedback: list[dict] = []
 
-        reviews = await self._get(
-            f"/repos/{owner}/{repo}/pulls/{number}/reviews",
-            {"per_page": _COMMENTS_PAGE_SIZE},
-        )
-        if isinstance(reviews, list):
+        page = 1
+        while True:
+            reviews = await self._get(
+                f"/repos/{owner}/{repo}/pulls/{number}/reviews",
+                {"per_page": _COMMENTS_PAGE_SIZE, "page": page},
+            )
+            if not isinstance(reviews, list) or not reviews:
+                break
             feedback.extend(
-                _review_to_dict(r, self._prefix, f"{owner}/{repo}", subject)
+                _review_to_dict(r, self._prefix, f"{owner}/{repo}", number, subject)
                 for r in reviews
                 # PENDING is the reviewer's own draft, not yet submitted —
                 # nothing to notify anyone about until it's submitted.
                 if (r.get("state") or "").upper() != "PENDING"
             )
+            if len(reviews) < _COMMENTS_PAGE_SIZE:
+                break
+            page += 1
 
         page = 1
         while True:

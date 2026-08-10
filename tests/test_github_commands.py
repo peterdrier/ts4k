@@ -320,3 +320,101 @@ class TestNoLiveCalls:
         adapter = GitHubAdapter(GitHubAdapterConfig(token="x", level="modify"))
         with pytest.raises(RuntimeError, match="not connected"):
             await adapter.mark_read("gh:1")
+
+
+class TestPreloadRejectsGitHub:
+    """cache.CACHEABLE_SOURCES only recognizes 'g'/'o' — GitHub must be
+    rejected up front rather than silently reporting a fake success."""
+
+    @pytest.mark.asyncio
+    async def test_preload_returns_an_explicit_error(self, monkeypatch, ts4k_config):
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"gh": dict(GITHUB_CFG)}
+        )
+        result = await commands.preload(source="gh")
+        assert result.startswith("Error:")
+        assert "preload" in result
+
+    @pytest.mark.asyncio
+    async def test_preload_never_creates_a_job(self, monkeypatch, ts4k_config):
+        from ts4k.state import batch
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"gh": dict(GITHUB_CFG)}
+        )
+        create_job = AsyncMock()
+        monkeypatch.setattr(batch, "create_job", create_job)
+
+        await commands.preload(source="gh")
+        create_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prefix_colliding_with_cacheable_sources_is_still_rejected(
+        self, monkeypatch, ts4k_config
+    ):
+        """Source prefixes are user-chosen, so a GitHub source can be named
+        "g" or "o" — the same prefixes cache.CACHEABLE_SOURCES uses for
+        Gmail/O365. The guard must key off the provider, not the prefix, or
+        this collision lets the unsupported GitHub preload path run."""
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"g": dict(GITHUB_CFG)}
+        )
+        result = await commands.preload(source="g")
+        assert result.startswith("Error:")
+        assert "preload" in result
+
+    @pytest.mark.asyncio
+    async def test_prefix_collision_never_creates_a_job(self, monkeypatch, ts4k_config):
+        from ts4k.state import batch
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"o": dict(GITHUB_CFG)}
+        )
+        create_job = AsyncMock()
+        monkeypatch.setattr(batch, "create_job", create_job)
+
+        await commands.preload(source="o")
+        create_job.assert_not_called()
+
+
+class TestCacheDoesNotStoreGitHub:
+    """GitHub messages must not create cache entries — including orphan
+    body files, since store_body (unlike store_header) has no source
+    guard of its own."""
+
+    @pytest.mark.asyncio
+    async def test_get_message_is_not_cached(self, monkeypatch, ts4k_config):
+        adapter = AsyncMock()
+        adapter.__aenter__.return_value = adapter
+        adapter.__aexit__.return_value = None
+        adapter.read_message.return_value = {
+            "id": "gh:peterdrier/ts4k#42", "source": "gh", "from": "peterdrier",
+            "subject": "Add GitHub adapter", "date": "2026-08-09T14:30:00Z",
+            "body": "We should surface notifications in ts4k.",
+        }
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"gh": dict(GITHUB_CFG)}
+        )
+        monkeypatch.setattr(commands, "_make_adapter", lambda p, c: adapter)
+
+        await commands.get_message("gh:peterdrier/ts4k#42")
+
+        from ts4k.state import cache
+        assert cache.get_message("gh:peterdrier/ts4k#42") is None
+
+    @pytest.mark.asyncio
+    async def test_list_messages_is_not_cached(self, monkeypatch, ts4k_config):
+        adapter = AsyncMock()
+        adapter.__aenter__.return_value = adapter
+        adapter.__aexit__.return_value = None
+        adapter.list_messages.return_value = [{
+            "id": "gh:peterdrier/ts4k#42", "source": "gh", "from": "peterdrier",
+            "subject": "Add GitHub adapter", "date": "2026-08-09T14:30:00Z",
+        }]
+        monkeypatch.setattr(
+            "ts4k.state.sources.list_all", lambda: {"gh": dict(GITHUB_CFG)}
+        )
+        monkeypatch.setattr(commands, "_make_adapter", lambda p, c: adapter)
+
+        await commands.list_messages(source="gh", query="is:open")
+
+        from ts4k.state import cache
+        assert cache.get_message("gh:peterdrier/ts4k#42") is None
