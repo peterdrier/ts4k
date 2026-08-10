@@ -53,6 +53,7 @@ from typing import Any
 import httpx
 
 from ts4k.adapters.base import BaseAdapter
+from ts4k.core.normalize import _normalize_date
 from ts4k.state import meters as meters_state
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,15 @@ def _notification_to_header(notif: dict, prefix: str) -> dict:
     subject = notif.get("subject", "")
     full_subject = f"{category}: {subject}" if category else subject
 
+    # Normalize to ISO 8601 UTC here (not just downstream in the header
+    # normalize pass) so the lexical `since` filter and sort below compare
+    # like-for-like — a raw "-04:00" offset can lexically sort before a
+    # "Z" watermark despite being chronologically later. Unparseable
+    # values pass through unchanged rather than being dropped.
+    date = notif.get("date", "")
+    if date:
+        date = _normalize_date(date)
+
     return {
         "id": f"{prefix}:{raw_id}",
         "raw_id": raw_id,
@@ -119,7 +129,7 @@ def _notification_to_header(notif: dict, prefix: str) -> dict:
         "thread_id": f"{prefix}:{raw_id}",
         "from": category,
         "subject": full_subject,
-        "date": notif.get("date", ""),
+        "date": date,
         "link": notif.get("link", ""),
         "unread": bool(notif.get("unread", False)),
     }

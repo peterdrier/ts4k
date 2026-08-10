@@ -143,6 +143,19 @@ class TestNotificationToHeader:
         assert header["raw_id"] == "sync-failure-42"
         assert header["id"] == "h:sync-failure-42"
 
+    def test_normalizes_non_utc_offset_to_utc(self):
+        """#31 review F4 — a valid non-"Z" offset must come out as UTC so
+        later lexical comparisons (since-filter, sort) are correct."""
+        notif = {"id": "x", "date": "2026-04-09T20:30:00-04:00", "source": "Ops", "subject": "x"}
+        header = _notification_to_header(notif, "h")
+        assert header["date"] == "2026-04-10T00:30:00Z"
+
+    def test_unparseable_date_degrades_gracefully(self):
+        """An unparseable date must pass through unchanged, not vanish."""
+        notif = {"id": "x", "date": "not-a-date", "source": "Ops", "subject": "x"}
+        header = _notification_to_header(notif, "h")
+        assert header["date"] == "not-a-date"
+
 
 # ---------------------------------------------------------------------------
 # whatsnew / list_messages
@@ -175,6 +188,52 @@ class TestWhatsnew:
         adapter._client.get = AsyncMock(return_value=_mock_response(NOTIFICATIONS_RESPONSE))
         results = await adapter.whatsnew(count=1)
         assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_since_filter_survives_non_utc_offset(self):
+        """#31 review F4 — a notification with a non-"Z" offset that is
+        chronologically newer than `since` must not be dropped just
+        because it lexically sorts smaller as a raw string."""
+        payload = {
+            "notifications": [
+                {
+                    "id": "offset-newer",
+                    # == 2026-04-10T00:30:00Z — after the watermark below —
+                    # but lexically "...-04:00" < "...Z".
+                    "date": "2026-04-09T20:30:00-04:00",
+                    "source": "Ops",
+                    "subject": "Newer, non-UTC offset",
+                },
+                {
+                    "id": "older",
+                    "date": "2026-04-09T00:00:00Z",
+                    "source": "Ops",
+                    "subject": "Older, UTC",
+                },
+            ],
+            "meters": [],
+        }
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        results = await adapter.whatsnew(since="2026-04-10T00:00:00Z")
+
+        assert [r["id"] for r in results] == ["h:offset-newer"]
+
+    @pytest.mark.asyncio
+    async def test_sort_orders_by_true_time_not_lexical_string(self):
+        payload = {
+            "notifications": [
+                {"id": "a", "date": "2026-04-09T20:30:00-04:00", "source": "Ops", "subject": "a"},
+                {"id": "b", "date": "2026-04-10T00:00:00Z", "source": "Ops", "subject": "b"},
+            ],
+            "meters": [],
+        }
+        adapter = _make_adapter()
+        adapter._client.get = AsyncMock(return_value=_mock_response(payload))
+        results = await adapter.whatsnew()
+
+        # "a" (20:30 -04:00 == 00:30 UTC) is chronologically after "b" (00:00 UTC).
+        assert [r["id"] for r in results] == ["h:a", "h:b"]
 
     @pytest.mark.asyncio
     async def test_sends_auth_header(self):

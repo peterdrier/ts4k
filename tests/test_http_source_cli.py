@@ -64,3 +64,32 @@ def test_make_adapter_builds_http_adapter(ts4k_config):
 
 def test_make_adapter_returns_none_without_url(ts4k_config):
     assert commands._make_adapter("h", {"provider": "http"}) is None
+
+
+def test_add_redacts_header_in_output(ts4k_config, capsys):
+    """#31 review F1 — `header` commonly carries an API key or bearer
+    token; it must never be echoed in full on `src add`."""
+    cli._cmd_sources(argparse.Namespace(
+        action="add", prefix="h", provider="http",
+        params=[
+            "url=https://example.com/api/notifications",
+            "header=Authorization: Bearer super-secret-token",
+        ],
+    ))
+    out = capsys.readouterr().out
+    assert "super-secret-token" not in out
+    assert "<redacted>" in out
+    # Storage is unchanged — only display is redacted.
+    assert sources.get("h")["header"] == ["Authorization: Bearer super-secret-token"]
+
+
+def test_list_redacts_header_in_output(ts4k_config, capsys):
+    sources.add(
+        "h", provider="http", url="https://example.com/api/notifications",
+        header=["Authorization: Bearer super-secret-token"],
+    )
+    capsys.readouterr()  # discard `add`'s own output, if any
+    cli._cmd_sources(argparse.Namespace(action="list"))
+    out = capsys.readouterr().out
+    assert "super-secret-token" not in out
+    assert "<redacted>" in out

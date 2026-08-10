@@ -60,6 +60,31 @@ def seeded_meters(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def seeded_sources(tmp_path, monkeypatch):
+    """Isolate the sources config file (#31 review — meters must be
+    filtered to currently-configured HTTP prefixes)."""
+    import ts4k.state.sources as sources_mod
+
+    monkeypatch.setattr(sources_mod, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(sources_mod, "_SOURCES_FILE", tmp_path / "sources.json")
+    return sources_mod
+
+
+@pytest.fixture()
+def empty_cache(tmp_path, monkeypatch):
+    """Set up a tmp cache dir with no messages — unlike ``seeded_cache``,
+    which always seeds eight unrelated messages and would mask a bug that
+    only shows up when the cache is genuinely empty (#31 review — F2)."""
+    import ts4k.state.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cache_mod, "_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache_mod, "_INDEX_FILE", tmp_path / "cache" / "index.json")
+    monkeypatch.setattr(cache_mod, "_BODIES_DIR", tmp_path / "cache" / "bodies")
+    return cache_mod
+
+
+@pytest.fixture()
 def seeded_contacts(tmp_path, monkeypatch):
     """Set up contacts with an alice alias."""
     import ts4k.state.contacts as contacts_mod
@@ -216,9 +241,12 @@ class TestOverviewMeters:
         result = overview()
         assert "meter: Something=2" in result
 
-    def test_meters_only_source_still_appears(self, seeded_cache, seeded_meters):
+    def test_meters_only_source_still_appears(self, seeded_cache, seeded_meters, seeded_sources):
         """An HTTP source has no cached messages (it polls live, like
-        WhatsApp) but should still show up for its live meter snapshot."""
+        WhatsApp) but should still show up for its live meter snapshot,
+        as long as it's still configured — see TestOverviewMetersStaleness
+        for the case where it isn't (#31 review — F3)."""
+        seeded_sources.add("h", provider="http", url="https://example.com/api/notifications")
         seeded_meters.set_meters(
             "h", [{"label": "Board votes needed", "count": 5, "link": "/OnboardingReview/BoardVoting"}]
         )
@@ -228,6 +256,62 @@ class TestOverviewMeters:
     def test_no_meters_no_output(self, seeded_cache):
         result = overview()
         assert "meter:" not in result
+
+
+# ---------------------------------------------------------------------------
+# TestOverviewMetersStaleness (#31 review — F3: stale meter snapshots)
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewMetersStaleness:
+    """``src rm`` doesn't touch meters.json, so overview() must filter
+    saved snapshots to currently-configured HTTP prefixes rather than
+    trusting the file blindly — otherwise a removed (or repurposed)
+    source's stale counts show up forever."""
+
+    def test_meter_hidden_for_never_configured_prefix(self, seeded_cache, seeded_meters):
+        seeded_meters.set_meters("h", [{"label": "Board votes needed", "count": 5}])
+        result = overview()
+        assert "meter:" not in result
+
+    def test_meter_hidden_after_source_removed(self, seeded_cache, seeded_meters, seeded_sources):
+        seeded_sources.add("h", provider="http", url="https://example.com/api/notifications")
+        seeded_meters.set_meters("h", [{"label": "Board votes needed", "count": 5}])
+        assert "meter:" in overview()  # sanity check: shows while configured
+
+        seeded_sources.remove("h")
+        assert "meter:" not in overview()
+
+    def test_meter_hidden_when_prefix_repurposed_to_another_provider(
+        self, seeded_cache, seeded_meters, seeded_sources
+    ):
+        """A stale snapshot under a reused prefix must not leak onto an
+        unrelated, non-HTTP source now using that prefix."""
+        seeded_meters.set_meters("h", [{"label": "Board votes needed", "count": 5}])
+        seeded_sources.add("h", provider="gmail", email="h@example.com")
+        result = overview()
+        assert "meter:" not in result
+
+
+# ---------------------------------------------------------------------------
+# TestOverviewMetersEmptyCache (#31 review — F2: HTTP-only setup)
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewMetersEmptyCache:
+    """overview() used to return the cache-empty message before ever
+    reaching the meters loop, so an HTTP-only setup — no cached messages
+    at all, since HTTP sources poll live — never saw its meters."""
+
+    def test_meters_render_with_no_cached_messages(self, empty_cache, seeded_meters, seeded_sources):
+        seeded_sources.add("h", provider="http", url="https://example.com/api/notifications")
+        seeded_meters.set_meters("h", [{"label": "Board votes needed", "count": 5}])
+        result = overview()
+        assert "meter: Board votes needed=5" in result
+
+    def test_cache_empty_message_when_truly_nothing(self, empty_cache, seeded_sources):
+        result = overview()
+        assert "empty" in result.lower()
 
 
 # ---------------------------------------------------------------------------

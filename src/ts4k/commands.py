@@ -1993,6 +1993,20 @@ def _filter_by_contact(
     ]
 
 
+def _live_meters(all_cfg: dict[str, dict[str, Any]]) -> dict[str, list[dict]]:
+    """Meter snapshots (#31) for prefixes still configured as HTTP sources.
+
+    ``src rm`` doesn't touch meters.json, so filtering here — rather than
+    deleting the snapshot on removal — keeps a removed (or repurposed)
+    source's stale snapshot from lingering in `overview()` forever, and
+    also heals any snapshot files that already went stale before this fix.
+    """
+    return {
+        src: m for src, m in meters.all_meters().items()
+        if m and all_cfg.get(src, {}).get("provider", "").lower() == "http"
+    }
+
+
 def _build_top_view(headers: list[dict], top: int) -> dict:
     """Build the top-level overview: group by source, count senders."""
     by_source: dict[str, list[dict]] = {}
@@ -2000,7 +2014,8 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
         src = h.get("source", "?")
         by_source.setdefault(src, []).append(h)
 
-    sibling_prefixes = _sibling_prefixes(_ensure_sources())
+    all_cfg = _ensure_sources()
+    sibling_prefixes = _sibling_prefixes(all_cfg)
 
     sources_list = []
     for src in sorted(by_source.keys()):
@@ -2027,8 +2042,8 @@ def _build_top_view(headers: list[dict], top: int) -> dict:
     # Sources with a live meter snapshot (#31) but no cached messages — HTTP
     # notification sources poll live and aren't written to the message
     # cache (like WhatsApp), so they'd otherwise be invisible here.
-    for src, src_meters in sorted(meters.all_meters().items()):
-        if src in by_source or not src_meters:
+    for src, src_meters in sorted(_live_meters(all_cfg).items()):
+        if src in by_source:
             continue
         sources_list.append({
             "prefix": src,
@@ -2182,7 +2197,11 @@ def overview(
             return f"No cached messages for contact {contact!r}."
         if source:
             return f"No cached messages for source {source!r}."
-        return "Cache is empty. Run: ts4k preload --source <prefix>"
+        # An HTTP-only setup (#31) has no cached messages — it polls live —
+        # but still has meter snapshots to show; only bail out to the
+        # cache-empty message when there's truly nothing to display.
+        if not _live_meters(_ensure_sources()):
+            return "Cache is empty. Run: ts4k preload --source <prefix>"
 
     # Build the appropriate view
     if contact:
