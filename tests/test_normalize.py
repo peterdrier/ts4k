@@ -896,6 +896,26 @@ class TestReadableMode:
             for line in result.split("\n")
         )
 
+    def test_readable_rowspan_zero_in_data_row_degrades_to_pipe_rows(self):
+        """rowspan="0" means "span all remaining rows in the row group" —
+        it must be treated as spanning just like rowspan > 1, not missed
+        by a bare > 1 check."""
+        html = """
+        <table>
+            <tr><th>Item</th><th>Q1</th><th>Q2</th></tr>
+            <tr><td rowspan="0">Widget</td><td>$100</td><td>$150</td></tr>
+            <tr><td>$90</td><td>$120</td></tr>
+        </table>
+        """
+        result = normalize(html, mode="readable")
+        for text in ("Item", "Q1", "Widget", "$100", "$90"):
+            assert text in result
+        assert "Widget | $100 | $150" in result
+        assert not any(
+            set(line.strip()) <= set("-|: ") and "-" in line
+            for line in result.split("\n")
+        )
+
     def test_readable_strips_emphasized_signature_with_outside_punctuation(self):
         """Punctuation outside the emphasis — <strong>Thanks</strong>, —
         yields "**Thanks**," whose trailing markers sit before the comma;

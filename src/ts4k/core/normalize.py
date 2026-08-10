@@ -406,8 +406,11 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     span[0] -= 1
                 active_spans = [s for s in active_spans if s[0] > 0]
                 for c in r_cells:
-                    if _cell_rowspan(c) > 1:
-                        active_spans.append([_cell_rowspan(c) - 1, _cell_colspan(c)])
+                    # rowspan="0" spans every remaining row in the group.
+                    rs = _cell_rowspan(c)
+                    if rs != 1:
+                        carry = len(rows) if rs == 0 else rs - 1
+                        active_spans.append([carry, _cell_colspan(c)])
             if header_row is None and promoted_candidate is not None and not has_any_th:
                 # Promotion is only right when the table has no real header
                 # anywhere — if <th> labels exist but none qualifies (e.g.
@@ -431,7 +434,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                         after_header = True
                         continue
                     if after_header and any(
-                        _cell_rowspan(c) > 1 for c in _own_cells(row)
+                        _cell_rowspan(c) != 1 for c in _own_cells(row)
                     ):
                         has_data_rowspan = True
                         break
