@@ -192,17 +192,30 @@ _STYLE_HIDDEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# ⚡ Bolt Optimization: Combined pattern for fast filtering of hidden elements
+_COMBINED_HIDDEN_STYLE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|(?:width|height)\s*:\s*0",
+    re.IGNORECASE,
+)
+
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=_STYLE_HIDDEN_PATTERN):
+    # ⚡ Bolt Optimization: Consolidated three DOM traversals into one single pass.
+    def _is_hidden(tag):
+        if tag.has_attr("hidden"):
+            return True
+        style = tag.get("style")
+        if style:
+            # Short-circuit check using combined pattern
+            if _COMBINED_HIDDEN_STYLE.search(style):
+                if _STYLE_HIDDEN_PATTERN.search(style):
+                    return True
+                # If it's a zero-size element, only remove if it has no visible text
+                return not tag.get_text(strip=True)
+        return False
+
+    for el in soup.find_all(_is_hidden):
         el.decompose()
-    for el in soup.find_all(attrs={"hidden": True}):
-        el.decompose()
-    # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=_STYLE_ZERO_SIZE):
-        # Only remove if element has no visible text content
-        if not el.get_text(strip=True):
-            el.decompose()
 
 
 _UNSUB_PATTERNS_HTML = re.compile(
