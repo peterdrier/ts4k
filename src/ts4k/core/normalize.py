@@ -185,6 +185,8 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
             img.decompose()
 
 
+# ⚡ Bolt Optimization: Combined style checks into a single regex and
+# using a filter function to consolidate BeautifulSoup traversals into a single pass.
 _STYLE_ZERO_SIZE = re.compile(r"(width|height)\s*:\s*0", re.IGNORECASE)
 
 _STYLE_HIDDEN_PATTERN = re.compile(
@@ -192,17 +194,28 @@ _STYLE_HIDDEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_COMBINED_HIDDEN_STYLE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|(?:width|height)\s*:\s*0",
+    re.IGNORECASE,
+)
+
+def _is_hidden(tag) -> bool:
+    if tag.has_attr("hidden"):
+        return True
+
+    style = tag.get("style")
+    if style and _COMBINED_HIDDEN_STYLE.search(style):
+        if _STYLE_HIDDEN_PATTERN.search(style):
+            return True
+        if _STYLE_ZERO_SIZE.search(style) and not tag.get_text(strip=True):
+            return True
+
+    return False
+
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=_STYLE_HIDDEN_PATTERN):
+    for el in soup.find_all(_is_hidden):
         el.decompose()
-    for el in soup.find_all(attrs={"hidden": True}):
-        el.decompose()
-    # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=_STYLE_ZERO_SIZE):
-        # Only remove if element has no visible text content
-        if not el.get_text(strip=True):
-            el.decompose()
 
 
 _UNSUB_PATTERNS_HTML = re.compile(

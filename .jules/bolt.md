@@ -19,3 +19,6 @@
 **Measured non-win — do not repeat:** hoisting an inline list to a module-level tuple (`find_all(("th","td"))` vs `find_all(["th","td"])`) measured **+0.7%, i.e. noise and if anything slower**. Two reasons: the list literal is allocated once per `find_all` call, not once per tag visited, and BeautifulSoup normalizes any iterable into a list internally, so the tuple is converted straight back. An earlier version of this entry claimed the opposite; it was wrong and the change was reverted.
 
 **Action:** Reduce the *number* of DOM traversals — combine independent style/attribute regexes into one pattern and make one pass. Do not micro-optimize `find_all` arguments. Before recording a perf lesson here, benchmark the specific claim in isolation; a plausible mechanism is not evidence.
+## 2026-08-09 - `find_all` Argument Optimization Revisited
+**Learning:** Contrary to prior assumptions, BeautifulSoup converts iterable `find_all` arguments like `("style", "script", "head")` into lists internally, causing hoisting these tuples to module-level constants to yield negligible or slightly negative performance impacts. It is not worth replacing inline lists in `find_all` with module-level tuples.
+**Action:** Do not hoist inline list arguments in `find_all` to module-level tuples for performance reasons.
