@@ -290,7 +290,18 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         # nested table's rows/cells would otherwise be double-counted and
         # skew classification (e.g. a single-column wrapper around a
         # multi-cell nested table would wrongly look like a data table).
-        rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
+        # Extract rows directly from table or via thead/tbody/tfoot
+        # ⚡ Bolt Optimization: Using direct-child traversal (.children) avoids recursive
+        # subtree searches via .find_all().find_parent(), dramatically reducing overhead.
+        rows = []
+        for child in table.children:
+            name = getattr(child, "name", None)
+            if name == "tr":
+                rows.append(child)
+            elif name in ("thead", "tbody", "tfoot"):
+                for sub in child.children:
+                    if getattr(sub, "name", None) == "tr":
+                        rows.append(sub)
         if not rows:
             # Empty table, remove
             table.decompose()
@@ -301,9 +312,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         max_cols = 0
 
         for row in rows:
-            cells = [
-                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-            ]
+            cells = [c for c in row.children if getattr(c, "name", None) in ("th", "td")]
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
                 table_data.append(cell_texts)
@@ -319,11 +328,16 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             if mode == "readable":
                 # Unwrap only this table's own structure so nested tables
                 # and inline markup survive for html2text
-                own = [
-                    t
-                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
-                    if t.find_parent("table") is table
-                ]
+                own = []
+                for child in table.children:
+                    name = getattr(child, "name", None)
+                    if name in ("thead", "tbody"):
+                        own.append(child)
+                own.extend(rows)
+                for row_el in rows:
+                    for c in row_el.children:
+                        if getattr(c, "name", None) in ("th", "td"):
+                            own.append(c)
                 # Unwrapping td/tr drops the tag boundaries that kept
                 # adjacent cells/rows apart — "<td>Logo</td><td>Nav</td>"
                 # would collapse to "LogoNav". Insert a space after each
@@ -349,9 +363,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # more than one text descendant.
             lines = []
             for row in rows:
-                cells = [
-                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-                ]
+                cells = [c for c in row.children if getattr(c, "name", None) in ("th", "td")]
                 cell_texts = [c.get_text("\n", strip=True) for c in cells]
                 if any(cell_texts):
                     lines.append(" ".join(cell_texts))
@@ -366,11 +378,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # render as plain pipe-y text. Promote the first row's <td>
             # cells to <th> so html2text treats it as a proper table.
             def _own_cells(row):
-                return [
-                    c
-                    for c in row.find_all(["th", "td"])
-                    if c.find_parent("table") is table
-                ]
+                return [c for c in row.children if getattr(c, "name", None) in ("th", "td")]
 
             # Find a clean header row: scan rows in order while tracking
             # columns occupied by rowspans carried down from earlier rows.
@@ -512,9 +520,8 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                     span[0] -= 1
                 carried = [s for s in carried if s[0] > 0]
             for t in [
-                t
-                for t in table.find_all(["thead", "tbody"])
-                if t.find_parent("table") is table
+                c for c in table.children
+                if getattr(c, "name", None) in ("thead", "tbody")
             ]:
                 t.unwrap()
             table.unwrap()
