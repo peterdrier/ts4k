@@ -280,6 +280,23 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     table renderer, and layout-table unwrapping preserves inline markup and
     nested tables instead of collapsing to bare text.
     """
+    # ⚡ Bolt Optimization: Replace O(N^2) recursive subtree search (find_all + find_parent)
+    # with a direct child traversal that walks the DOM tree from the parent downwards.
+    # We only care about immediate elements that aren't inside nested tables.
+    def _find_own_elements(parent, tag_names):
+        results = []
+        def _walk(element):
+            for child in element.children:
+                name = getattr(child, "name", None)
+                if not name:
+                    continue
+                if name in tag_names:
+                    results.append(child)
+                if name != "table":
+                    _walk(child)
+        _walk(parent)
+        return results
+
     # Innermost-first: find_all returns tables in document order (a wrapper
     # appears before the table nested inside it), so reversing means a
     # nested data table is already converted to pipe text by the time an
@@ -290,7 +307,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         # nested table's rows/cells would otherwise be double-counted and
         # skew classification (e.g. a single-column wrapper around a
         # multi-cell nested table would wrongly look like a data table).
-        rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
+        rows = _find_own_elements(table, {"tr"})
         if not rows:
             # Empty table, remove
             table.decompose()
@@ -301,9 +318,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         max_cols = 0
 
         for row in rows:
-            cells = [
-                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-            ]
+            cells = _find_own_elements(row, {"th", "td"})
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
                 table_data.append(cell_texts)
@@ -319,11 +334,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             if mode == "readable":
                 # Unwrap only this table's own structure so nested tables
                 # and inline markup survive for html2text
-                own = [
-                    t
-                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
-                    if t.find_parent("table") is table
-                ]
+                own = _find_own_elements(table, {"thead", "tbody", "tr", "th", "td"})
                 # Unwrapping td/tr drops the tag boundaries that kept
                 # adjacent cells/rows apart — "<td>Logo</td><td>Nav</td>"
                 # would collapse to "LogoNav". Insert a space after each
@@ -349,9 +360,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # more than one text descendant.
             lines = []
             for row in rows:
-                cells = [
-                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-                ]
+                cells = _find_own_elements(row, {"th", "td"})
                 cell_texts = [c.get_text("\n", strip=True) for c in cells]
                 if any(cell_texts):
                     lines.append(" ".join(cell_texts))
@@ -366,11 +375,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # render as plain pipe-y text. Promote the first row's <td>
             # cells to <th> so html2text treats it as a proper table.
             def _own_cells(row):
-                return [
-                    c
-                    for c in row.find_all(["th", "td"])
-                    if c.find_parent("table") is table
-                ]
+                return _find_own_elements(row, {"th", "td"})
 
             # Find a clean header row: scan rows in order while tracking
             # columns occupied by rowspans carried down from earlier rows.
@@ -511,11 +516,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 for span in carried:
                     span[0] -= 1
                 carried = [s for s in carried if s[0] > 0]
-            for t in [
-                t
-                for t in table.find_all(["thead", "tbody"])
-                if t.find_parent("table") is table
-            ]:
+            for t in _find_own_elements(table, {"thead", "tbody"}):
                 t.unwrap()
             table.unwrap()
             continue
