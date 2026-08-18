@@ -271,7 +271,47 @@ def _cell_rowspan(cell) -> int:
         return 1
 
 
+
+def _get_own_rows(table) -> list:
+    rows = []
+    for child in table.children:
+        if getattr(child, "name", None) == "tr":
+            rows.append(child)
+        elif getattr(child, "name", None) in ("thead", "tbody", "tfoot"):
+            for gc in child.children:
+                if getattr(gc, "name", None) == "tr":
+                    rows.append(gc)
+    return rows
+
+def _get_own_cells(row) -> list:
+    return [c for c in row.children if getattr(c, "name", None) in ("th", "td")]
+
+def _get_own_table_structure(table) -> list:
+    elements = []
+    for child in table.children:
+        name = getattr(child, "name", None)
+        if name in ("thead", "tbody", "tfoot"):
+            if name != "tfoot":
+                elements.append(child)
+            for gc in child.children:
+                gc_name = getattr(gc, "name", None)
+                if gc_name == "tr":
+                    elements.append(gc)
+                    for ggc in gc.children:
+                        if getattr(ggc, "name", None) in ("th", "td"):
+                            elements.append(ggc)
+        elif name == "tr":
+            elements.append(child)
+            for gc in child.children:
+                if getattr(gc, "name", None) in ("th", "td"):
+                    elements.append(gc)
+    return elements
+
+def _get_own_table_sections(table) -> list:
+    return [c for c in table.children if getattr(c, "name", None) in ("thead", "tbody")]
+
 def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
+
     """Convert HTML tables to pipe-delimited text.
 
     Only converts tables that look like data tables (not layout tables).
@@ -290,7 +330,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         # nested table's rows/cells would otherwise be double-counted and
         # skew classification (e.g. a single-column wrapper around a
         # multi-cell nested table would wrongly look like a data table).
-        rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
+        rows = _get_own_rows(table)
         if not rows:
             # Empty table, remove
             table.decompose()
@@ -301,9 +341,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         max_cols = 0
 
         for row in rows:
-            cells = [
-                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-            ]
+            cells = _get_own_cells(row)
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
                 table_data.append(cell_texts)
@@ -319,11 +357,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             if mode == "readable":
                 # Unwrap only this table's own structure so nested tables
                 # and inline markup survive for html2text
-                own = [
-                    t
-                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
-                    if t.find_parent("table") is table
-                ]
+                own = _get_own_table_structure(table)
                 # Unwrapping td/tr drops the tag boundaries that kept
                 # adjacent cells/rows apart — "<td>Logo</td><td>Nav</td>"
                 # would collapse to "LogoNav". Insert a space after each
@@ -349,9 +383,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # more than one text descendant.
             lines = []
             for row in rows:
-                cells = [
-                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-                ]
+                cells = _get_own_cells(row)
                 cell_texts = [c.get_text("\n", strip=True) for c in cells]
                 if any(cell_texts):
                     lines.append(" ".join(cell_texts))
@@ -366,11 +398,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # render as plain pipe-y text. Promote the first row's <td>
             # cells to <th> so html2text treats it as a proper table.
             def _own_cells(row):
-                return [
-                    c
-                    for c in row.find_all(["th", "td"])
-                    if c.find_parent("table") is table
-                ]
+                return _get_own_cells(row)
 
             # Find a clean header row: scan rows in order while tracking
             # columns occupied by rowspans carried down from earlier rows.
@@ -511,11 +539,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 for span in carried:
                     span[0] -= 1
                 carried = [s for s in carried if s[0] > 0]
-            for t in [
-                t
-                for t in table.find_all(["thead", "tbody"])
-                if t.find_parent("table") is table
-            ]:
+            for t in _get_own_table_sections(table):
                 t.unwrap()
             table.unwrap()
             continue
