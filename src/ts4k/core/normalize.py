@@ -194,15 +194,20 @@ _STYLE_HIDDEN_PATTERN = re.compile(
 
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=_STYLE_HIDDEN_PATTERN):
+    # ⚡ Bolt Optimization: Consolidate three find_all passes into a single traversal
+    def _is_hidden(tag):
+        if tag.has_attr("hidden"):
+            return True
+        style = tag.get("style")
+        if style:
+            if _STYLE_HIDDEN_PATTERN.search(style):
+                return True
+            if _STYLE_ZERO_SIZE.search(style) and not tag.get_text(strip=True):
+                return True
+        return False
+
+    for el in soup.find_all(_is_hidden):
         el.decompose()
-    for el in soup.find_all(attrs={"hidden": True}):
-        el.decompose()
-    # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=_STYLE_ZERO_SIZE):
-        # Only remove if element has no visible text content
-        if not el.get_text(strip=True):
-            el.decompose()
 
 
 _UNSUB_PATTERNS_HTML = re.compile(
