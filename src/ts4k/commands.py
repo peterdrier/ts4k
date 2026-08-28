@@ -555,7 +555,14 @@ async def _fetch_for_source(
             # Over-fetch past count so the aggregation layer can see
             # truncation (has_more / watermark direction). Everything
             # fetched is returned; _fetch_messages truncates to count.
-            github_search = provider == "github" and query is not None
+            # Providers whose list_messages defines its own query semantics
+            # (GitHub search syntax; WhatsApp chat:<jid> lookups and
+            # bridge-side content search) that a header-substring backstop
+            # cannot emulate — whatsnew on these adapters ignores query
+            # entirely, so with --since the query would silently match
+            # nothing. Search natively; the time bound is applied
+            # client-side below.
+            native_search = provider in ("github", "whatsapp") and query is not None
             if provider == "gmail":
                 gmail_query = _utc_to_gmail_query(since)
                 if query:
@@ -566,11 +573,7 @@ async def _fetch_for_source(
                     query=gmail_query, count=count + 1,
                     sender=sender, domain=domain,
                 )
-            elif github_search:
-                # GitHub defines query as GitHub search syntax and has no
-                # query support in whatsnew — substring-matching it against
-                # headers would reject every valid search. Search natively;
-                # the time bound is applied client-side below.
+            elif native_search:
                 listing = await adapter.list_messages(
                     query=query, count=count + 1, sender=sender, domain=domain,
                 )
@@ -593,13 +596,13 @@ async def _fetch_for_source(
                 msg.setdefault("snippet", msg.get("body", ""))
                 cache.store_message(msg.get("id", ""), msg, provider=provider)
                 messages.append(msg)
-            # Gmail and GitHub matched *query* natively (full-text / search
-            # syntax invisible to the backstop) — re-filtering it here would
-            # drop legitimate matches.
-            native_query = provider == "gmail" or github_search
+            # Gmail, GitHub, and WhatsApp matched *query* natively (full-text
+            # / search syntax invisible to the backstop) — re-filtering it
+            # here would drop legitimate matches.
+            native_query = provider == "gmail" or native_search
             results = []
             for m in messages:
-                if github_search and since and m.get("date", "") < since:
+                if native_search and since and m.get("date", "") < since:
                     continue
                 if not _matches_post_filters(
                     m, query=None if native_query else query,

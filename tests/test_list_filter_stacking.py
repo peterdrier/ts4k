@@ -126,6 +126,34 @@ class TestQueryStacksWithSince:
         assert "old issue" not in result.output  # since bound applied client-side
 
     @pytest.mark.asyncio
+    async def test_whatsapp_query_uses_native_search(self, _sources, monkeypatch):
+        # WhatsApp's list_messages defines its own query semantics —
+        # chat:<jid> lookups and bridge-side content search. A chat: query
+        # substring-matched against headers would return nothing, so with
+        # --since it must still route through list_messages.
+        _write_sources(_sources, {"w": {"provider": "whatsapp"}})
+        stub = _RecordingStub([
+            {"id": "w:1", "source": "w", "from": "Family Group",
+             "subject": "Family Group", "date": "2025-01-01T00:00:00Z",
+             "body": "old message"},
+            {"id": "w:2", "source": "w", "from": "Family Group",
+             "subject": "Family Group", "date": "2026-08-22T09:00:00Z",
+             "body": "dinner sunday?"},
+        ])
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.list_messages(
+            source="w", query="chat:123@s.whatsapp.net",
+            since="2026-06-01", count=5,
+        )
+
+        assert stub.list_calls
+        assert stub.list_calls[0]["query"] == "chat:123@s.whatsapp.net"
+        assert not stub.whatsnew_calls
+        assert "dinner sunday" in result.output
+        assert "old message" not in result.output  # since bound client-side
+
+    @pytest.mark.asyncio
     async def test_no_query_leaves_since_path_unfiltered(self, _sources, monkeypatch):
         _write_sources(_sources, {"o": {"provider": "o365", "client_id": "x"}})
         stub = _RecordingStub(O365_MSGS)
