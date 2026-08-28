@@ -276,16 +276,19 @@ def _mailbox_identity(cfg: dict[str, Any]) -> str:
     Source prefixes are user-chosen and reassignable, so cached entries are
     validated against the account the prefix currently points at.  Gmail
     sources are identified by their required ``email``; O365 by the
-    configured ``mailbox``, falling back to ``client_id/tenant_id`` when the
-    source uses the signed-in account's default mailbox.
+    configured ``mailbox``, or for /me sources the authenticated username
+    recorded as ``email`` at source-add time — so re-authing as a different
+    account under the same app registration still invalidates the cache.
+    ``client_id/tenant_id`` is the last resort for /me sources added before
+    ``email`` was recorded.
     """
     provider = cfg.get("provider", "").lower()
     if provider == "gmail":
         return cfg.get("email", "")
     if provider == "o365":
-        mailbox = cfg.get("mailbox")
-        if mailbox:
-            return mailbox
+        identity = cfg.get("mailbox") or cfg.get("email")
+        if identity:
+            return identity
         return f"{cfg.get('client_id', '')}/{cfg.get('tenant_id', 'common')}"
     return ""
 

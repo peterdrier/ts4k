@@ -146,7 +146,81 @@ class TestPrefixReassignment:
         assert commands._mailbox_identity(
             {"provider": "o365", "client_id": "cid", "mailbox": "mb@corp.com"}
         ) == "mb@corp.com"
-        # Default-mailbox O365 sources fall back to the app registration.
+        # /me sources: the authenticated username recorded at source-add
+        # time identifies the account, so re-authing under the same app
+        # registration still invalidates the cache.
+        assert commands._mailbox_identity(
+            {"provider": "o365", "client_id": "cid", "tenant_id": "t1",
+             "email": "signed-in@corp.com"}
+        ) == "signed-in@corp.com"
+        # Last resort for /me sources added before email was recorded.
         assert commands._mailbox_identity(
             {"provider": "o365", "client_id": "cid", "tenant_id": "t1"}
         ) == "cid/t1"
+
+
+class TestGmailAdapterCacheGate:
+    """The Gmail adapter's internal cache lookup must validate the account:
+    an unchecked hit would return the old account's header, which the
+    listing path then restamps with the new identity."""
+
+    @pytest.mark.asyncio
+    async def test_list_messages_rejects_other_accounts_cache_hit(self):
+        from unittest.mock import MagicMock
+
+        from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+
+        cache.store_header(
+            "g:msg1",
+            {"source": "g", "from": "old@sender.com", "subject": "old account",
+             "date": "2026-08-01T10:00:00Z"},
+            provider="gmail", mailbox="old@gmail.com",
+        )
+
+        adapter = GmailAdapter(GmailAdapterConfig(user_email="new@gmail.com"))
+        adapter._service = MagicMock()
+        adapter._service.users.return_value.messages.return_value.list.return_value.execute = MagicMock(
+            return_value={"messages": [{"id": "msg1"}]}
+        )
+
+        fetched: list[str] = []
+
+        async def _record_fetch(service, msg_ids):
+            fetched.extend(msg_ids)
+            return []
+
+        adapter._chunked_batch_fetch = _record_fetch
+
+        results = await adapter.list_messages("newer_than:1d")
+
+        # The stale hit must not be served — the adapter re-fetches.
+        assert results == []
+        assert fetched == ["msg1"]
+
+    @pytest.mark.asyncio
+    async def test_list_messages_serves_own_accounts_cache_hit(self):
+        from unittest.mock import MagicMock
+
+        from ts4k.adapters.gmail import GmailAdapter, GmailAdapterConfig
+
+        cache.store_header(
+            "g:msg1",
+            {"source": "g", "from": "boss@corp.com", "subject": "own account",
+             "date": "2026-08-01T10:00:00Z"},
+            provider="gmail", mailbox="me@gmail.com",
+        )
+
+        adapter = GmailAdapter(GmailAdapterConfig(user_email="me@gmail.com"))
+        adapter._service = MagicMock()
+        adapter._service.users.return_value.messages.return_value.list.return_value.execute = MagicMock(
+            return_value={"messages": [{"id": "msg1"}]}
+        )
+
+        async def _no_fetch(service, msg_ids):
+            raise AssertionError("batch fetch attempted on cache hit")
+
+        adapter._chunked_batch_fetch = _no_fetch
+
+        results = await adapter.list_messages("newer_than:1d")
+        assert len(results) == 1
+        assert results[0]["subject"] == "own account"
