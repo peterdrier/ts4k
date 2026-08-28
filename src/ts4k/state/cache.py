@@ -34,7 +34,11 @@ _BODIES_DIR = _CACHE_DIR / "bodies"
 # longer duplicates emphasized url-as-text anchors. Entries cached under v1
 # hold the old text and have no expiry, so without this bump an upgraded
 # install serves the superseded body indefinitely.
-SCHEMA_VERSION = 2
+# 3: entries now record the mailbox they came from (``_mailbox``), so a
+# source prefix repointed at a different account can't surface the old
+# account's cached messages (ts4k#87). Entries cached under v2 carry no
+# mailbox identity to validate against, so they are discarded as stale.
+SCHEMA_VERSION = 3
 
 # Providers that participate in caching (network-heavy adapters only).
 # Prefixes are user-chosen (e.g. "oy", "gw"), so gating on the provider —
@@ -87,7 +91,9 @@ def _is_current(entry: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def store_header(msg_id: str, header: dict, provider: str = "") -> None:
+def store_header(
+    msg_id: str, header: dict, provider: str = "", mailbox: str = ""
+) -> None:
     """Cache a message header (no body).
 
     *header* should contain at least ``from``, ``subject``, ``date``,
@@ -96,6 +102,11 @@ def store_header(msg_id: str, header: dict, provider: str = "") -> None:
     *provider* is the source's configured provider (e.g. ``"gmail"``,
     ``"o365"``), supplied by the caller — cache.py never looks it up
     itself. Only providers in ``CACHEABLE_PROVIDERS`` are cached.
+
+    *mailbox* is the stable identity of the account the header came from
+    (e.g. the account email), independent of the user-chosen source
+    prefix.  Read APIs invalidate entries whose stored mailbox doesn't
+    match the caller's expectation (ts4k#87).
     """
     if provider.lower() not in CACHEABLE_PROVIDERS:
         return
@@ -103,6 +114,7 @@ def store_header(msg_id: str, header: dict, provider: str = "") -> None:
     index = _load_index()
     entry = {k: v for k, v in header.items() if k != "body"}
     entry["_schema_version"] = SCHEMA_VERSION
+    entry["_mailbox"] = mailbox
     entry["_cached_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     index["messages"][msg_id] = entry
     _save_index(index)
@@ -114,11 +126,13 @@ def store_body(msg_id: str, body: str) -> None:
     safe_write_json(_body_path(msg_id), {"body": body}, indent=None)
 
 
-def store_message(msg_id: str, msg: dict, provider: str = "") -> None:
+def store_message(
+    msg_id: str, msg: dict, provider: str = "", mailbox: str = ""
+) -> None:
     """Cache a full message (header + body in one call)."""
     if provider.lower() not in CACHEABLE_PROVIDERS:
         return
-    store_header(msg_id, msg, provider=provider)
+    store_header(msg_id, msg, provider=provider, mailbox=mailbox)
     body = msg.get("body")
     if body:
         store_body(msg_id, body)
@@ -129,11 +143,25 @@ def store_message(msg_id: str, msg: dict, provider: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_header(msg_id: str) -> dict | None:
-    """Return the cached header for *msg_id*, or ``None`` on miss/stale."""
+def _mailbox_matches(entry: dict, mailbox: str | None) -> bool:
+    """True if *entry* belongs to *mailbox* (``None`` skips the check)."""
+    if mailbox is None:
+        return True
+    return entry.get("_mailbox", "") == mailbox
+
+
+def get_header(msg_id: str, mailbox: str | None = None) -> dict | None:
+    """Return the cached header for *msg_id*, or ``None`` on miss/stale.
+
+    When *mailbox* is given, an entry cached from a different mailbox is
+    a miss — the prefix may have been repointed at another account since
+    the entry was written (ts4k#87).
+    """
     index = _load_index()
     entry = index["messages"].get(msg_id)
     if entry is None or not _is_current(entry):
+        return None
+    if not _mailbox_matches(entry, mailbox):
         return None
     return entry
 
@@ -150,9 +178,9 @@ def get_body(msg_id: str) -> str | None:
         return None
 
 
-def get_message(msg_id: str) -> dict | None:
+def get_message(msg_id: str, mailbox: str | None = None) -> dict | None:
     """Return full cached message (header + body), or ``None`` on miss."""
-    header = get_header(msg_id)
+    header = get_header(msg_id, mailbox=mailbox)
     if header is None:
         return None
     body = get_body(msg_id)
@@ -161,9 +189,9 @@ def get_message(msg_id: str) -> dict | None:
     return header
 
 
-def has(msg_id: str) -> bool:
+def has(msg_id: str, mailbox: str | None = None) -> bool:
     """True if *msg_id* is in the cache and current schema."""
-    return get_header(msg_id) is not None
+    return get_header(msg_id, mailbox=mailbox) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +203,7 @@ def list_headers(
     source: str | None = None,
     since: str | None = None,
     contact: str | None = None,
+    mailboxes: dict[str, str] | None = None,
 ) -> list[dict]:
     """Return cached headers matching the filters.
 
@@ -186,6 +215,11 @@ def list_headers(
         ISO timestamp — only messages on or after this date.
     contact : str, optional
         Substring match on the ``from`` field (case-insensitive).
+    mailboxes : dict, optional
+        Mapping of source prefix to the mailbox identity that prefix
+        currently points at.  Entries from a prefix present in the map
+        but cached from a different mailbox are dropped (ts4k#87);
+        prefixes absent from the map are not checked.
     """
     index = _load_index()
     results = []
@@ -197,6 +231,10 @@ def list_headers(
         if since and entry.get("date", "") < since:
             continue
         if contact and contact.lower() not in entry.get("from", "").lower():
+            continue
+        if mailboxes is not None and not _mailbox_matches(
+            entry, mailboxes.get(entry.get("source", ""))
+        ):
             continue
         results.append({**entry, "id": msg_id})
     return results
@@ -353,10 +391,12 @@ class CacheBatch:
             _save_index(self._index)
         self._index = None
 
-    def store_header(self, msg_id: str, header: dict, provider: str = "") -> None:
+    def store_header(
+        self, msg_id: str, header: dict, provider: str = "", mailbox: str = ""
+    ) -> None:
         """Accumulate a header in the in-memory index (no disk write).
 
-        *provider* is the source's configured provider — see
+        *provider* and *mailbox* are supplied by the caller — see
         ``store_header`` at module scope for details.
         """
         if self._index is None:
@@ -367,6 +407,7 @@ class CacheBatch:
 
         entry = {k: v for k, v in header.items() if k != "body"}
         entry["_schema_version"] = SCHEMA_VERSION
+        entry["_mailbox"] = mailbox
         entry["_cached_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._index["messages"][msg_id] = entry
         self._dirty = True
