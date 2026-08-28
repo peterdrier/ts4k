@@ -1466,6 +1466,17 @@ def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
         print(f"Authentication failed for {prefix}: {exc}")
         sys.exit(1)
 
+    # Re-auth may have signed in a different account under the same app
+    # registration. /me sources are identified by the recorded email for
+    # cache invalidation (ts4k#87), so refresh it from the token cache the
+    # authentication just wrote.
+    if provider == "o365" and not cfg.get("mailbox"):
+        from ts4k.commands import _resolve_o365_username
+        username = _resolve_o365_username(cfg)
+        if username and username != cfg.get("email"):
+            src_mod.update_fields(prefix, email=username)
+            print(f"Recorded account: {username}")
+
 
 # ---------------------------------------------------------------------------
 # Argument parser

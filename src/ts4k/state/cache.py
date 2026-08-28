@@ -112,12 +112,28 @@ def store_header(
         return
 
     index = _load_index()
+    _drop_stale_body(index, msg_id, mailbox)
     entry = {k: v for k, v in header.items() if k != "body"}
     entry["_schema_version"] = SCHEMA_VERSION
     entry["_mailbox"] = mailbox
     entry["_cached_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     index["messages"][msg_id] = entry
     _save_index(index)
+
+
+def _drop_stale_body(index: dict, msg_id: str, mailbox: str) -> None:
+    """Remove the cached body when a header changes hands between mailboxes.
+
+    Bodies live in separate untagged files keyed only by message ID.  If a
+    repointed prefix yields the same prefixed ID, restamping the header
+    with the new mailbox would otherwise leave the old account's body to be
+    served under the new header (ts4k#87).
+    """
+    prev = index["messages"].get(msg_id)
+    if prev is not None and prev.get("_mailbox", "") != mailbox:
+        body_file = _body_path(msg_id)
+        if body_file.exists():
+            body_file.unlink()
 
 
 def store_body(msg_id: str, body: str) -> None:
@@ -405,6 +421,7 @@ class CacheBatch:
         if provider.lower() not in CACHEABLE_PROVIDERS:
             return
 
+        _drop_stale_body(self._index, msg_id, mailbox)
         entry = {k: v for k, v in header.items() if k != "body"}
         entry["_schema_version"] = SCHEMA_VERSION
         entry["_mailbox"] = mailbox

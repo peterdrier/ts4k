@@ -159,6 +159,83 @@ class TestPrefixReassignment:
         ) == "cid/t1"
 
 
+class TestBodyInvalidationOnRestamp:
+    """Bodies live in separate untagged files — restamping a header with a
+    new mailbox must not leave the old account's body to be served under
+    the new header."""
+
+    def test_header_restamp_drops_other_accounts_body(self):
+        cache.store_message(
+            "o:1", {**HDR, "body": "account A body"},
+            provider="o365", mailbox="a@corp.com",
+        )
+        # Header-only refresh from the repointed account (listing/preload).
+        cache.store_header("o:1", HDR, provider="o365", mailbox="b@corp.com")
+
+        msg = cache.get_message("o:1", mailbox="b@corp.com")
+        assert msg is not None
+        assert "body" not in msg
+        assert cache.get_body("o:1") is None
+
+    def test_same_account_restamp_keeps_body(self):
+        cache.store_message(
+            "o:1", {**HDR, "body": "the body"},
+            provider="o365", mailbox="a@corp.com",
+        )
+        cache.store_header("o:1", HDR, provider="o365", mailbox="a@corp.com")
+        msg = cache.get_message("o:1", mailbox="a@corp.com")
+        assert msg is not None and msg["body"] == "the body"
+
+    def test_batch_restamp_drops_other_accounts_body(self):
+        cache.store_message(
+            "o:1", {**HDR, "body": "account A body"},
+            provider="o365", mailbox="a@corp.com",
+        )
+        with cache.CacheBatch() as cb:
+            cb.store_header("o:1", HDR, provider="o365", mailbox="b@corp.com")
+        assert cache.get_body("o:1") is None
+
+
+class TestAuthRefreshesRecordedIdentity:
+    """`ts4k auth <prefix>` on a /me source must persist the account that
+    actually authenticated, so a re-auth as another user invalidates the
+    cache (cache identity keys off cfg['email'])."""
+
+    def test_auth_updates_email_on_account_change(self, monkeypatch, capsys):
+        from ts4k import cli
+        from ts4k.state import sources
+
+        sources.add(
+            "o", provider="o365", client_id="cid", tenant_id="t1",
+            email="old@corp.com",
+        )
+        monkeypatch.setattr(
+            "ts4k.auth.microsoft.get_credentials", lambda *a, **kw: object()
+        )
+        monkeypatch.setattr(
+            "ts4k.commands._resolve_o365_username", lambda cfg: "new@corp.com"
+        )
+
+        cli._auth_o365("o", sources.get("o"), no_calendar=True)
+
+        assert sources.get("o")["email"] == "new@corp.com"
+
+    def test_auth_leaves_explicit_mailbox_sources_alone(self, monkeypatch):
+        from ts4k import cli
+        from ts4k.state import sources
+
+        sources.add(
+            "o", provider="o365", client_id="cid", mailbox="shared@corp.com",
+        )
+        monkeypatch.setattr(
+            "ts4k.auth.microsoft.get_credentials", lambda *a, **kw: object()
+        )
+
+        cli._auth_o365("o", sources.get("o"), no_calendar=True)
+
+        assert "email" not in sources.get("o")
+
+
 class TestGmailAdapterCacheGate:
     """The Gmail adapter's internal cache lookup must validate the account:
     an unchecked hit would return the old account's header, which the
