@@ -11,6 +11,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -487,8 +488,18 @@ def _resolve_since_to_utc(since: str | None) -> str | None:
             delta = timedelta(hours=n)
         dt = datetime.now(timezone.utc) - delta
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Assume ISO already
-    return since
+    # Assume ISO. Message dates are always Z-normalized and compared
+    # lexically, so an explicit UTC offset (e.g. "…T12:00:00-04:00") must
+    # be converted to UTC here or every downstream comparison applies the
+    # wrong cutoff. Naive timestamps and bare dates already compare
+    # correctly against Z strings and pass through unchanged.
+    try:
+        dt = datetime.fromisoformat(since)
+    except ValueError:
+        return since
+    if dt.tzinfo is None:
+        return since
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _raw_bytes(messages: list[dict]) -> int:
@@ -538,9 +549,47 @@ def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _matches_post_filters(
+    msg: dict, query: str | None = None,
+    sender: str | None = None, domain: str | None = None,
+) -> bool:
+    """Client-side backstop so listing filters always stack (ts4k#105).
+
+    Adapters apply *sender*/*domain*/*query* server-side where they can, but
+    support is adapter-specific — WhatsApp's whatsnew ignores all three, so
+    without this backstop those filters silently vanish on the time-aware
+    fetch path.  ``from`` is normalized to a bare email address for mail
+    sources, so *sender*/*domain* naturally exclude sources whose senders
+    have no email address (e.g. WhatsApp chat names) rather than matching
+    vacuously.
+    """
+    frm = msg.get("from", "").lower()
+    if sender and sender.lower() not in frm:
+        return False
+    if domain:
+        # Require an actual email address — a plain sender name that merely
+        # ends in ".domain" (e.g. an HTTP source named "alerts.example.com")
+        # must not match. Compare only the address's domain component.
+        if "@" not in frm:
+            return False
+        d = domain.lower().lstrip("@")
+        addr_domain = frm.rsplit("@", 1)[1].strip("> ")
+        if not (addr_domain == d or addr_domain.endswith("." + d)):
+            return False
+    if query:
+        q = query.lower()
+        if not any(
+            q in str(msg.get(k, "")).lower()
+            for k in ("from", "subject", "snippet")
+        ):
+            return False
+    return True
+
+
 async def _fetch_for_source(
     prefix: str, cfg: dict[str, Any], since: str | None, count: int,
     sender: str | None = None, domain: str | None = None,
+    query: str | None = None,
 ) -> list[dict]:
     """Fetch new messages from a single source.
 
@@ -557,10 +606,27 @@ async def _fetch_for_source(
             # Over-fetch past count so the aggregation layer can see
             # truncation (has_more / watermark direction). Everything
             # fetched is returned; _fetch_messages truncates to count.
+            # Providers whose list_messages defines its own query semantics
+            # (GitHub search syntax; WhatsApp chat:<jid> lookups and
+            # bridge-side content search) that a header-substring backstop
+            # cannot emulate — whatsnew on these adapters ignores query
+            # entirely, so with --since the query would silently match
+            # nothing. Search natively; the time bound is applied
+            # client-side below.
+            native_search = provider in ("github", "whatsapp") and query is not None
             if provider == "gmail":
-                query = _utc_to_gmail_query(since)
+                gmail_query = _utc_to_gmail_query(since)
+                if query:
+                    # Gmail search terms AND together, so the user query
+                    # rides the same server-side search as the time bound.
+                    gmail_query = f"{query} {gmail_query}"
                 listing = await adapter.list_messages(
-                    query=query, count=count + 1, sender=sender, domain=domain
+                    query=gmail_query, count=count + 1,
+                    sender=sender, domain=domain,
+                )
+            elif native_search:
+                listing = await adapter.list_messages(
+                    query=query, count=count + 1, sender=sender, domain=domain,
                 )
             else:
                 listing = await adapter.whatsnew(
@@ -584,7 +650,21 @@ async def _fetch_for_source(
                     mailbox=_mailbox_identity(cfg),
                 )
                 messages.append(msg)
-            return messages
+            # Gmail, GitHub, and WhatsApp matched *query* natively (full-text
+            # / search syntax invisible to the backstop) — re-filtering it
+            # here would drop legitimate matches.
+            native_query = provider == "gmail" or native_search
+            results = []
+            for m in messages:
+                if native_search and since and m.get("date", "") < since:
+                    continue
+                if not _matches_post_filters(
+                    m, query=None if native_query else query,
+                    sender=sender, domain=domain,
+                ):
+                    continue
+                results.append(m)
+            return results
 
     except Exception as exc:
         logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -619,6 +699,7 @@ async def _fetch_messages(
     stat_cmd: str = "wn",
     sender: str | None = None,
     domain: str | None = None,
+    query: str | None = None,
     threads: bool = False,
 ) -> CommandResult:
     """Shared fetch layer — parallel fetch, collate, format.
@@ -632,6 +713,8 @@ async def _fetch_messages(
         filter: Whether to apply skip filters.
         ref_table: Optional ref table for short refs.
         stat_cmd: Stats command label (``"wn"`` or ``"l"``).
+        query: Free-text filter — server-side for Gmail, client-side
+               backstop for the rest (see ``_matches_post_filters``).
         threads: Collapse the fetched messages into one row per thread.
 
     Returns a CommandResult with ``_messages`` populated (the truncated list).
@@ -649,7 +732,7 @@ async def _fetch_messages(
             tasks.append(
                 asyncio.create_task(
                     _fetch_for_source(prefix, cfg, since[prefix], count,
-                                     sender=sender, domain=domain)
+                                     sender=sender, domain=domain, query=query)
                 )
             )
             task_prefixes.append(prefix)
@@ -700,6 +783,8 @@ async def _fetch_messages(
                 parts.append(f"--source {source}")
             parts.append(f"--since {oldest_date}")
             parts.append(f"-n {count}")
+            if query:
+                parts.append(f"-q {shlex.quote(query)}")
             if sender:
                 parts.append(f"--from {sender}")
             if domain:
@@ -997,6 +1082,7 @@ async def list_messages(
             stat_cmd="l",
             sender=sender,
             domain=domain,
+            query=query,
             threads=threads,
         )
 
