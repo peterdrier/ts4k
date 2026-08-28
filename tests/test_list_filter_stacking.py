@@ -201,6 +201,27 @@ class TestDomainStacksWithSince:
         assert result.error == "No new messages."
 
 
+class TestResolveSinceToUtc:
+    """ISO --since values with a UTC offset must be normalized before the
+    (lexical) comparisons against Z-normalized message dates."""
+
+    def test_offset_converted_to_utc(self):
+        assert commands._resolve_since_to_utc(
+            "2026-08-20T12:00:00-04:00"
+        ) == "2026-08-20T16:00:00Z"
+
+    def test_z_and_naive_pass_through_equivalent(self):
+        assert commands._resolve_since_to_utc(
+            "2026-08-20T12:00:00Z"
+        ) == "2026-08-20T12:00:00Z"
+        assert commands._resolve_since_to_utc("2026-08-20") == "2026-08-20"
+
+    def test_relative_and_all_unchanged(self):
+        assert commands._resolve_since_to_utc("all") is None
+        out = commands._resolve_since_to_utc("1d")
+        assert out is not None and out.endswith("Z")
+
+
 class TestMatchesPostFilters:
     MSG = {"from": "jan@vdpadvies.nl", "subject": "VDP proposal",
            "snippet": "quarterly figures"}

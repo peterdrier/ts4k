@@ -447,8 +447,18 @@ def _resolve_since_to_utc(since: str | None) -> str | None:
             delta = timedelta(hours=n)
         dt = datetime.now(timezone.utc) - delta
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Assume ISO already
-    return since
+    # Assume ISO. Message dates are always Z-normalized and compared
+    # lexically, so an explicit UTC offset (e.g. "…T12:00:00-04:00") must
+    # be converted to UTC here or every downstream comparison applies the
+    # wrong cutoff. Naive timestamps and bare dates already compare
+    # correctly against Z strings and pass through unchanged.
+    try:
+        dt = datetime.fromisoformat(since)
+    except ValueError:
+        return since
+    if dt.tzinfo is None:
+        return since
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _raw_bytes(messages: list[dict]) -> int:
