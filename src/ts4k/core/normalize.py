@@ -297,20 +297,23 @@ def _find_own_elements(parent, tag_names: set[str]) -> list:
     which is O(N²) on nested tables. Descending through non-table wrappers
     (a ``<form>`` or ``<div>`` inside a malformed email table) keeps the
     original semantics, unlike a direct-children-only scan.
+
+    Iterative (explicit stack) so adversarially deep wrapper nesting can't
+    exhaust the Python call stack.
     """
     results = []
-
-    def _walk(element):
-        for child in element.children:
-            name = getattr(child, "name", None)
-            if not name:
-                continue
-            if name in tag_names:
-                results.append(child)
-            if name != "table":
-                _walk(child)
-
-    _walk(parent)
+    # LIFO of elements still to visit; children pushed reversed so the
+    # walk stays in document order (pre-order).
+    stack = list(reversed(list(parent.children)))
+    while stack:
+        element = stack.pop()
+        name = getattr(element, "name", None)
+        if not name:
+            continue
+        if name in tag_names:
+            results.append(element)
+        if name != "table":
+            stack.extend(reversed(list(element.children)))
     return results
 
 

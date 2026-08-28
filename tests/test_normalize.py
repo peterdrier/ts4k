@@ -1259,6 +1259,35 @@ class TestBoltConsolidationSemantics:
         for cell in ("a", "b", "c", "d"):
             assert cell in out
 
+    def test_deeply_nested_wrappers_do_not_exhaust_stack(self):
+        # The walk must be iterative: ~1100 nested wrappers exceed the
+        # default Python recursion limit, and adversarial/deeply nested
+        # email HTML must not crash normalize (built via the tree API —
+        # the parser itself is not under test here).
+        import sys
+
+        from bs4 import BeautifulSoup
+
+        from ts4k.core.normalize import _find_own_elements
+
+        soup = BeautifulSoup("<table></table>", "html.parser")
+        table = soup.table
+        cur = table
+        depth = sys.getrecursionlimit() + 100
+        for _ in range(depth):
+            div = soup.new_tag("div")
+            cur.append(div)
+            cur = div
+        tr = soup.new_tag("tr")
+        td = soup.new_tag("td")
+        td.string = "deep"
+        tr.append(td)
+        cur.append(tr)
+
+        rows = _find_own_elements(table, {"tr"})
+        assert len(rows) == 1
+        assert _find_own_elements(rows[0], {"th", "td"}) == [td]
+
 
 class TestNormalizeAddressEdges:
     def test_display_name_form(self):
