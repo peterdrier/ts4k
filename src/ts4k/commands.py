@@ -497,9 +497,41 @@ def _resolve_ref(id_or_ref: str, ref_table: RefTable | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _matches_post_filters(
+    msg: dict, query: str | None = None,
+    sender: str | None = None, domain: str | None = None,
+) -> bool:
+    """Client-side backstop so listing filters always stack (ts4k#105).
+
+    Adapters apply *sender*/*domain*/*query* server-side where they can, but
+    support is adapter-specific — WhatsApp's whatsnew ignores all three, so
+    without this backstop those filters silently vanish on the time-aware
+    fetch path.  ``from`` is normalized to a bare email address for mail
+    sources, so *sender*/*domain* naturally exclude sources whose senders
+    have no email address (e.g. WhatsApp chat names) rather than matching
+    vacuously.
+    """
+    frm = msg.get("from", "").lower()
+    if sender and sender.lower() not in frm:
+        return False
+    if domain:
+        d = domain.lower().lstrip("@")
+        if not (frm.endswith("@" + d) or frm.endswith("." + d)):
+            return False
+    if query:
+        q = query.lower()
+        if not any(
+            q in str(msg.get(k, "")).lower()
+            for k in ("from", "subject", "snippet")
+        ):
+            return False
+    return True
+
+
 async def _fetch_for_source(
     prefix: str, cfg: dict[str, Any], since: str | None, count: int,
     sender: str | None = None, domain: str | None = None,
+    query: str | None = None,
 ) -> list[dict]:
     """Fetch new messages from a single source.
 
@@ -517,9 +549,14 @@ async def _fetch_for_source(
             # truncation (has_more / watermark direction). Everything
             # fetched is returned; _fetch_messages truncates to count.
             if provider == "gmail":
-                query = _utc_to_gmail_query(since)
+                gmail_query = _utc_to_gmail_query(since)
+                if query:
+                    # Gmail search terms AND together, so the user query
+                    # rides the same server-side search as the time bound.
+                    gmail_query = f"{query} {gmail_query}"
                 listing = await adapter.list_messages(
-                    query=query, count=count + 1, sender=sender, domain=domain
+                    query=gmail_query, count=count + 1,
+                    sender=sender, domain=domain,
                 )
             else:
                 listing = await adapter.whatsnew(
@@ -540,7 +577,16 @@ async def _fetch_for_source(
                 msg.setdefault("snippet", msg.get("body", ""))
                 cache.store_message(msg.get("id", ""), msg, provider=provider)
                 messages.append(msg)
-            return messages
+            # Gmail matched *query* server-side (full-text, including body
+            # content invisible to the backstop) — re-filtering it here
+            # would drop legitimate matches.
+            return [
+                m for m in messages
+                if _matches_post_filters(
+                    m, query=None if provider == "gmail" else query,
+                    sender=sender, domain=domain,
+                )
+            ]
 
     except Exception as exc:
         logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -575,6 +621,7 @@ async def _fetch_messages(
     stat_cmd: str = "wn",
     sender: str | None = None,
     domain: str | None = None,
+    query: str | None = None,
     threads: bool = False,
 ) -> CommandResult:
     """Shared fetch layer — parallel fetch, collate, format.
@@ -588,6 +635,8 @@ async def _fetch_messages(
         filter: Whether to apply skip filters.
         ref_table: Optional ref table for short refs.
         stat_cmd: Stats command label (``"wn"`` or ``"l"``).
+        query: Free-text filter — server-side for Gmail, client-side
+               backstop for the rest (see ``_matches_post_filters``).
         threads: Collapse the fetched messages into one row per thread.
 
     Returns a CommandResult with ``_messages`` populated (the truncated list).
@@ -605,7 +654,7 @@ async def _fetch_messages(
             tasks.append(
                 asyncio.create_task(
                     _fetch_for_source(prefix, cfg, since[prefix], count,
-                                     sender=sender, domain=domain)
+                                     sender=sender, domain=domain, query=query)
                 )
             )
             task_prefixes.append(prefix)
@@ -656,6 +705,8 @@ async def _fetch_messages(
                 parts.append(f"--source {source}")
             parts.append(f"--since {oldest_date}")
             parts.append(f"-n {count}")
+            if query:
+                parts.append(f'-q "{query}"')
             if sender:
                 parts.append(f"--from {sender}")
             if domain:
@@ -948,6 +999,7 @@ async def list_messages(
             stat_cmd="l",
             sender=sender,
             domain=domain,
+            query=query,
             threads=threads,
         )
 
