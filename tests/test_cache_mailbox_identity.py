@@ -61,12 +61,12 @@ class TestCacheMailboxGate:
     def test_list_headers_drops_mismatched_prefix_entries(self):
         cache.store_header("o:1", HDR, provider="o365", mailbox="a@corp.com")
         cache.store_header(
-            "g:1", {**HDR, "source": "g"}, provider="gmail", mailbox="me@gmail.com"
+            "g:1", {**HDR, "source": "g"}, provider="gmail", mailbox="gmail:me@gmail.com"
         )
 
         # "o" now points at account B; "g" unchanged; unmapped prefixes pass.
         rows = cache.list_headers(
-            mailboxes={"o": "b@corp.com", "g": "me@gmail.com"}
+            mailboxes={"o": "b@corp.com", "g": "gmail:me@gmail.com"}
         )
         assert [r["id"] for r in rows] == ["g:1"]
 
@@ -142,21 +142,33 @@ class TestPrefixReassignment:
     def test_mailbox_identity_fallbacks(self):
         assert commands._mailbox_identity(
             {"provider": "gmail", "email": "me@gmail.com"}
-        ) == "me@gmail.com"
+        ) == "gmail:me@gmail.com"
         assert commands._mailbox_identity(
             {"provider": "o365", "client_id": "cid", "mailbox": "mb@corp.com"}
-        ) == "mb@corp.com"
+        ) == "o365:mb@corp.com"
         # /me sources: the authenticated username recorded at source-add
         # time identifies the account, so re-authing under the same app
         # registration still invalidates the cache.
         assert commands._mailbox_identity(
             {"provider": "o365", "client_id": "cid", "tenant_id": "t1",
              "email": "signed-in@corp.com"}
-        ) == "signed-in@corp.com"
+        ) == "o365:signed-in@corp.com"
         # Last resort for /me sources added before email was recorded.
         assert commands._mailbox_identity(
             {"provider": "o365", "client_id": "cid", "tenant_id": "t1"}
-        ) == "cid/t1"
+        ) == "o365:cid/t1"
+
+    def test_identity_distinguishes_providers_sharing_an_address(self):
+        # A prefix repointed between providers during a mail migration can
+        # keep the same address — the identity must still change so the old
+        # provider's cached entries are invalidated.
+        gmail = commands._mailbox_identity(
+            {"provider": "gmail", "email": "me@corp.com"}
+        )
+        o365 = commands._mailbox_identity(
+            {"provider": "o365", "client_id": "cid", "mailbox": "me@corp.com"}
+        )
+        assert gmail != o365
 
 
 class TestBodyInvalidationOnRestamp:
@@ -201,7 +213,9 @@ class TestAuthRefreshesRecordedIdentity:
     actually authenticated, so a re-auth as another user invalidates the
     cache (cache identity keys off cfg['email'])."""
 
-    def test_auth_updates_email_on_account_change(self, monkeypatch, capsys):
+    def test_auth_updates_email_from_token_claims(self, monkeypatch):
+        # The account comes from the token result that just authenticated —
+        # not from a scan of the (possibly multi-account) MSAL cache.
         from ts4k import cli
         from ts4k.state import sources
 
@@ -210,15 +224,37 @@ class TestAuthRefreshesRecordedIdentity:
             email="old@corp.com",
         )
         monkeypatch.setattr(
-            "ts4k.auth.microsoft.get_credentials", lambda *a, **kw: object()
+            "ts4k.auth.microsoft.get_credentials",
+            lambda *a, **kw: {
+                "access_token": "tok",
+                "id_token_claims": {"preferred_username": "new@corp.com"},
+            },
         )
         monkeypatch.setattr(
-            "ts4k.commands._resolve_o365_username", lambda cfg: "new@corp.com"
+            "ts4k.commands._resolve_o365_username",
+            lambda cfg: "stale-first-cache-entry@corp.com",
         )
 
         cli._auth_o365("o", sources.get("o"), no_calendar=True)
 
         assert sources.get("o")["email"] == "new@corp.com"
+
+    def test_auth_falls_back_to_cache_scan_without_claims(self, monkeypatch):
+        from ts4k import cli
+        from ts4k.state import sources
+
+        sources.add("o", provider="o365", client_id="cid", tenant_id="t1")
+        monkeypatch.setattr(
+            "ts4k.auth.microsoft.get_credentials",
+            lambda *a, **kw: {"access_token": "tok"},
+        )
+        monkeypatch.setattr(
+            "ts4k.commands._resolve_o365_username", lambda cfg: "me@corp.com"
+        )
+
+        cli._auth_o365("o", sources.get("o"), no_calendar=True)
+
+        assert sources.get("o")["email"] == "me@corp.com"
 
     def test_auth_leaves_explicit_mailbox_sources_alone(self, monkeypatch):
         from ts4k import cli
@@ -251,7 +287,7 @@ class TestGmailAdapterCacheGate:
             "g:msg1",
             {"source": "g", "from": "old@sender.com", "subject": "old account",
              "date": "2026-08-01T10:00:00Z"},
-            provider="gmail", mailbox="old@gmail.com",
+            provider="gmail", mailbox="gmail:old@gmail.com",
         )
 
         adapter = GmailAdapter(GmailAdapterConfig(user_email="new@gmail.com"))
@@ -284,7 +320,7 @@ class TestGmailAdapterCacheGate:
             "g:msg1",
             {"source": "g", "from": "boss@corp.com", "subject": "own account",
              "date": "2026-08-01T10:00:00Z"},
-            provider="gmail", mailbox="me@gmail.com",
+            provider="gmail", mailbox="gmail:me@gmail.com",
         )
 
         adapter = GmailAdapter(GmailAdapterConfig(user_email="me@gmail.com"))

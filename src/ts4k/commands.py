@@ -281,15 +281,21 @@ def _mailbox_identity(cfg: dict[str, Any]) -> str:
     account under the same app registration still invalidates the cache.
     ``client_id/tenant_id`` is the last resort for /me sources added before
     ``email`` was recorded.
+
+    The identity is namespaced by provider (``"gmail:…"``, ``"o365:…"``) so
+    repointing a prefix between providers that share an address (e.g. a
+    mail migration) still invalidates the old provider's entries.  The
+    Gmail adapter's internal cache lookup builds the same form.
     """
     provider = cfg.get("provider", "").lower()
     if provider == "gmail":
-        return cfg.get("email", "")
+        email = cfg.get("email", "")
+        return f"gmail:{email}" if email else ""
     if provider == "o365":
         identity = cfg.get("mailbox") or cfg.get("email")
-        if identity:
-            return identity
-        return f"{cfg.get('client_id', '')}/{cfg.get('tenant_id', 'common')}"
+        if not identity:
+            identity = f"{cfg.get('client_id', '')}/{cfg.get('tenant_id', 'common')}"
+        return f"o365:{identity}"
     return ""
 
 

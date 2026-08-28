@@ -28,7 +28,7 @@ class TestSourcesListActivity:
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
             "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
-            provider="gmail", mailbox="a@b.com",
+            provider="gmail", mailbox="gmail:a@b.com",
         )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
@@ -50,7 +50,7 @@ class TestSourcesListActivity:
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
             "gw:1", {"source": "gw", "date": recent, "from": "a@b.com", "subject": "hi"},
-            provider="gmail", mailbox="work@gmail.com",
+            provider="gmail", mailbox="gmail:work@gmail.com",
         )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
@@ -61,7 +61,7 @@ class TestSourcesListActivity:
         sources.add("g", provider="gmail", email="a@b.com")
         cache.store_header(
             "g:1", {"source": "g", "from": "a@b.com", "subject": "hi"},
-            provider="gmail", mailbox="a@b.com",
+            provider="gmail", mailbox="gmail:a@b.com",
         )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out
@@ -75,7 +75,7 @@ class TestSourcesListActivity:
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache.store_header(
             "g:1", {"source": "g", "date": recent, "from": "a@b.com", "subject": "hi"},
-            provider="gmail", mailbox="a@b.com",
+            provider="gmail", mailbox="gmail:a@b.com",
         )
         cli._cmd_sources(_args("list"))
         out = capsys.readouterr().out

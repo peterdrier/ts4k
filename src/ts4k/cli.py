@@ -1459,7 +1459,7 @@ def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
                 scopes.extend(s for s in cal_scopes if s not in scopes)
 
     try:
-        get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes or None)
+        result = get_ms_credentials(client_id, tenant_id=tenant_id, scopes=scopes or None)
         print(f"Authenticated {prefix} (client {client_id[:8]}...) successfully.")
 
     except Exception as exc:
@@ -1468,11 +1468,15 @@ def _auth_o365(prefix: str, cfg: dict, no_calendar: bool) -> None:
 
     # Re-auth may have signed in a different account under the same app
     # registration. /me sources are identified by the recorded email for
-    # cache invalidation (ts4k#87), so refresh it from the token cache the
-    # authentication just wrote.
+    # cache invalidation (ts4k#87), so record the account from the token
+    # result that just authenticated — the raw cache scan is only a
+    # fallback, since with multiple cached accounts its first entry need
+    # not be the one these credentials represent.
     if provider == "o365" and not cfg.get("mailbox"):
-        from ts4k.commands import _resolve_o365_username
-        username = _resolve_o365_username(cfg)
+        username = (result.get("id_token_claims") or {}).get("preferred_username")
+        if not username:
+            from ts4k.commands import _resolve_o365_username
+            username = _resolve_o365_username(cfg)
         if username and username != cfg.get("email"):
             src_mod.update_fields(prefix, email=username)
             print(f"Recorded account: {username}")

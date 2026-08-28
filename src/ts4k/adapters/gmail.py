@@ -458,10 +458,11 @@ class GmailAdapter(BaseAdapter):
             prefixed = f"{self._prefix}:{msg_id}"
             # Validate against this account — an unchecked hit could return
             # a header cached under a previous account on the same prefix,
-            # which callers would then restamp with the new identity
-            # (user_email is the gmail cache identity; see
-            # commands._mailbox_identity).
-            cached = cache.get_header(prefixed, mailbox=self._config.user_email)
+            # which callers would then restamp with the new identity. Must
+            # mirror the form commands._mailbox_identity builds for gmail.
+            cached = cache.get_header(
+                prefixed, mailbox=f"gmail:{self._config.user_email}"
+            )
             if cached is not None:
                 header_dicts.append(cached)
             else:

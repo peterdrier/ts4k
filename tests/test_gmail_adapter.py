@@ -1243,7 +1243,7 @@ class TestGmailAdapterCacheAwareListing:
             "source": "g",
         }
         cache_mod.store_header(
-            "g:msg1", cached_header, provider="gmail", mailbox="user@gmail.com"
+            "g:msg1", cached_header, provider="gmail", mailbox="gmail:user@gmail.com"
         )
 
         # Mock messages.list to return 2 IDs (msg1 cached, msg2 not).
