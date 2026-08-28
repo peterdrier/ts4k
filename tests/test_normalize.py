@@ -4,7 +4,7 @@ Each test uses realistic inline fixtures modeled on actual email patterns.
 The composite test at the end measures byte reduction and asserts >= 70%.
 """
 
-from ts4k.core.normalize import normalize, normalize_headers
+from ts4k.core.normalize import _normalize_address, normalize, normalize_headers
 
 
 # ---------------------------------------------------------------------------
@@ -1203,3 +1203,77 @@ class TestHeaderNormalization:
         result = normalize_headers(headers)
         assert result["x-custom-header"] == "some value"
         assert result["message-id"] == "<abc@example.com>"
+
+
+# ---------------------------------------------------------------------------
+# Bolt consolidation regressions (PRs #94-#103)
+# ---------------------------------------------------------------------------
+
+
+class TestBoltConsolidationSemantics:
+    """Lock in the original semantics the consolidated optimizations must keep."""
+
+    def test_hidden_attribute_element_removed(self):
+        # <div hidden> parses as hidden="" (falsy value) — has_attr must win.
+        out = normalize('<p>keep</p><div hidden>secret</div>')
+        assert "keep" in out
+        assert "secret" not in out
+
+    def test_zero_size_with_text_kept_without_text_removed(self):
+        out = normalize(
+            '<div style="width:0">visible text</div>'
+            '<div style="height:0"><img src="x.png"/></div>'
+            '<p>tail</p>'
+        )
+        assert "visible text" in out
+        assert "tail" in out
+
+    def test_display_none_removed_regardless_of_text(self):
+        out = normalize('<div style="display:none">preheader</div><p>body</p>')
+        assert "preheader" not in out
+        assert "body" in out
+
+    def test_table_rows_wrapped_in_stray_tags_still_counted(self):
+        # html.parser preserves non-standard wrappers inside <table>; the
+        # boundary-aware walk must still find these rows (a direct-children
+        # scan would see an "empty" table and decompose the content).
+        html = (
+            "<table><form>"
+            "<tr><td>r1c1</td><td>r1c2</td></tr>"
+            "<tr><td>r2c1</td><td>r2c2</td></tr>"
+            "</form></table>"
+        )
+        out = normalize(html)
+        assert "r1c1" in out
+        assert "r2c2" in out
+
+    def test_nested_table_rows_not_double_counted(self):
+        # The single-column wrapper must not inherit the nested table's cells.
+        html = (
+            "<table><tr><td>"
+            "<table><tr><td>a</td><td>b</td></tr>"
+            "<tr><td>c</td><td>d</td></tr></table>"
+            "</td></tr></table>"
+        )
+        out = normalize(html)
+        for cell in ("a", "b", "c", "d"):
+            assert cell in out
+
+
+class TestNormalizeAddressEdges:
+    def test_display_name_form(self):
+        assert _normalize_address("Alice <Alice@Example.COM>") == "Alice@example.com"
+
+    def test_bare_address(self):
+        assert _normalize_address("bob@example.com") == "bob@example.com"
+
+    def test_empty_angle_pair_falls_back_to_earlier_pair(self):
+        # The old regex's [^>]+ never matched an empty <>; the string-scan
+        # version must step back to the last non-empty pair the same way.
+        assert _normalize_address("A <a@b.com> <>") == "a@b.com"
+
+    def test_unclosed_bracket_falls_back(self):
+        assert _normalize_address("X <a@b.com> <c") == "a@b.com"
+
+    def test_no_pair_returns_whole_string(self):
+        assert _normalize_address("just a name") == "just a name"

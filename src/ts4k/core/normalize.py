@@ -192,17 +192,33 @@ _STYLE_HIDDEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+def _is_hidden_element(tag) -> bool:
+    """Filter for :func:`_remove_hidden_elements` — one predicate so the
+    tree is traversed once instead of three times.
+
+    Evaluates the original compiled patterns sequentially rather than a
+    hand-merged "combined" regex: two patterns claiming to be the union of
+    the originals is a drift bug waiting to happen.
+    """
+    if tag.has_attr("hidden"):
+        return True
+    style = tag.get("style")
+    if not style:
+        return False
+    if _STYLE_HIDDEN_PATTERN.search(style):
+        return True
+    # Zero-size divs/spans used for tracking — only remove if the element
+    # has no visible text content.
+    return bool(_STYLE_ZERO_SIZE.search(style)) and not tag.get_text(strip=True)
+
+
 def _remove_hidden_elements(soup: BeautifulSoup) -> None:
     """Remove elements that are hidden via CSS or attributes."""
-    for el in soup.find_all(style=_STYLE_HIDDEN_PATTERN):
+    # ⚡ Bolt Optimization: single find_all pass with a combined predicate —
+    # the dominant cost is the O(N) DOM traversal itself, not the per-tag
+    # checks, so three passes → one is the win.
+    for el in soup.find_all(_is_hidden_element):
         el.decompose()
-    for el in soup.find_all(attrs={"hidden": True}):
-        el.decompose()
-    # Zero-size divs/spans used for tracking
-    for el in soup.find_all(style=_STYLE_ZERO_SIZE):
-        # Only remove if element has no visible text content
-        if not el.get_text(strip=True):
-            el.decompose()
 
 
 _UNSUB_PATTERNS_HTML = re.compile(
@@ -271,6 +287,33 @@ def _cell_rowspan(cell) -> int:
         return 1
 
 
+def _find_own_elements(parent, tag_names: set[str]) -> list:
+    """Collect descendants of *parent* matching *tag_names*, stopping at
+    nested ``<table>`` boundaries.
+
+    Equivalent to ``[t for t in parent.find_all(names) if
+    t.find_parent("table") is <owning table>]`` but in one downward walk —
+    the find_all+find_parent form re-walks up the tree for every match,
+    which is O(N²) on nested tables. Descending through non-table wrappers
+    (a ``<form>`` or ``<div>`` inside a malformed email table) keeps the
+    original semantics, unlike a direct-children-only scan.
+    """
+    results = []
+
+    def _walk(element):
+        for child in element.children:
+            name = getattr(child, "name", None)
+            if not name:
+                continue
+            if name in tag_names:
+                results.append(child)
+            if name != "table":
+                _walk(child)
+
+    _walk(parent)
+    return results
+
+
 def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
     """Convert HTML tables to pipe-delimited text.
 
@@ -290,7 +333,8 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         # nested table's rows/cells would otherwise be double-counted and
         # skew classification (e.g. a single-column wrapper around a
         # multi-cell nested table would wrongly look like a data table).
-        rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
+        # ⚡ Bolt Optimization: boundary-aware walk instead of find_all+find_parent.
+        rows = _find_own_elements(table, {"tr"})
         if not rows:
             # Empty table, remove
             table.decompose()
@@ -301,9 +345,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
         max_cols = 0
 
         for row in rows:
-            cells = [
-                c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-            ]
+            cells = _find_own_elements(row, {"th", "td"})
             cell_texts = [c.get_text(strip=True) for c in cells]
             if any(cell_texts):  # skip entirely empty rows
                 table_data.append(cell_texts)
@@ -319,11 +361,9 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             if mode == "readable":
                 # Unwrap only this table's own structure so nested tables
                 # and inline markup survive for html2text
-                own = [
-                    t
-                    for t in table.find_all(["thead", "tbody", "tr", "th", "td"])
-                    if t.find_parent("table") is table
-                ]
+                own = _find_own_elements(
+                    table, {"thead", "tbody", "tr", "th", "td"}
+                )
                 # Unwrapping td/tr drops the tag boundaries that kept
                 # adjacent cells/rows apart — "<td>Logo</td><td>Nav</td>"
                 # would collapse to "LogoNav". Insert a space after each
@@ -349,9 +389,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # more than one text descendant.
             lines = []
             for row in rows:
-                cells = [
-                    c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table
-                ]
+                cells = _find_own_elements(row, {"th", "td"})
                 cell_texts = [c.get_text("\n", strip=True) for c in cells]
                 if any(cell_texts):
                     lines.append(" ".join(cell_texts))
@@ -366,11 +404,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
             # render as plain pipe-y text. Promote the first row's <td>
             # cells to <th> so html2text treats it as a proper table.
             def _own_cells(row):
-                return [
-                    c
-                    for c in row.find_all(["th", "td"])
-                    if c.find_parent("table") is table
-                ]
+                return _find_own_elements(row, {"th", "td"})
 
             # Find a clean header row: scan rows in order while tracking
             # columns occupied by rowspans carried down from earlier rows.
@@ -511,11 +545,7 @@ def _convert_tables(soup: BeautifulSoup, mode: str = "compact") -> None:
                 for span in carried:
                     span[0] -= 1
                 carried = [s for s in carried if s[0] > 0]
-            for t in [
-                t
-                for t in table.find_all(["thead", "tbody"])
-                if t.find_parent("table") is table
-            ]:
+            for t in _find_own_elements(table, {"thead", "tbody"}):
                 t.unwrap()
             table.unwrap()
             continue
@@ -617,6 +647,10 @@ _MAILTO_CLEANUP_PATTERN = re.compile(r"\s*\(<mailto:[^)]+>\)|<mailto:[^>]+>")
 
 # ⚡ Bolt Optimization: Combined reply header patterns into a single pre-compiled regex
 # using the OR (|) operator to significantly improve matching performance (avoiding loops).
+# ⚡ Bolt Optimization: pre-compiled emphasis stripper with a cheap `in`
+# fast-path at the call sites — most lines carry no *_ markers at all.
+_EMPHASIS_PATTERN = re.compile(r"[*_]{1,3}")
+
 _REPLY_HEADER_PATTERN = re.compile(
     r"^(?:On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun).*\bwrote:\s*|"
     r"On\s+\d.*\bwrote:\s*|"
@@ -647,7 +681,10 @@ def _strip_reply_chains(text: str) -> str:
     # Line boundaries are unchanged by stripping, so the match's line offset
     # maps directly onto the original (unstripped) lines that get kept.
     orig_lines = text.split("\n")
-    stripped_text = "\n".join(re.sub(r"[*_]{1,3}", "", line) for line in orig_lines)
+    stripped_text = "\n".join(
+        _EMPHASIS_PATTERN.sub("", line) if "*" in line or "_" in line else line
+        for line in orig_lines
+    )
     match = _REPLY_HEADER_PATTERN.search(stripped_text)
     if match:
         # Truncate at the start line of the matched header.
@@ -729,7 +766,10 @@ def _strip_signatures(text: str) -> str:
         # trailing markers before the comma, so edge-only stripping
         # misses them. The raw line was already tested above, so a "___"
         # delimiter can't be destroyed by this.
-        emphasis_stripped = re.sub(r"[*_]{1,3}", "", stripped)
+        emphasis_stripped = (
+            _EMPHASIS_PATTERN.sub("", stripped)
+            if "*" in stripped or "_" in stripped else stripped
+        )
         if emphasis_stripped and _SIGNATURE_TRIGGER_PATTERN.match(emphasis_stripped):
             sig_start = i
             break
@@ -821,10 +861,18 @@ def _normalize_date(date_str: str) -> str:
 
 def _normalize_address(addr: str) -> str:
     """Normalize email address fields — strip display names, lowercase domain."""
-    # Handle "Display Name <email@domain.com>" format
-    m = re.match(r".*<([^>]+)>", addr)
-    if m:
-        email = m.group(1).strip()
+    # Handle "Display Name <email@domain.com>" format.
+    # ⚡ Bolt Optimization: string scanning instead of the backtracking
+    # regex ``.*<([^>]+)>`` — same semantics: the last non-empty <...>
+    # pair wins, and an empty ``<>`` steps back to an earlier pair just
+    # as the regex's ``[^>]+`` did.
+    start = addr.rfind("<")
+    while start != -1:
+        end = addr.find(">", start + 1)
+        if end > start + 1:
+            email = addr[start + 1 : end].strip()
+            break
+        start = addr.rfind("<", 0, start)
     else:
         email = addr.strip()
 
