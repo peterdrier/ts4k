@@ -11,6 +11,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -515,8 +516,14 @@ def _matches_post_filters(
     if sender and sender.lower() not in frm:
         return False
     if domain:
+        # Require an actual email address — a plain sender name that merely
+        # ends in ".domain" (e.g. an HTTP source named "alerts.example.com")
+        # must not match. Compare only the address's domain component.
+        if "@" not in frm:
+            return False
         d = domain.lower().lstrip("@")
-        if not (frm.endswith("@" + d) or frm.endswith("." + d)):
+        addr_domain = frm.rsplit("@", 1)[1].strip("> ")
+        if not (addr_domain == d or addr_domain.endswith("." + d)):
             return False
     if query:
         q = query.lower()
@@ -548,6 +555,7 @@ async def _fetch_for_source(
             # Over-fetch past count so the aggregation layer can see
             # truncation (has_more / watermark direction). Everything
             # fetched is returned; _fetch_messages truncates to count.
+            github_search = provider == "github" and query is not None
             if provider == "gmail":
                 gmail_query = _utc_to_gmail_query(since)
                 if query:
@@ -557,6 +565,14 @@ async def _fetch_for_source(
                 listing = await adapter.list_messages(
                     query=gmail_query, count=count + 1,
                     sender=sender, domain=domain,
+                )
+            elif github_search:
+                # GitHub defines query as GitHub search syntax and has no
+                # query support in whatsnew — substring-matching it against
+                # headers would reject every valid search. Search natively;
+                # the time bound is applied client-side below.
+                listing = await adapter.list_messages(
+                    query=query, count=count + 1, sender=sender, domain=domain,
                 )
             else:
                 listing = await adapter.whatsnew(
@@ -577,16 +593,21 @@ async def _fetch_for_source(
                 msg.setdefault("snippet", msg.get("body", ""))
                 cache.store_message(msg.get("id", ""), msg, provider=provider)
                 messages.append(msg)
-            # Gmail matched *query* server-side (full-text, including body
-            # content invisible to the backstop) — re-filtering it here
-            # would drop legitimate matches.
-            return [
-                m for m in messages
-                if _matches_post_filters(
-                    m, query=None if provider == "gmail" else query,
+            # Gmail and GitHub matched *query* natively (full-text / search
+            # syntax invisible to the backstop) — re-filtering it here would
+            # drop legitimate matches.
+            native_query = provider == "gmail" or github_search
+            results = []
+            for m in messages:
+                if github_search and since and m.get("date", "") < since:
+                    continue
+                if not _matches_post_filters(
+                    m, query=None if native_query else query,
                     sender=sender, domain=domain,
-                )
-            ]
+                ):
+                    continue
+                results.append(m)
+            return results
 
     except Exception as exc:
         logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -706,7 +727,7 @@ async def _fetch_messages(
             parts.append(f"--since {oldest_date}")
             parts.append(f"-n {count}")
             if query:
-                parts.append(f'-q "{query}"')
+                parts.append(f"-q {shlex.quote(query)}")
             if sender:
                 parts.append(f"--from {sender}")
             if domain:

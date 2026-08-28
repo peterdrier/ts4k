@@ -103,6 +103,29 @@ class TestQueryStacksWithSince:
         assert "after:" in sent_query  # time bound still applied
 
     @pytest.mark.asyncio
+    async def test_github_query_uses_native_search(self, _sources, monkeypatch):
+        # GitHub's query is search syntax, not a header substring — it must
+        # go through list_messages, with the time bound applied client-side.
+        _write_sources(_sources, {"gh": {"provider": "github", "token": "t"}})
+        stub = _RecordingStub([
+            {"id": "gh:1", "source": "gh", "from": "octocat",
+             "subject": "old issue", "date": "2025-01-01T00:00:00Z"},
+            {"id": "gh:2", "source": "gh", "from": "octocat",
+             "subject": "new issue", "date": "2026-08-20T00:00:00Z"},
+        ])
+        monkeypatch.setattr(commands, "_make_adapter", lambda prefix, cfg: stub)
+
+        result = await commands.list_messages(
+            source="gh", query="repo:owner/name is:open",
+            since="2026-06-01", count=5,
+        )
+
+        assert stub.list_calls and stub.list_calls[0]["query"] == "repo:owner/name is:open"
+        assert not stub.whatsnew_calls
+        assert "new issue" in result.output
+        assert "old issue" not in result.output  # since bound applied client-side
+
+    @pytest.mark.asyncio
     async def test_no_query_leaves_since_path_unfiltered(self, _sources, monkeypatch):
         _write_sources(_sources, {"o": {"provider": "o365", "client_id": "x"}})
         stub = _RecordingStub(O365_MSGS)
@@ -173,6 +196,13 @@ class TestMatchesPostFilters:
 
     def test_domain_excludes_plain_names(self):
         assert not _matches_post_filters({"from": "Family Group"}, domain="vdpadvies.nl")
+
+    def test_domain_excludes_hostname_like_names_without_address(self):
+        # An HTTP source named like a hostname ends in ".domain" but has no
+        # email address — must not match.
+        assert not _matches_post_filters(
+            {"from": "alerts.example.com"}, domain="example.com"
+        )
 
     def test_query_matches_subject_snippet_from(self):
         assert _matches_post_filters(self.MSG, query="vdp")
