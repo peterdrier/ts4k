@@ -271,6 +271,44 @@ def _resolve_prefixes(source: str | None) -> list[str]:
     return [source]
 
 
+def _mailbox_identity(cfg: dict[str, Any]) -> str:
+    """Stable mailbox identity for cache namespacing (ts4k#87).
+
+    Source prefixes are user-chosen and reassignable, so cached entries are
+    validated against the account the prefix currently points at.  Gmail
+    sources are identified by their required ``email``; O365 by the
+    configured ``mailbox``, or for /me sources the authenticated username
+    recorded as ``email`` at source-add time — so re-authing as a different
+    account under the same app registration still invalidates the cache.
+    ``client_id/tenant_id`` is the last resort for /me sources added before
+    ``email`` was recorded.
+
+    The identity is namespaced by provider (``"gmail:…"``, ``"o365:…"``) so
+    repointing a prefix between providers that share an address (e.g. a
+    mail migration) still invalidates the old provider's entries.  The
+    Gmail adapter's internal cache lookup builds the same form.
+    """
+    provider = cfg.get("provider", "").lower()
+    if provider == "gmail":
+        email = cfg.get("email", "")
+        return f"gmail:{email}" if email else ""
+    if provider == "o365":
+        identity = cfg.get("mailbox") or cfg.get("email")
+        if not identity:
+            identity = f"{cfg.get('client_id', '')}/{cfg.get('tenant_id', 'common')}"
+        return f"o365:{identity}"
+    return ""
+
+
+def _current_mailboxes() -> dict[str, str]:
+    """Map each cacheable source prefix to its current mailbox identity."""
+    return {
+        prefix: _mailbox_identity(cfg)
+        for prefix, cfg in _ensure_sources().items()
+        if cfg.get("provider", "").lower() in cache.CACHEABLE_PROVIDERS
+    }
+
+
 _ACTIVITY_ACTIVE_DAYS = 30
 
 
@@ -299,7 +337,10 @@ def source_activity(
         return {"count": 0, "newest": None, "tag": "n/a"}
 
     if headers is None:
-        headers = cache.list_headers(source=prefix)
+        cfg = _ensure_sources().get(prefix, {})
+        headers = cache.list_headers(
+            source=prefix, mailboxes={prefix: _mailbox_identity(cfg)}
+        )
     if not headers:
         return {"count": 0, "newest": None, "tag": "empty"}
 
@@ -322,7 +363,7 @@ def cached_headers_by_source() -> dict[str, list[dict[str, Any]]]:
     reload and rescan the full cache index once per source.
     """
     groups: dict[str, list[dict[str, Any]]] = {}
-    for h in cache.list_headers():
+    for h in cache.list_headers(mailboxes=_current_mailboxes()):
         groups.setdefault(h.get("source", ""), []).append(h)
     return groups
 
@@ -604,7 +645,10 @@ async def _fetch_for_source(
                 # listing calls) — without this, format_listing has nothing
                 # to show and WhatsApp rows render with no preview at all.
                 msg.setdefault("snippet", msg.get("body", ""))
-                cache.store_message(msg.get("id", ""), msg, provider=provider)
+                cache.store_message(
+                    msg.get("id", ""), msg, provider=provider,
+                    mailbox=_mailbox_identity(cfg),
+                )
                 messages.append(msg)
             # Gmail, GitHub, and WhatsApp matched *query* natively (full-text
             # / search syntax invisible to the backstop) — re-filtering it
@@ -872,15 +916,6 @@ async def get_message(
     """
     id = _resolve_ref(id, ref_table)
 
-    # Read-through: check cache first. The cache stores the compact-mode
-    # body, so only serve it when compact mode is requested.
-    if body_mode == "compact":
-        cached = cache.get_message(id)
-        if cached and cached.get("body"):
-            output = format_message(cached, fmt=fmt)
-            _record_stats("g", [cached], output)
-            return CommandResult(output=output, messages_processed=1)
-
     all_cfg = _ensure_sources()
     try:
         prefix = _prefix_from_id(id, all_cfg)
@@ -890,6 +925,16 @@ async def get_message(
 
     if not cfg:
         return CommandResult(error=f"No source configured for prefix {prefix!r}.")
+
+    # Read-through: check cache first. The cache stores the compact-mode
+    # body, so only serve it when compact mode is requested — and only when
+    # the entry came from the mailbox this prefix currently points at.
+    if body_mode == "compact":
+        cached = cache.get_message(id, mailbox=_mailbox_identity(cfg))
+        if cached and cached.get("body"):
+            output = format_message(cached, fmt=fmt)
+            _record_stats("g", [cached], output)
+            return CommandResult(output=output, messages_processed=1)
 
     adapter = _make_adapter(prefix, cfg)
     if adapter is None:
@@ -908,7 +953,9 @@ async def get_message(
             if (plain_msg.get("body") or "").strip():
                 msg = plain_msg
         if body_mode == "compact":
-            cache.store_message(id, msg, provider=provider)
+            cache.store_message(
+                id, msg, provider=provider, mailbox=_mailbox_identity(cfg)
+            )
         output = format_message(msg, fmt=fmt)
         _record_stats("g", [msg], output)
 
@@ -980,7 +1027,7 @@ async def get_thread(
 
     # If the ID looks like a message ID (not a thread ID), try resolving
     # via cache — the cached message may have a thread_id field.
-    cached_msg = cache.get_message(tid)
+    cached_msg = cache.get_message(tid, mailbox=_mailbox_identity(cfg))
     if cached_msg and cached_msg.get("thread_id"):
         tid = cached_msg["thread_id"]
 
@@ -990,7 +1037,9 @@ async def get_thread(
         for msg in thread.get("messages", []):
             mid = msg.get("id")
             if mid:
-                cache.store_message(mid, msg, provider=provider)
+                cache.store_message(
+                    mid, msg, provider=provider, mailbox=_mailbox_identity(cfg)
+                )
         output = format_thread(thread, fmt=fmt)
         _record_stats("t", thread.get("messages", []), output)
 
@@ -1059,7 +1108,10 @@ async def list_messages(
                     msg = _normalize_message(entry)
                     msg.setdefault("source", prefix)
                     msg.setdefault("snippet", msg.get("body", ""))
-                    cache.store_message(msg.get("id", ""), msg, provider=provider)
+                    cache.store_message(
+                        msg.get("id", ""), msg, provider=provider,
+                        mailbox=_mailbox_identity(cfg),
+                    )
                     all_messages.append(msg)
         except Exception as exc:
             logger.warning("[%s] adapter failed: %s", prefix, exc)
@@ -1691,14 +1743,20 @@ async def preload(
                         msg_id = entry.get("id", "")
                         if not msg_id:
                             continue
-                        cb.store_header(msg_id, entry, provider=provider)
+                        cb.store_header(
+                            msg_id, entry, provider=provider,
+                            mailbox=_mailbox_identity(cfg),
+                        )
 
                         if bodies and cacheable:
                             try:
                                 msg = await adapter.read_message(msg_id)
                                 msg = _normalize_message(msg)
                                 # store_header via batch; body as individual file
-                                cb.store_header(msg_id, msg, provider=provider)
+                                cb.store_header(
+                                    msg_id, msg, provider=provider,
+                                    mailbox=_mailbox_identity(cfg),
+                                )
                                 cache.store_body(msg_id, msg.get("body", ""))
                             except Exception as exc:
                                 logger.warning("[%s] body fetch %s: %s", prefix, msg_id, exc)
@@ -2268,8 +2326,12 @@ def overview(
     - Source drill-down (--source g): top senders, top threads
     - Contact drill-down (--contact alice): messages across sources, quarterly breakdown
     """
-    # Load all cached headers
-    headers = cache.list_headers(source=source if source and not contact else None)
+    # Load all cached headers, dropping entries from mailboxes their
+    # prefix no longer points at (ts4k#87).
+    headers = cache.list_headers(
+        source=source if source and not contact else None,
+        mailboxes=_current_mailboxes(),
+    )
 
     # Period filter
     if period:
@@ -2345,13 +2407,15 @@ def manage_cache(
 # ---------------------------------------------------------------------------
 
 
-async def _thread_id_for(adapter: Any, mid: str) -> str:
+async def _thread_id_for(
+    adapter: Any, mid: str, mailbox: str | None = None
+) -> str:
     """Map a message ID to its thread ID.
 
     Cache first; one read as fallback.  A ref from a ``--threads`` listing is
     already a thread ID — the read fails there, so *mid* passes through.
     """
-    cached = cache.get_message(mid)
+    cached = cache.get_message(mid, mailbox=mailbox)
     tid = (cached or {}).get("thread_id")
     if tid:
         return tid
@@ -2438,7 +2502,9 @@ async def manage_message(
                     if action in ("label", "unlabel") and not label:
                         results.append(f"{mid}: error — --label required")
                         continue
-                    tid = await _thread_id_for(adapter, mid)
+                    tid = await _thread_id_for(
+                        adapter, mid, mailbox=_mailbox_identity(cfg)
+                    )
                     key = (prefix, tid)
                     if key in thread_calls:
                         first_mid, prev_r = thread_calls[key]

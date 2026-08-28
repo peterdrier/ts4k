@@ -126,6 +126,19 @@ def add(prefix: str, *, provider: str, **kwargs: Any) -> dict[str, Any]:
     return entry
 
 
+def update_fields(prefix: str, **fields: Any) -> dict[str, Any] | None:
+    """Update individual fields on an existing source, leaving the rest alone.
+
+    Returns the updated config, or ``None`` if *prefix* isn't configured.
+    """
+    data = _load()
+    if prefix not in data:
+        return None
+    data[prefix].update(fields)
+    _save(data)
+    return data[prefix]
+
+
 def set_note(prefix: str, note: str) -> dict[str, Any] | None:
     """Set or clear the free-text ``note`` field on an existing source.
 

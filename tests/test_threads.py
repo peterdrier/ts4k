@@ -299,7 +299,7 @@ class TestManageThread:
 
         with patch("ts4k.commands._make_adapter", return_value=mock_adapter), \
                 patch("ts4k.commands.cache.get_message",
-                      side_effect=lambda mid: {"id": mid, "thread_id": f"g:t{mid[-1]}"}):
+                      side_effect=lambda mid, mailbox=None: {"id": mid, "thread_id": f"g:t{mid[-1]}"}):
             result = await manage_message(
                 action="archive", msg_id="g:m1,g:m2", thread=True,
             )
