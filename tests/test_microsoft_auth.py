@@ -275,3 +275,93 @@ class TestValidateToken:
         """Empty client_id — returns na."""
         result = validate_token("", config_dir=tmp_path)
         assert result.status == "na"
+
+
+# ---------------------------------------------------------------------------
+# Corrupt token cache recovery (ts4k#104)
+# ---------------------------------------------------------------------------
+
+
+CORRUPT_CACHE = '{"AccessToken": {}}\nogin.microsoftonline.com"...}'
+
+
+def _write_corrupt_cache(config_dir: Path, client_id: str = "test-client") -> Path:
+    cache_file = _cache_path(client_id, config_dir)
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(CORRUPT_CACHE, encoding="utf-8")
+    return cache_file
+
+
+class TestCorruptCacheRecovery:
+    @patch("ts4k.auth.microsoft.msal.PublicClientApplication")
+    def test_get_credentials_falls_through_to_device_flow(
+        self, mock_app_cls, tmp_path
+    ):
+        """A corrupt cache must not crash — device-code flow re-auths."""
+        _write_corrupt_cache(tmp_path)
+        mock_app = MagicMock()
+        mock_app_cls.return_value = mock_app
+        mock_app.get_accounts.return_value = []
+        mock_app.initiate_device_flow.return_value = {
+            "user_code": "ABC", "message": "go to ..."
+        }
+        mock_app.acquire_token_by_device_flow.return_value = {
+            "access_token": "fresh-token"
+        }
+
+        result = get_credentials("test-client", config_dir=tmp_path)
+
+        assert result["access_token"] == "fresh-token"
+        mock_app.initiate_device_flow.assert_called_once()
+
+    def test_validate_token_reports_corrupt_cache(self, tmp_path):
+        """auth --check surfaces a clear actionable error, not a traceback."""
+        _write_corrupt_cache(tmp_path)
+
+        result = validate_token("test-client", config_dir=tmp_path)
+
+        assert result.status == "auth"
+        assert "corrupt" in result.detail
+        assert "ts4k auth" in result.detail
+
+    @patch("ts4k.auth.microsoft.msal.PublicClientApplication")
+    def test_valid_cache_still_loads(self, mock_app_cls, tmp_path):
+        """Sanity: a well-formed cache file deserializes as before."""
+        cache_file = _cache_path("test-client", tmp_path)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text("{}", encoding="utf-8")
+        mock_app = MagicMock()
+        mock_app_cls.return_value = mock_app
+        mock_app.get_accounts.return_value = [{"username": "u@x.com"}]
+        mock_app.acquire_token_silent.return_value = {"access_token": "tok"}
+
+        result = get_credentials("test-client", config_dir=tmp_path)
+
+        assert result["access_token"] == "tok"
+
+
+class TestPersistCacheAtomic:
+    def test_shorter_serialization_replaces_file_wholesale(self, tmp_path):
+        from ts4k.auth.microsoft import _persist_cache
+
+        cache_file = tmp_path / "token_cache.json"
+        cache_file.write_text('{"old": "' + "x" * 300 + '"}', encoding="utf-8")
+
+        mock_cache = MagicMock()
+        mock_cache.has_state_changed = True
+        mock_cache.serialize.return_value = '{"new": 1}'
+
+        _persist_cache(mock_cache, cache_file)
+
+        assert cache_file.read_text(encoding="utf-8") == '{"new": 1}'
+
+    def test_unchanged_cache_not_written(self, tmp_path):
+        from ts4k.auth.microsoft import _persist_cache
+
+        cache_file = tmp_path / "token_cache.json"
+        mock_cache = MagicMock()
+        mock_cache.has_state_changed = False
+
+        _persist_cache(mock_cache, cache_file)
+
+        assert not cache_file.exists()
