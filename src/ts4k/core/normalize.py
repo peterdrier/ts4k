@@ -242,8 +242,9 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
         if a.attrs is None:
             continue
         href = a.get("href", "")
-        link_text = a.get_text(strip=True).lower()
-        if "unsubscribe" in href.lower() or "unsubscribe" in link_text:
+        # ⚡ Bolt Optimization: short-circuit checking text content (which calls get_text())
+        # by checking href first, saving text extraction cost on actual unsub links.
+        if "unsubscribe" in href.lower() or "unsubscribe" in a.get_text(strip=True).lower():
             unsub_links.append(a)
 
     for a in unsub_links:
@@ -260,9 +261,12 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     # Remove footer-like elements containing unsubscribe language.
     # Collect first, then decompose.
     unsub_elements = []
-    for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
+    # ⚡ Bolt Optimization: Use tuple instead of list for find_all to prevent list allocation.
+    for el in soup.find_all(("div", "p", "table", "tr", "td", "center", "footer")):
         el_text = el.get_text(strip=True)
-        if _UNSUB_PATTERNS_HTML.search(el_text) and len(el_text) < 1000:
+        # ⚡ Bolt Optimization: Check length constraint *before* executing the regex.
+        # For large outer container elements (like root <table>), this skips the regex entirely.
+        if len(el_text) < 1000 and _UNSUB_PATTERNS_HTML.search(el_text):
             unsub_elements.append(el)
 
     for el in unsub_elements:
