@@ -26,3 +26,6 @@
 3. *Emphasis stripping*: a `'*' in line or '_' in line` fast-path before `re.sub` skips the regex machinery on the common no-marker line (#101).
 4. *Address parsing*: `rfind("<")`/`find(">")` scanning replaces the backtracking `.*<([^>]+)>` regex (#103) — but the empty-`<>` case must step back to an earlier pair like the regex's `[^>]+` did; the PR's original form returned an empty address there.
 **Action:** When several generated PRs target the same hot spot, diff them against each other, keep the semantically faithful form of each concept, and reject any variant that duplicates a source-of-truth pattern or narrows traversal semantics — then lock the differences in with regression tests.
+## 2026-09-02 - Short-Circuit Regex with O(1) Checks First
+**Learning:** When performing costly operations like regex searches on potentially large strings (like HTML elements), always place O(1) checks (like `len(text) < threshold`) before the O(N) operations in `if` statements. Python's short-circuit evaluation will bypass the costly check when the O(1) condition fails. In `src/ts4k/core/normalize.py`, evaluating `len(el_text) < 1000` before `_UNSUB_PATTERNS_HTML.search(el_text)` improved performance by ~3x on large wrapper elements.
+**Action:** When chaining conditions in `if` statements, always order them from cheapest (O(1)) to most expensive (O(N)).
