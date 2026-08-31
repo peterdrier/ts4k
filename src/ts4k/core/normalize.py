@@ -262,7 +262,9 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if _UNSUB_PATTERNS_HTML.search(el_text) and len(el_text) < 1000:
+        # ⚡ Bolt Optimization: Evaluate O(1) length constraint before O(N) regex
+        # execution to immediately short-circuit on massive wrapper elements.
+        if len(el_text) < 1000 and _UNSUB_PATTERNS_HTML.search(el_text):
             unsub_elements.append(el)
 
     for el in unsub_elements:
