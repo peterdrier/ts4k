@@ -242,8 +242,8 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
         if a.attrs is None:
             continue
         href = a.get("href", "")
-        link_text = a.get_text(strip=True).lower()
-        if "unsubscribe" in href.lower() or "unsubscribe" in link_text:
+        # ⚡ Bolt Optimization: Short-circuit get_text if href matches.
+        if "unsubscribe" in href.lower() or "unsubscribe" in a.get_text(strip=True).lower():
             unsub_links.append(a)
 
     for a in unsub_links:
@@ -262,7 +262,8 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     unsub_elements = []
     for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
-        if _UNSUB_PATTERNS_HTML.search(el_text) and len(el_text) < 1000:
+        # ⚡ Bolt Optimization: Evaluate O(1) length check before expensive regex.
+        if len(el_text) < 1000 and _UNSUB_PATTERNS_HTML.search(el_text):
             unsub_elements.append(el)
 
     for el in unsub_elements:
