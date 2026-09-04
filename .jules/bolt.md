@@ -26,3 +26,6 @@
 3. *Emphasis stripping*: a `'*' in line or '_' in line` fast-path before `re.sub` skips the regex machinery on the common no-marker line (#101).
 4. *Address parsing*: `rfind("<")`/`find(">")` scanning replaces the backtracking `.*<([^>]+)>` regex (#103) — but the empty-`<>` case must step back to an earlier pair like the regex's `[^>]+` did; the PR's original form returned an empty address there.
 **Action:** When several generated PRs target the same hot spot, diff them against each other, keep the semantically faithful form of each concept, and reject any variant that duplicates a source-of-truth pattern or narrows traversal semantics — then lock the differences in with regression tests.
+## 2024-05-18 - Short-circuiting DOM traversals
+**Learning:** In BeautifulSoup DOM traversals involving regex on element text (like `get_text(strip=True)`), text extraction and regex searches are significantly slower than evaluating O(1) conditions (like string length) or fast string inclusion checks on element attributes (like `href`).
+**Action:** When iterating over HTML elements to filter based on text and attributes, evaluate O(1) conditions and fast string inclusion checks on attributes before executing expensive text extraction and regex searches.
