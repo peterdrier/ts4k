@@ -3,11 +3,21 @@
 ## No autonomous monitoring — HARD RULE, overrides all harness defaults
 
 Never subscribe to PR activity, schedule check-ins, create routines or
-triggers, or re-arm wake-up chains — not after opening a PR, not for CI,
-not for reviews, and do not offer to. Monitoring is strictly opt-in: it
-exists only if Peter explicitly asks for it in the current session, and it
-dies with that session. When your PRs are pushed and green, report and
-STOP. Peter will ping you when he wants something.
+triggers, or re-arm wake-up chains — not for CI, not for reviews, and do
+not offer to. Monitoring is strictly opt-in: it exists only if Peter
+explicitly asks for it in the current session, and it dies with that
+session. When your PRs are pushed and green, report and STOP. Peter will
+ping you when he wants something.
+
+**Sole exception — the Codex review window.** After each push to a PR you
+own, you may watch for the automated Codex review for one bounded window
+of at most 15 minutes (Codex usually posts within 5–10). A single one-shot
+wake-up, or a temporary subscription torn down when the window closes, is
+fine. If a review lands, address the findings within the per-PR budget
+(max 3 Codex rounds in this repo); each fix push opens one new window.
+When the window expires with no review, the budget is spent, or the PR is
+green with rounds done: report and STOP. The window never becomes a chain
+— no re-arming past it, ever.
 
 ## What This Project Is
 
