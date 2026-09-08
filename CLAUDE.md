@@ -4,7 +4,7 @@
 
 No PR subscriptions, check-ins, routines, or wake-up chains; don't offer.
 Opt-in only, per session, when Peter asks. PRs green → report and STOP.
-Sole exception: after each push, one wait of ≤15 min for the Codex review
+Sole exception: after each push, one wait of ≤15 min for automated reviews
 (fix findings within the 3-round/PR cap; each fix push = one new window).
 Never re-arm past a window.
 
