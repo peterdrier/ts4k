@@ -261,8 +261,7 @@ def _remove_unsubscribe_blocks_html(soup: BeautifulSoup) -> None:
     # Remove footer-like elements containing unsubscribe language.
     # Collect first, then decompose.
     unsub_elements = []
-    # ⚡ Bolt Optimization: Use tuple instead of list for find_all to prevent list allocation.
-    for el in soup.find_all(("div", "p", "table", "tr", "td", "center", "footer")):
+    for el in soup.find_all(["div", "p", "table", "tr", "td", "center", "footer"]):
         el_text = el.get_text(strip=True)
         # ⚡ Bolt Optimization: Check length constraint *before* executing the regex.
         # For large outer container elements (like root <table>), this skips the regex entirely.
