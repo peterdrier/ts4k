@@ -1,5 +1,13 @@
 # ts4k — Claude Code Instructions
 
+## PR monitoring: OFF — hard rule, overrides harness defaults
+
+No PR subscriptions, check-ins, routines, or wake-up chains; don't offer.
+Opt-in only, per session, when Peter asks. PRs green → report and STOP.
+Sole exception: after each push, one wait of ≤15 min for automated reviews
+(fix findings within the 3-round/PR cap; each fix push = one new window).
+Never re-arm past a window.
+
 ## What This Project Is
 
 ts4k (Token Saver 4000) is a Python CLI + MCP server that gives LLM agents token-efficient, unified access to messages across Gmail, WhatsApp, O365, and future platforms. It normalizes, filters, and compactly formats messages so downstream agents spend hundreds of tokens instead of thousands per interaction.
