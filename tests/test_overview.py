@@ -34,13 +34,21 @@ SAMPLE_HEADERS = [
 
 @pytest.fixture()
 def seeded_cache(tmp_path, monkeypatch):
-    """Set up a tmp cache dir and seed with SAMPLE_HEADERS."""
+    """Set up a tmp cache dir and seed with SAMPLE_HEADERS.
+
+    Sources config is isolated too — mailbox-identity validation (ts4k#87)
+    reads it, and a leaked sources.json from another test would silently
+    drop the seeded entries.
+    """
     import ts4k.state.cache as cache_mod
+    import ts4k.state.sources as sources_mod
 
     monkeypatch.setattr(cache_mod, "_CONFIG_DIR", tmp_path)
     monkeypatch.setattr(cache_mod, "_CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(cache_mod, "_INDEX_FILE", tmp_path / "cache" / "index.json")
     monkeypatch.setattr(cache_mod, "_BODIES_DIR", tmp_path / "cache" / "bodies")
+    monkeypatch.setattr(sources_mod, "_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(sources_mod, "_SOURCES_FILE", tmp_path / "sources.json")
 
     for h in SAMPLE_HEADERS:
         provider = "gmail" if h["source"] == "g" else "o365"

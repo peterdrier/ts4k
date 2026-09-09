@@ -69,6 +69,10 @@ class O365AdapterConfig:
     mailbox: str | None = None
     """Target mailbox email.  When set, uses ``/users/{mailbox}/`` endpoint.
     When ``None``, uses ``/me/`` (primary mailbox)."""
+    email: str | None = None
+    """Recorded authenticated account for ``/me`` sources.  Used only to
+    select the matching MSAL account when the token cache holds several;
+    the endpoint stays ``/me/``."""
     config_dir: Path | None = None
 
     level: str | None = None
@@ -244,7 +248,7 @@ class O365Adapter(BaseAdapter):
             self._config.client_id,
             tenant_id=self._config.tenant_id,
             config_dir=self._config.config_dir,
-            username=self._config.mailbox,
+            username=self._config.mailbox or self._config.email,
             scopes=scopes,
         )
         mailbox_str = f" ({self._config.mailbox})" if self._config.mailbox else ""
