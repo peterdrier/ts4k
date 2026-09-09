@@ -19,6 +19,7 @@ import httpx
 import msal
 
 from ts4k.auth.health import TokenHealth
+from ts4k.state._io import safe_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,29 @@ def _default_config_dir() -> Path:
 def _cache_path(client_id: str, config_dir: Path) -> Path:
     """Return the token cache path for a given client_id."""
     return config_dir / "microsoft" / client_id / "token_cache.json"
+
+
+def _load_cache(cache_file: Path) -> tuple[msal.SerializableTokenCache, bool]:
+    """Load the MSAL token cache, tolerating a corrupt file.
+
+    Returns ``(cache, corrupt)``.  On a parse failure the cache comes back
+    empty and *corrupt* is True — callers fall through to device-code
+    re-auth instead of crashing on the same file forever (ts4k#104).
+    """
+    cache = msal.SerializableTokenCache()
+    if not cache_file.is_file():
+        return cache, False
+    try:
+        cache.deserialize(cache_file.read_text(encoding="utf-8"))
+        logger.debug("Loaded token cache from %s", cache_file)
+        return cache, False
+    except ValueError as exc:
+        logger.warning(
+            "Token cache at %s is corrupt (%s) — starting with an empty "
+            "cache; re-authentication will be required",
+            cache_file, exc,
+        )
+        return msal.SerializableTokenCache(), True
 
 
 def get_credentials(
@@ -77,12 +101,10 @@ def get_credentials(
     scopes = scopes or GRAPH_MAIL_READ_SCOPES
     config_dir = config_dir or _default_config_dir()
 
-    # Load or create token cache.
+    # Load or create token cache.  A corrupt file yields an empty cache so
+    # the device-code flow below can re-establish auth.
     cache_file = _cache_path(client_id, config_dir)
-    cache = msal.SerializableTokenCache()
-    if cache_file.is_file():
-        cache.deserialize(cache_file.read_text(encoding="utf-8"))
-        logger.debug("Loaded token cache from %s", cache_file)
+    cache, _ = _load_cache(cache_file)
 
     authority = f"https://login.microsoftonline.com/{tenant_id}"
     app = msal.PublicClientApplication(
@@ -160,8 +182,17 @@ def validate_token(
         )
 
     try:
-        cache = msal.SerializableTokenCache()
-        cache.deserialize(cache_file.read_text(encoding="utf-8"))
+        cache, corrupt = _load_cache(cache_file)
+        if corrupt:
+            return TokenHealth(
+                status="auth",
+                expiry=None,
+                scopes=[],
+                detail=(
+                    "token cache corrupt — re-auth needed "
+                    "(run: ts4k auth <prefix>)"
+                ),
+            )
 
         authority = f"https://login.microsoftonline.com/{tenant_id}"
         app = msal.PublicClientApplication(
@@ -204,10 +235,15 @@ def validate_token(
 
 
 def _persist_cache(cache: msal.SerializableTokenCache, cache_file: Path) -> None:
-    """Write the token cache to disk if it has changed."""
+    """Write the token cache to disk if it has changed.
+
+    All O365 sources share this file and ts4k processes overlap (dashboard
+    polls vs. CLI runs), so the write must be atomic: a plain truncate+write
+    interleaved across two writers left a stale tail behind and took every
+    O365 source down at once (ts4k#104).
+    """
     if cache.has_state_changed:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(cache.serialize(), encoding="utf-8")
+        safe_write_text(cache_file, cache.serialize())
 
 
 def build_graph_client(

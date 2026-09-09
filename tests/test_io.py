@@ -86,3 +86,44 @@ class TestSafeWriteJson:
         # No temp files left
         leftover = [f for f in tmp_path.iterdir() if f.suffix == ".tmp"]
         assert leftover == []
+
+
+# ---------------------------------------------------------------------------
+# safe_write_text
+# ---------------------------------------------------------------------------
+
+
+from ts4k.state._io import safe_write_text  # noqa: E402
+
+
+class TestSafeWriteText:
+    def test_creates_file_and_parents(self, tmp_path):
+        p = tmp_path / "a" / "b" / "out.txt"
+        safe_write_text(p, "hello")
+        assert p.read_text(encoding="utf-8") == "hello"
+
+    def test_shorter_write_leaves_no_stale_tail(self, tmp_path):
+        # The ts4k#104 corruption: a shorter overwrite of a longer file must
+        # replace it wholesale, never leave the old tail behind.
+        p = tmp_path / "cache.json"
+        p.write_text('{"long": "' + "x" * 200 + '"}', encoding="utf-8")
+        safe_write_text(p, '{"short": 1}')
+        assert p.read_text(encoding="utf-8") == '{"short": 1}'
+
+    def test_no_temp_files_on_success(self, tmp_path):
+        p = tmp_path / "out.txt"
+        safe_write_text(p, "data")
+        assert [f.name for f in tmp_path.iterdir()] == ["out.txt"]
+
+    def test_original_intact_on_replace_failure(self, tmp_path, monkeypatch):
+        p = tmp_path / "out.txt"
+        p.write_text("original", encoding="utf-8")
+
+        def boom(src, dst):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(os, "replace", boom)
+        with pytest.raises(OSError):
+            safe_write_text(p, "new content")
+        assert p.read_text(encoding="utf-8") == "original"
+        assert [f.name for f in tmp_path.iterdir()] == ["out.txt"]

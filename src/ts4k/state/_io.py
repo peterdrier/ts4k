@@ -14,6 +14,30 @@ from pathlib import Path
 from typing import Any
 
 
+def safe_write_text(path: Path, text: str) -> None:
+    """Atomically write *text* to *path*.
+
+    Same temp-file + ``os.replace`` dance as :func:`safe_write_json`, for
+    callers that already hold serialized content (e.g. the MSAL token
+    cache).  A concurrent or crashed writer can never leave a partially
+    written file — in particular, a shorter write can't leave the tail of
+    a longer previous version behind (ts4k#104).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def safe_write_json(
     path: Path,
     data: Any,
