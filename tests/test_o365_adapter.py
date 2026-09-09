@@ -706,6 +706,49 @@ class TestO365AdapterErrorHandling:
             await adapter.list_messages()
 
 
+class TestO365AdapterConnect:
+    """Test MSAL account selection during connect()."""
+
+    @staticmethod
+    async def _connect_and_get_username(monkeypatch, config):
+        import ts4k.auth.microsoft as ms_auth
+
+        captured = {}
+
+        def fake_build(client_id, **kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(ms_auth, "build_graph_client", fake_build)
+        adapter = O365Adapter(config)
+        await adapter.connect()
+        return captured["username"]
+
+    @pytest.mark.asyncio
+    async def test_mailbox_used_as_username(self, monkeypatch):
+        config = O365AdapterConfig(
+            client_id="test", mailbox="shared@contoso.com", email="me@contoso.com"
+        )
+        assert (
+            await self._connect_and_get_username(monkeypatch, config)
+            == "shared@contoso.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_email_used_for_me_sources(self, monkeypatch):
+        """/me sources (no mailbox) select the recorded account, not accounts[0]."""
+        config = O365AdapterConfig(client_id="test", email="me@contoso.com")
+        assert (
+            await self._connect_and_get_username(monkeypatch, config)
+            == "me@contoso.com"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_mailbox_no_email_passes_none(self, monkeypatch):
+        config = O365AdapterConfig(client_id="test")
+        assert await self._connect_and_get_username(monkeypatch, config) is None
+
+
 class TestO365AdapterSourcePrefix:
     """Test that source_prefix is correct."""
 

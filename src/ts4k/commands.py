@@ -147,6 +147,7 @@ def _make_adapter(
                 client_id=client_id,
                 tenant_id=cfg.get("tenant_id", "common"),
                 mailbox=cfg.get("mailbox"),
+                email=cfg.get("email"),
                 config_dir=Path(cfg["config_dir"]) if cfg.get("config_dir") else None,
                 level=cfg.get("level"),
             ),
