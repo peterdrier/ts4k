@@ -158,13 +158,12 @@ def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
 
         is_tiny = False
         if width and height:
-            try:
-                w = int(str(width).replace("px", ""))
-                h = int(str(height).replace("px", ""))
-                if w <= 3 and h <= 3:
+            # ⚡ Bolt Optimization: Use isdigit to bypass exception handling overhead for non-numeric width/height
+            w_str = str(width).replace("px", "").strip()
+            if w_str.isdigit():
+                h_str = str(height).replace("px", "").strip()
+                if h_str.isdigit() and int(w_str) <= 3 and int(h_str) <= 3:
                     is_tiny = True
-            except (ValueError, TypeError):
-                pass
 
         # Check style for tiny dimensions
         if not is_tiny:
