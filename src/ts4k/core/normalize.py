@@ -152,34 +152,45 @@ _TRACKING_URL_PATTERN = re.compile(
 def _remove_tracking_pixels(soup: BeautifulSoup) -> None:
     """Remove 1x1 images, pixel trackers, and invisible images."""
     for img in soup.find_all("img"):
+        attrs = img.attrs
+        if attrs is None:
+            continue
+
         # Check for explicit 1x1 dimensions
-        width = img.get("width", "")
-        height = img.get("height", "")
+        width = attrs.get("width")
+        height = attrs.get("height")
 
         is_tiny = False
         if width and height:
-            try:
-                w = int(str(width).replace("px", ""))
-                h = int(str(height).replace("px", ""))
-                if w <= 3 and h <= 3:
-                    is_tiny = True
-            except (ValueError, TypeError):
-                pass
+            # ⚡ Bolt Optimization: Use isdecimal() for a fast-path numeric check
+            # before try...except to avoid costly exception overhead on non-numeric strings
+            # like "100%" or "auto". Also avoid repeated img.get() by using attrs.
+            ws = str(width).replace("px", "").strip()
+            if ws.isdecimal():
+                hs = str(height).replace("px", "").strip()
+                if hs.isdecimal():
+                    try:
+                        w = int(ws)
+                        h = int(hs)
+                        if w <= 3 and h <= 3:
+                            is_tiny = True
+                    except (ValueError, TypeError):
+                        pass
 
         # Check style for tiny dimensions
         if not is_tiny:
-            style = img.get("style", "")
+            style = attrs.get("style")
             if style and _STYLE_TINY_PATTERN.search(style):
                 is_tiny = True
 
         # Check for common tracking pixel URL patterns
         if not is_tiny:
-            src = img.get("src", "")
+            src = attrs.get("src")
             if src and _TRACKING_URL_PATTERN.search(src):
                 is_tiny = True
 
         # Check for images with no alt text and very small size
-        if not img.get("alt") and is_tiny:
+        if not attrs.get("alt") and is_tiny:
             img.decompose()
         elif is_tiny:
             img.decompose()
